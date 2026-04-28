@@ -1,0 +1,168 @@
+import type { LLMProvider, ProviderConfig, ModelConfig, ProviderExtension } from './types.js'
+import { createProvider, createProviderWithExtension, getProviderDefaults, getRegisteredProviders } from './registry.js'
+
+export interface StoredProviderConfig {
+  name: string
+  apiKey: string
+  baseUrl?: string
+  models?: Record<string, string>
+  modelConfigs?: Record<string, ModelConfig>
+  defaultModel?: string
+  defaultMaxTokens?: number
+  defaultTemperature?: number
+  retries?: number
+  retryDelay?: number
+  headers?: Record<string, string>
+  extra?: Record<string, unknown>
+  extension?: ProviderExtension
+}
+
+interface ProviderEntry {
+  config: StoredProviderConfig
+  instance: LLMProvider
+}
+
+const providerStore: Map<string, ProviderEntry> = new Map()
+let defaultProviderName: string = ''
+
+export async function addProvider(config: StoredProviderConfig, setAsDefault?: boolean): Promise<LLMProvider> {
+  const defaults = getProviderDefaults(config.name)
+  const fullConfig: ProviderConfig = {
+    name: config.name,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl ?? defaults?.baseUrl ?? '',
+    models: config.models ?? defaults?.models as Record<string, string> | undefined,
+    modelConfigs: config.modelConfigs ?? defaults?.modelConfigs,
+    defaultModel: config.defaultModel ?? defaults?.defaultModel,
+    defaultMaxTokens: config.defaultMaxTokens,
+    defaultTemperature: config.defaultTemperature,
+    retries: config.retries ?? 2,
+    retryDelay: config.retryDelay ?? 1000,
+    headers: config.headers,
+    extra: config.extra,
+    extension: config.extension,
+  }
+
+  const instance = config.extension
+    ? await createProviderWithExtension(fullConfig)
+    : createProvider(fullConfig)
+
+  providerStore.set(config.name, { config, instance })
+
+  if (setAsDefault || providerStore.size === 1) {
+    defaultProviderName = config.name
+  }
+
+  return instance
+}
+
+export function removeProvider(name: string): boolean {
+  if (!providerStore.has(name)) return false
+  providerStore.delete(name)
+  if (defaultProviderName === name) {
+    const first = providerStore.keys().next()
+    defaultProviderName = first.done ? '' : first.value
+  }
+  return true
+}
+
+export function getProvider(name: string): LLMProvider | undefined {
+  return providerStore.get(name)?.instance
+}
+
+export function getProviderConfig(name: string): StoredProviderConfig | undefined {
+  return providerStore.get(name)?.config
+}
+
+export function getDefaultProvider(): LLMProvider | undefined {
+  if (defaultProviderName) {
+    return providerStore.get(defaultProviderName)?.instance
+  }
+  return undefined
+}
+
+export function getDefaultProviderName(): string {
+  return defaultProviderName
+}
+
+export function setDefaultProvider(name: string): boolean {
+  if (!providerStore.has(name)) return false
+  defaultProviderName = name
+  return true
+}
+
+export function getAllProviderNames(): string[] {
+  return [...providerStore.keys()]
+}
+
+export function getAllProviders(): Array<{ name: string; config: StoredProviderConfig; isDefault: boolean }> {
+  return [...providerStore.entries()].map(([name, entry]) => ({
+    name,
+    config: entry.config,
+    isDefault: name === defaultProviderName,
+  }))
+}
+
+export function resolveProvider(providerName?: string): LLMProvider {
+  if (providerName) {
+    const provider = getProvider(providerName)
+    if (provider) return provider
+  }
+
+  const defaultProvider = getDefaultProvider()
+  if (defaultProvider) return defaultProvider
+
+  throw new Error(
+    `No provider configured. Please configure at least one provider via .env, sga-providers.json, or the API. ` +
+    `Available provider types: ${getRegisteredProviders().join(', ')}`
+  )
+}
+
+export async function loadProvidersFromEnv(): Promise<void> {
+  const defaultName = process.env.LLM_PROVIDER ?? 'anthropic'
+  const apiKey = process.env.LLM_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? ''
+
+  if (!apiKey) return
+
+  const defaults = getProviderDefaults(defaultName) ?? {}
+  const baseUrl = process.env.LLM_BASE_URL ?? defaults.baseUrl
+  const defaultModel = process.env.LLM_MODEL ?? defaults.defaultModel
+
+  await addProvider({
+    name: defaultName,
+    apiKey,
+    baseUrl: baseUrl ?? undefined,
+    models: defaults.models as Record<string, string> | undefined,
+    modelConfigs: defaults.modelConfigs,
+    defaultModel: defaultModel ?? undefined,
+    defaultMaxTokens: parseInt(process.env.LLM_MAX_TOKENS ?? '', 10) || undefined,
+    defaultTemperature: parseFloat(process.env.LLM_TEMPERATURE ?? '') || undefined,
+    retries: parseInt(process.env.LLM_RETRIES ?? '2', 10) || undefined,
+    retryDelay: parseInt(process.env.LLM_RETRY_DELAY ?? '1000', 10) || undefined,
+    headers: process.env.LLM_EXTRA_HEADERS
+      ? JSON.parse(process.env.LLM_EXTRA_HEADERS)
+      : undefined,
+  }, true)
+
+  const extraProvidersEnv = process.env.SGA_PROVIDERS
+  if (extraProvidersEnv) {
+    try {
+      const extraProviders = JSON.parse(extraProvidersEnv) as StoredProviderConfig[]
+      for (const p of extraProviders) {
+        await addProvider(p)
+      }
+    } catch {
+      // ignore invalid JSON
+    }
+  }
+}
+
+export async function loadProvidersFromConfig(configs: StoredProviderConfig[], defaultName?: string): Promise<void> {
+  for (const config of configs) {
+    const setAsDefault = defaultName ? config.name === defaultName : false
+    await addProvider(config, setAsDefault)
+  }
+  if (defaultName) {
+    setDefaultProvider(defaultName)
+  }
+}
