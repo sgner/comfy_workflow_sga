@@ -2,6 +2,7 @@ import { readdir, stat, readFile } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
+import { getSgaHome } from '../memory/paths.js'
 import type { SkillDefinition, SkillFrontmatter, SkillSource } from './types.js'
 
 export interface SkillDiscoveryConfig {
@@ -19,6 +20,10 @@ export async function discoverSkills(config: SkillDiscoveryConfig = {}): Promise
 
   if (config.managedDir) dirs.push({ path: config.managedDir, source: 'managed' })
   dirs.push({ path: config.userDir ?? getUserSkillsDir(), source: 'user' })
+  const claudeUserSkillsDir = join(homedir(), '.claude', 'skills')
+  if (claudeUserSkillsDir !== getUserSkillsDir() && existsSync(claudeUserSkillsDir)) {
+    dirs.push({ path: claudeUserSkillsDir, source: 'user' })
+  }
   for (const dir of config.projectDirs ?? getProjectSkillsDirs()) {
     dirs.push({ path: dir, source: 'project' })
   }
@@ -85,10 +90,10 @@ async function loadSkillsFromDir(dir: string, source: SkillSource): Promise<Skil
             finalContent = finalContent.replace(/\$ARGUMENTS/g, args)
           }
           if (ctx.skillDir) {
-            finalContent = finalContent.replace(/\$\{CLAUDE_SKILL_DIR\}/g, ctx.skillDir)
+            finalContent = finalContent.replace(/\$\{SGA_SKILL_DIR\}/g, ctx.skillDir)
           }
           if (ctx.sessionId) {
-            finalContent = finalContent.replace(/\$\{CLAUDE_SESSION_ID\}/g, ctx.sessionId)
+            finalContent = finalContent.replace(/\$\{SGA_SESSION_ID\}/g, ctx.sessionId)
           }
           return finalContent
         },
@@ -164,16 +169,22 @@ function parsePathList(paths: string | string[] | undefined): string[] | undefin
 }
 
 function getUserSkillsDir(): string {
-  return join(homedir(), '.claude', 'skills')
+  return join(getSgaHome(), 'skills')
 }
 
 function getProjectSkillsDirs(): string[] {
   const dirs: string[] = []
+  const seen = new Set<string>()
   let current = process.cwd()
   const home = homedir()
   while (current !== home && current !== '/') {
-    const skillsDir = join(current, '.claude', 'skills')
-    if (existsSync(skillsDir)) dirs.push(skillsDir)
+    for (const dirName of ['.sga', '.claude'] as const) {
+      const skillsDir = join(current, dirName, 'skills')
+      if (existsSync(skillsDir) && !seen.has(skillsDir)) {
+        seen.add(skillsDir)
+        dirs.push(skillsDir)
+      }
+    }
     const parent = join(current, '..')
     if (parent === current) break
     current = parent

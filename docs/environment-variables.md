@@ -110,6 +110,7 @@ SGA_PROVIDERS=[{"name":"my-relay","apiKey":"sk-relay-xxx","baseUrl":"https://rel
 | `CORS_ORIGIN` | 否 | `*` | CORS 允许的来源 |
 | `SGA_API_KEY` | 否 | 无 | API 认证密钥（设置后请求需携带 `Authorization: Bearer <key>`） |
 | `BASE_PATH` | 否 | `/api/v1` | API 基础路径 |
+| `SGA_HOME` | 否 | `~/.sga` | 框架数据主目录（记忆文件、供应商配置、MCP 配置、Skills 等） |
 
 ### Web 搜索工具
 
@@ -249,12 +250,22 @@ PORT=8080
 ANTHROPIC_API_KEY=sk-ant-xxx
 ```
 
+### 自定义数据目录
+
+```bash
+# .env 文件
+SGA_HOME=/data/sga  # Linux/macOS
+SGA_HOME=D:\sga-data  # Windows
+```
+
+> 设置 `SGA_HOME` 后，框架会将记忆文件、供应商配置、MCP 配置、Skills 等数据存储到指定目录，而不是默认的 `~/.sga`。
+
 ## 优先级
 
 配置的优先级从高到低：
 
 1. **API 动态添加的供应商**（运行时通过 `POST /providers` 添加）
-2. **配置文件**（`sga-providers.json` 或 `~/.sga-template/providers.json`）
+2. **配置文件**（`sga-providers.json` 或 `~/.sga/providers.json`）
 3. **`.env` 文件中的值**（覆盖系统环境变量）
 4. **系统环境变量**（`LLM_*` / `ANTHROPIC_*` 等）
 5. **代码中的默认值**

@@ -21,7 +21,7 @@ You have a persistent file-based memory system located at \`${memoryDir}\`.
 ${memoryTypesSection}
 
 ## What NOT to Save
-- Information already in CLAUDE.md or project documentation
+- Information already in SGA.md, CLAUDE.md, or project documentation
 - Temporary debugging state
 - Sensitive credentials or secrets
 - Verbatim file contents (reference the file path instead)

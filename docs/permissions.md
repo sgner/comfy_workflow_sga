@@ -85,15 +85,7 @@ export interface PermissionRule {
 
 ## 权限检查流程
 
-```
-1. 检查 mode 是否为 bypassPermissions → 直接允许
-2. 检查 mode 是否为 auto → 先检查 deny 规则，其余允许
-3. 检查 deny 规则 → 匹配则拒绝
-4. 检查 allow 规则 → 匹配则允许
-5. 检查 ask 规则 → 匹配则询问用户
-6. 检查 mode 是否为 plan → 写操作需审批
-7. 默认 → 询问用户
-```
+![权限检查流程](diagrams/permission-check.svg)
 
 ## 与人机交互的配合
 

@@ -481,7 +481,7 @@ curl -X POST http://localhost:3000/api/v1/providers \
 
 > 关于模型配置和扩展机制的详细说明，请参阅 [多供应商 LLM 接入](multi-provider.md)。
 
-**响应**：
+**成功响应**（201）：
 
 ```json
 {
@@ -491,6 +491,23 @@ curl -X POST http://localhost:3000/api/v1/providers \
   "hasExtension": false
 }
 ```
+
+**验证失败响应**（400）：
+
+当供应商配置不满足最小配置要求时，返回详细的验证错误：
+
+```json
+{
+  "error": "Provider \"my-provider\" does not meet minimum configuration requirements",
+  "errors": [
+    "apiKey is required and must be a non-empty string",
+    "baseUrl is required when the provider is not a built-in type (anthropic, openai, deepseek, zhipu, moonshot, qwen)"
+  ],
+  "warnings": []
+}
+```
+
+> 关于最小配置要求的详细说明，请参阅 [多供应商 LLM 接入 - 最小配置要求](multi-provider.md#最小配置要求)。
 
 ### DELETE /providers/:name
 

@@ -1,6 +1,6 @@
 # 作为后端服务使用
 
-> 📄 相关源文件：`src/server/main.ts`（启动入口）、`src/server/routes.ts`（核心路由）、`src/server/session.ts`（会话管理）
+> 📄 相关源文件：`src/server/main.ts`（启动入口）、`src/server/routes.ts`（核心路由）、`src/server/session.ts`（会话类型）、`src/server/session-store.ts`（会话持久化）
 
 ## 启动服务
 
@@ -81,7 +81,7 @@ LLM_API_KEY=sk-xxx
 
 ## 创建会话并对话
 
-> 📄 相关源文件：`src/server/routes.ts`（路由处理）、`src/server/session.ts`（会话创建与管理）
+> 📄 相关源文件：`src/server/routes.ts`（路由处理）、`src/server/session.ts`（会话类型）、`src/server/session-store.ts`（会话持久化）
 
 ### 创建会话（使用默认供应商）
 
@@ -183,7 +183,7 @@ data: {"type": "done", "data": null, "sessionId": "sess-xxx"}
 
 ### 会话状态
 
-> 📄 相关源文件：`src/server/session.ts`
+> 📄 相关源文件：`src/server/session.ts`、`src/server/session-store.ts`
 
 每个会话包含以下状态信息：
 
@@ -194,6 +194,27 @@ data: {"type": "done", "data": null, "sessionId": "sess-xxx"}
 - `config` — 会话配置（模型、权限模式、供应商等）
 - `usage` — Token 用量统计
 - `pendingAction` — 挂起的人机交互动作（如有）
+
+### 会话持久化
+
+> 📄 相关源文件：`src/server/session-store.ts`
+
+会话数据通过 `SessionStore` 持久化到磁盘，使用 **JSONL 追加写入**格式确保崩溃安全：
+
+| 文件 | 格式 | 说明 |
+|------|------|------|
+| `data/sessions/{id}.meta.json` | JSON | 会话元数据（ID、创建时间、配置、状态） |
+| `data/sessions/{id}.jsonl` | JSONL | 消息和用量追加日志 |
+
+**写入策略**：
+- 每条消息和用量更新通过 `appendMessage()` / `appendUsage()` 实时追加到 JSONL 文件
+- 写入操作通过 200ms 缓冲队列批量刷盘，减少磁盘 I/O
+- 元数据变更（状态、错误）通过 `updateStatus()` 写入 meta 文件
+- 服务器重启时自动从磁盘恢复所有会话
+
+**自动迁移**：启动时检测旧格式 `.json` 会话文件，自动迁移为 JSONL 格式。
+
+**优雅关闭**：服务器关闭时自动 flush 所有缓冲队列，确保数据完整。
 
 ### 创建会话参数
 

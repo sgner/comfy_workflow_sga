@@ -51,12 +51,35 @@ export class TransformableProvider implements LLMProvider {
     return this.inner.validateConfig()
   }
 
+  private resolveRequestConfig(model: string, stream: boolean): {
+    baseUrl: string
+    apiKey: string
+    headers: Record<string, string>
+  } {
+    const modelConfig = this.inner.getModelConfig(model)
+    const rawBaseUrl = stream
+      ? (modelConfig?.streamingBaseUrl ?? modelConfig?.baseUrl ?? this.config.baseUrl)
+      : (modelConfig?.baseUrl ?? this.config.baseUrl)
+    const baseUrl = this.normalizeBaseUrl(rawBaseUrl)
+    const apiKey = modelConfig?.apiKey ?? this.config.apiKey
+    const headers = { ...this.config.headers, ...modelConfig?.headers }
+    return { baseUrl, apiKey, headers }
+  }
+
+  private normalizeBaseUrl(baseUrl: string): string {
+    const trimmed = baseUrl.replace(/\/$/, '')
+    if (trimmed.endsWith('/chat/completions')) {
+      return trimmed.slice(0, -'/chat/completions'.length)
+    }
+    return trimmed
+  }
+
   async createMessage(options: ProviderRequestOptions): Promise<ProviderResponse> {
     const model = this.inner.resolveModel(options.model)
     const maxTokens = options.maxTokens ?? this.config.defaultMaxTokens ?? 4096
 
     let body = this.buildRawBody(options, model, maxTokens)
-    let headers = this.buildHeaders()
+    let headers = this.resolveRequestConfig(options.model, false).headers
 
     if (this.requestTransformer) {
       const transformed = this.requestTransformer(body, headers)
@@ -64,16 +87,22 @@ export class TransformableProvider implements LLMProvider {
       headers = transformed.headers
     }
 
+    const reqConfig = this.resolveRequestConfig(options.model, false)
+
     const retries = this.config.retries ?? 2
     const retryDelay = this.config.retryDelay ?? 1000
     let lastError: Error | null = null
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const endpoint = this.getEndpoint()
+        const endpoint = `${reqConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
         const response = await fetch(endpoint, {
           method: 'POST',
-          headers,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${reqConfig.apiKey}`,
+            ...headers,
+          },
           body: JSON.stringify(body),
           signal: options.signal,
         })
@@ -108,7 +137,7 @@ export class TransformableProvider implements LLMProvider {
 
     let body = this.buildRawBody(options, model, maxTokens)
     body.stream = true
-    let headers = this.buildHeaders()
+    let headers = this.resolveRequestConfig(options.model, true).headers
 
     if (this.requestTransformer) {
       const transformed = this.requestTransformer(body, headers)
@@ -116,10 +145,16 @@ export class TransformableProvider implements LLMProvider {
       headers = transformed.headers
     }
 
-    const endpoint = this.getEndpoint()
+    const reqConfig = this.resolveRequestConfig(options.model, true)
+
+    const endpoint = `${reqConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${reqConfig.apiKey}`,
+        ...headers,
+      },
       body: JSON.stringify(body),
       signal: options.signal,
     })
@@ -161,19 +196,6 @@ export class TransformableProvider implements LLMProvider {
     }
   }
 
-  private getEndpoint(): string {
-    const base = this.config.baseUrl.replace(/\/$/, '')
-    return `${base}/chat/completions`
-  }
-
-  private buildHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${this.config.apiKey}`,
-      ...this.config.headers,
-    }
-  }
-
   private buildRawBody(options: ProviderRequestOptions, model: string, maxTokens: number): Record<string, unknown> {
     const messages: Array<Record<string, unknown>> = []
 
@@ -187,12 +209,50 @@ export class TransformableProvider implements LLMProvider {
     for (const msg of options.messages) {
       if (typeof msg.content === 'string') {
         messages.push({ role: msg.role, content: msg.content })
-      } else {
-        const textParts = msg.content
-          .filter(b => b.type === 'text')
-          .map(b => b.text ?? '')
-          .join('\n')
-        messages.push({ role: msg.role, content: textParts })
+        continue
+      }
+
+      const textParts = msg.content.filter(b => b.type === 'text')
+      const toolUseParts = msg.content.filter(b => b.type === 'tool_use')
+      const toolResultParts = msg.content.filter(b => b.type === 'tool_result')
+
+      // Handle assistant message with tool calls
+      if (msg.role === 'assistant' && toolUseParts.length > 0) {
+        messages.push({
+          role: 'assistant',
+          content: textParts.map(b => b.text).join('\n') || null,
+          tool_calls: toolUseParts.map(tu => ({
+            id: tu.id,
+            type: 'function',
+            function: {
+              name: tu.name,
+              arguments: JSON.stringify(tu.input ?? {}),
+            },
+          })),
+        })
+      } else if (msg.role === 'assistant') {
+        // Assistant message without tool calls
+        messages.push({
+          role: 'assistant',
+          content: textParts.map(b => b.text).join('\n'),
+        })
+      } else if (msg.role === 'user') {
+        // User message: send text content first
+        if (textParts.length > 0) {
+          messages.push({
+            role: 'user',
+            content: textParts.map(b => b.text).join('\n'),
+          })
+        }
+      }
+
+      // Tool results must follow the assistant message that made the tool call
+      for (const tr of toolResultParts) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tr.tool_use_id,
+          content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+        })
       }
     }
 

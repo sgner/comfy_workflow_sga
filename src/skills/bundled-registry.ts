@@ -3,6 +3,7 @@ import { readdir, stat, readFile, writeFile, mkdir } from 'fs/promises'
 import { join, dirname } from 'path'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
+import { getSgaHome } from '../memory/paths.js'
 
 export interface BundledSkillConfig {
   name: string
@@ -95,9 +96,9 @@ export async function saveSkillToDir(
 }
 
 export function getUserSkillsDir(): string {
-  return join(homedir(), '.cc-contron', 'skills')
+  return join(getSgaHome(), 'skills')
 }
 
 export function getProjectSkillsDir(): string {
-  return join(process.cwd(), '.cc-contron', 'skills')
+  return join(process.cwd(), '.sga', 'skills')
 }

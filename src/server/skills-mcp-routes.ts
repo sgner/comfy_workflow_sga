@@ -7,6 +7,7 @@ import { mkdir, writeFile, readFile, rm } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
+import { getSgaHome } from '../memory/paths.js'
 
 function getParam(req: Request, name: string): string {
   const val = req.params[name]
@@ -272,7 +273,7 @@ export function handleListMCPTools(_req: Request, res: Response): void {
 }
 
 async function saveMCPServerConfig(config: MCPServerConfig): Promise<void> {
-  const configDir = join(homedir(), '.cc-contron')
+  const configDir = getSgaHome()
   await mkdir(configDir, { recursive: true })
   const configPath = join(configDir, 'mcp-servers.json')
 

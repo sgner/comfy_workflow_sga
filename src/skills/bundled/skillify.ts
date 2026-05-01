@@ -29,8 +29,8 @@ Use the AskUserQuestion tool to understand what the user wants to automate. For 
 - Present the high-level steps you identified as a numbered list.
 - If you think the skill will require arguments, suggest arguments based on what you observed.
 - Ask where the skill should be saved. Options:
-  - **This repo** (\`.cc-contron/skills/<name>/SKILL.md\`) — for workflows specific to this project
-  - **Personal** (\`~/.cc-contron/skills/<name>/SKILL.md\`) — follows you across all repos
+  - **This repo** (\`.sga/skills/<name>/SKILL.md\`) — for workflows specific to this project
+  - **Personal** (\`~/.sga/skills/<name>/SKILL.md\`) — follows you across all repos
 
 **Round 3: Breaking down each step**
 For each major step, ask:

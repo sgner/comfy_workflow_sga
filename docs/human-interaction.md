@@ -38,18 +38,7 @@ export interface InputRequestAction {
 
 ## 交互流程
 
-```
-1. Agent 循环执行中遇到需要用户参与的情况
-2. 权限检查返回 { behavior: 'ask' } 或 Agent 主动请求输入
-3. Agent 循环暂停（yield 暂停事件）
-4. 通过 SSE 发送交互事件：
-   - approval_required：需要审批
-   - human_input_required：需要输入
-5. 会话状态变为 waiting_input
-6. 前端展示交互界面
-7. 用户通过 POST /sessions/:id/input 提交响应
-8. Agent 循环恢复执行
-```
+![人机交互流程](diagrams/human-interaction.svg)
 
 ## SSE 交互事件
 

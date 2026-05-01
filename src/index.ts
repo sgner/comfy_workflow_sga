@@ -14,7 +14,7 @@ export { buildForkedMessages, createSubagentContext, FORK_BOILERPLATE, type Fork
 export { getBuiltinAgentDefinitions, getAgentDefinitionByName } from './agents/index.js'
 
 export { type MemoryType, type MemoryFile, type MemoryFrontmatter, type MemoryRetrievalResult, type MemoryExtractConfig, MEMORY_TYPES, DEFAULT_MEMORY_EXTRACT_CONFIG } from './memory/types.js'
-export { getMemoryBaseDir, getAutoMemPath, validateMemoryPath, ensureMemoryDirExists, getMemoryEntrypointPath, isMemoryFilePath, type MemoryPathConfig } from './memory/paths.js'
+export { getMemoryBaseDir, getSgaHome, getAutoMemPath, validateMemoryPath, ensureMemoryDirExists, getMemoryEntrypointPath, isMemoryFilePath, migrateIfNeeded, getMigrationHistory, getCurrentDataLocation, type MemoryPathConfig, type MigrationHistory } from './memory/paths.js'
 export { scanMemoryFiles, parseFrontmatter, formatMemoryManifest } from './memory/scanner.js'
 export { findRelevantMemories, DEFAULT_RETRIEVER_CONFIG, type MemoryRetrieverConfig } from './memory/retrieval.js'
 export { buildMemoryPrompt, truncateEntrypointContent, buildExtractPrompt } from './memory/prompt.js'
@@ -25,7 +25,7 @@ export { separateConditionalSkills, activateConditionalSkills, formatSkillListFo
 
 export { type SystemPrompt, type SystemPromptSection, buildSystemPrompt, resolveSystemPromptSections, systemPromptSection, uncachedSystemPromptSection, buildEffectiveSystemPrompt } from './context/system-prompt.js'
 export { compressContext, DEFAULT_COMPRESSION_CONFIG, type CompressionConfig, type CompressionResult, type CompressionLevel } from './context/compression.js'
-export { loadClaudeMd, DEFAULT_CLAUDE_MD_PATHS, type ClaudeMdConfig } from './context/claudemd.js'
+export { loadSgaMd, loadClaudeMd, DEFAULT_SGA_MD_PATHS, DEFAULT_CLAUDE_MD_PATHS, type SgaMdConfig, type ClaudeMdConfig } from './context/claudemd.js'
 
 export { PermissionChecker, DEFAULT_PERMISSION_CONFIG, parsePermissionRules, type PermissionRule, type PermissionRuleSet, type PermissionCheckResult, type PermissionConfig } from './permissions/index.js'
 

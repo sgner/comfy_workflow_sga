@@ -107,6 +107,29 @@ export class AnthropicProvider implements LLMProvider {
     return !!this.config.apiKey
   }
 
+  private resolveRequestConfig(model: string, stream: boolean): {
+    baseUrl: string
+    apiKey: string
+    headers: Record<string, string>
+  } {
+    const modelConfig = this.getModelConfig(model)
+    const rawBaseUrl = stream
+      ? (modelConfig?.streamingBaseUrl ?? modelConfig?.baseUrl ?? this.config.baseUrl)
+      : (modelConfig?.baseUrl ?? this.config.baseUrl)
+    const baseUrl = this.normalizeBaseUrl(rawBaseUrl)
+    const apiKey = modelConfig?.apiKey ?? this.config.apiKey
+    const headers = { ...this.config.headers, ...modelConfig?.headers }
+    return { baseUrl, apiKey, headers }
+  }
+
+  private normalizeBaseUrl(baseUrl: string): string {
+    const trimmed = baseUrl.replace(/\/$/, '')
+    if (trimmed.endsWith('/messages')) {
+      return trimmed.slice(0, -'/messages'.length)
+    }
+    return trimmed
+  }
+
   async createMessage(options: ProviderRequestOptions): Promise<ProviderResponse> {
     const model = this.resolveModel(options.model)
     const modelConfig = this.getModelConfig(options.model)
@@ -131,19 +154,21 @@ export class AnthropicProvider implements LLMProvider {
       body.thinking = { type: 'enabled', budget_tokens: options.thinkingBudget }
     }
 
+    const reqConfig = this.resolveRequestConfig(options.model, false)
+
     const retries = this.config.retries ?? 2
     const retryDelay = this.config.retryDelay ?? 1000
     let lastError: Error | null = null
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const response = await fetch(`${this.config.baseUrl}/messages`, {
+        const response = await fetch(`${reqConfig.baseUrl}/messages`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': this.config.apiKey,
+            'x-api-key': reqConfig.apiKey,
             'anthropic-version': '2023-06-01',
-            ...this.config.headers,
+            ...reqConfig.headers,
           },
           body: JSON.stringify(body),
           signal: options.signal,
@@ -187,13 +212,15 @@ export class AnthropicProvider implements LLMProvider {
       body.system = options.systemPrompt
     }
 
-    const response = await fetch(`${this.config.baseUrl}/messages`, {
+    const reqConfig = this.resolveRequestConfig(options.model, true)
+
+    const response = await fetch(`${reqConfig.baseUrl}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
+        'x-api-key': reqConfig.apiKey,
         'anthropic-version': '2023-06-01',
-        ...this.config.headers,
+        ...reqConfig.headers,
       },
       body: JSON.stringify(body),
       signal: options.signal,

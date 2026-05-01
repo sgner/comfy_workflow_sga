@@ -86,6 +86,10 @@ export interface ModelConfig {
   defaultTemperature?: number
   maxTemperature?: number
   thinkingBudget?: number
+  baseUrl?: string
+  streamingBaseUrl?: string
+  apiKey?: string
+  headers?: Record<string, string>
   extra?: Record<string, unknown>
 }
 

@@ -4,5 +4,5 @@ export { OpenAIProvider, OPENAI_MODEL_ALIASES, OPENAI_MODEL_CONFIGS, DEEPSEEK_MO
 export { registerProvider, unregisterProvider, getRegisteredProviders, getProviderDefaults, createProvider, createProviderWithExtension, createProviderFromEnv } from './registry.js'
 export { TransformableProvider } from './transformable-provider.js'
 export { loadProviderModule, loadRequestTransformer, loadResponseTransformer, loadStreamChunkTransformer } from './provider-loader.js'
-export type { StoredProviderConfig } from './provider-store.js'
-export { addProvider, removeProvider, getProvider, getProviderConfig, getDefaultProvider, getDefaultProviderName, setDefaultProvider, getAllProviderNames, getAllProviders, resolveProvider, loadProvidersFromEnv, loadProvidersFromConfig } from './provider-store.js'
+export type { StoredProviderConfig, ProviderValidationResult } from './provider-store.js'
+export { addProvider, removeProvider, getProvider, getProviderConfig, getDefaultProvider, getDefaultProviderName, setDefaultProvider, getAllProviderNames, getAllProviders, resolveProvider, loadProvidersFromEnv, loadProvidersFromConfig, validateProviderConfig } from './provider-store.js'

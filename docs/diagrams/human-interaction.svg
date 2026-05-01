@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 560" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#64748b"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#3b82f6"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#059669"/>
+    </marker>
+    <marker id="ao" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#d97706"/>
+    </marker>
+    <filter id="s" x="-4%" y="-4%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0001"/>
+    </filter>
+  </defs>
+
+  <rect width="780" height="560" fill="#f8fafc" rx="8"/>
+  <text x="390" y="28" text-anchor="middle" font-size="16" font-weight="700" fill="#1e293b">人机交互流程</text>
+
+  <!-- Step 1 -->
+  <rect x="270" y="48" width="240" height="40" rx="8" fill="#3b82f6" filter="url(#s)"/>
+  <text x="390" y="73" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">1. Agent 循环执行中</text>
+
+  <line x1="390" y1="88" x2="390" y2="112" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 2 -->
+  <rect x="220" y="112" width="340" height="48" rx="8" fill="#fff" stroke="#ef4444" stroke-width="1.5" filter="url(#s)"/>
+  <text x="390" y="133" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">2. 遇到需要用户参与的情况</text>
+  <text x="390" y="150" text-anchor="middle" font-size="9" fill="#64748b">权限检查返回 ask / Agent 主动请求输入</text>
+
+  <line x1="390" y1="160" x2="390" y2="184" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 3 -->
+  <rect x="270" y="184" width="240" height="40" rx="8" fill="#8b5cf6" filter="url(#s)"/>
+  <text x="390" y="209" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">3. Agent 循环暂停</text>
+
+  <line x1="390" y1="224" x2="390" y2="248" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 4: SSE event -->
+  <rect x="180" y="248" width="420" height="56" rx="8" fill="#fff" stroke="#d97706" stroke-width="1.5" filter="url(#s)"/>
+  <text x="390" y="269" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">4. 通过 SSE 发送交互事件</text>
+
+  <!-- Two event types -->
+  <rect x="200" y="278" width="170" height="22" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+  <text x="285" y="294" text-anchor="middle" font-size="9" font-weight="500" fill="#92400e">approval_required</text>
+
+  <rect x="390" y="278" width="190" height="22" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+  <text x="485" y="294" text-anchor="middle" font-size="9" font-weight="500" fill="#92400e">human_input_required</text>
+
+  <line x1="390" y1="304" x2="390" y2="328" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 5 -->
+  <rect x="270" y="328" width="240" height="40" rx="8" fill="#fff" stroke="#64748b" stroke-width="1.5" filter="url(#s)"/>
+  <text x="390" y="353" text-anchor="middle" font-size="12" font-weight="600" fill="#334155">5. 会话 → waiting_input</text>
+
+  <line x1="390" y1="368" x2="390" y2="392" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 6: Frontend -->
+  <rect x="220" y="392" width="340" height="40" rx="8" fill="#6366f1" filter="url(#s)"/>
+  <text x="390" y="417" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">6. 前端展示交互界面</text>
+
+  <!-- Frontend detail -->
+  <rect x="30" y="385" width="160" height="54" rx="6" fill="#ede9fe" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="110" y="405" text-anchor="middle" font-size="9" font-weight="500" fill="#6d28d9">审批对话框</text>
+  <text x="110" y="420" text-anchor="middle" font-size="8" fill="#64748b">允许 / 拒绝 / 修改</text>
+  <text x="110" y="433" text-anchor="middle" font-size="8" fill="#64748b">→ approval_required</text>
+
+  <rect x="590" y="385" width="160" height="54" rx="6" fill="#ede9fe" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="670" y="405" text-anchor="middle" font-size="9" font-weight="500" fill="#6d28d9">输入对话框</text>
+  <text x="670" y="420" text-anchor="middle" font-size="8" fill="#64748b">文本 / 选项</text>
+  <text x="670" y="433" text-anchor="middle" font-size="8" fill="#64748b">→ human_input_required</text>
+
+  <line x1="190" y1="412" x2="220" y2="412" stroke="#8b5cf6" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="560" y1="412" x2="590" y2="412" stroke="#8b5cf6" stroke-width="1" marker-end="url(#a)"/>
+
+  <line x1="390" y1="432" x2="390" y2="456" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 7 -->
+  <rect x="180" y="456" width="420" height="40" rx="8" fill="#059669" filter="url(#s)"/>
+  <text x="390" y="481" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">7. 用户提交响应 → POST /sessions/:id/input</text>
+
+  <line x1="390" y1="496" x2="390" y2="520" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Step 8 -->
+  <rect x="270" y="520" width="240" height="30" rx="8" fill="#3b82f6" filter="url(#s)"/>
+  <text x="390" y="540" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">8. Agent 循环恢复执行</text>
+</svg>

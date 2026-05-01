@@ -73,9 +73,13 @@ export interface SkillDiscoveryConfig {
 ### 搜索顺序
 
 1. 管理目录 (`managedDir`)
-2. 用户目录 (`~/.SGA-Template/skills/`)
-3. 项目目录 (`.skills/` 等)
-4. 额外目录
+2. 用户目录 (`~/.sga/skills/`)
+3. 用户目录兼容 (`~/.claude/skills/` — 如果存在)
+4. 项目目录 (`.sga/skills/` 等)
+5. 项目目录兼容 (`.claude/skills/` — 如果存在)
+6. 额外目录
+
+> 框架同时兼容 Claude Code 的 skills 目录。如果用户已有 `~/.claude/skills` 或项目中的 `.claude/skills` 目录，框架会自动发现并加载其中的技能。
 
 ## 技能激活
 

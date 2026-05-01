@@ -1,5 +1,8 @@
 import type { LLMProvider, ProviderConfig, ModelConfig, ProviderExtension } from './types.js'
 import { createProvider, createProviderWithExtension, getProviderDefaults, getRegisteredProviders } from './registry.js'
+import { createLogger } from '../utils/logger.js'
+
+const logger = createLogger('provider-store')
 
 export interface StoredProviderConfig {
   name: string
@@ -17,6 +20,65 @@ export interface StoredProviderConfig {
   extension?: ProviderExtension
 }
 
+export interface ProviderValidationResult {
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+}
+
+export function validateProviderConfig(config: Partial<StoredProviderConfig> & { name?: string }): ProviderValidationResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+
+  if (!config.name || typeof config.name !== 'string' || config.name.trim() === '') {
+    errors.push('name is required and must be a non-empty string')
+  }
+
+  if (!config.apiKey || typeof config.apiKey !== 'string' || config.apiKey.trim() === '') {
+    errors.push('apiKey is required and must be a non-empty string')
+  }
+
+  const defaults = config.name ? getProviderDefaults(config.name) : undefined
+  const effectiveBaseUrl = config.baseUrl ?? defaults?.baseUrl
+  if (!effectiveBaseUrl) {
+    errors.push('baseUrl is required when the provider is not a built-in type (anthropic, openai, deepseek, zhipu, moonshot, qwen)')
+  }
+
+  const effectiveDefaultModel = config.defaultModel ?? defaults?.defaultModel
+  if (!effectiveDefaultModel) {
+    errors.push('defaultModel is required (either explicitly set or available as a built-in default)')
+  }
+
+  const effectiveModelConfigs = config.modelConfigs ?? defaults?.modelConfigs
+  if (!effectiveModelConfigs || Object.keys(effectiveModelConfigs).length === 0) {
+    warnings.push(
+      'No modelConfigs provided and no built-in defaults available. ' +
+      'The provider will not have model capability information (context window, pricing, etc.). ' +
+      'Consider adding modelConfigs for better functionality.'
+    )
+  }
+
+  if (config.modelConfigs) {
+    for (const [key, mc] of Object.entries(config.modelConfigs)) {
+      if (!mc.id) {
+        errors.push(`modelConfigs["${key}"].id is required`)
+      }
+    }
+  }
+
+  if (config.extension) {
+    if (config.extension.providerModule && (config.extension.requestTransformer || config.extension.responseTransformer || config.extension.streamChunkTransformer)) {
+      warnings.push('Both providerModule and transformers are configured. providerModule takes precedence; transformers will be ignored.')
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  }
+}
+
 interface ProviderEntry {
   config: StoredProviderConfig
   instance: LLMProvider
@@ -26,6 +88,22 @@ const providerStore: Map<string, ProviderEntry> = new Map()
 let defaultProviderName: string = ''
 
 export async function addProvider(config: StoredProviderConfig, setAsDefault?: boolean): Promise<LLMProvider> {
+  const validation = validateProviderConfig(config)
+
+  for (const warning of validation.warnings) {
+    logger.warn(`Provider "${config.name}": ${warning}`)
+  }
+
+  if (!validation.valid) {
+    for (const error of validation.errors) {
+      logger.error(`Provider "${config.name}" validation failed: ${error}`)
+    }
+    throw new Error(
+      `Provider "${config.name}" does not meet minimum configuration requirements: ${validation.errors.join('; ')}. ` +
+      `This provider will be discarded.`
+    )
+  }
+
   const defaults = getProviderDefaults(config.name)
   const fullConfig: ProviderConfig = {
     name: config.name,
@@ -128,28 +206,36 @@ export async function loadProvidersFromEnv(): Promise<void> {
   const baseUrl = process.env.LLM_BASE_URL ?? defaults.baseUrl
   const defaultModel = process.env.LLM_MODEL ?? defaults.defaultModel
 
-  await addProvider({
-    name: defaultName,
-    apiKey,
-    baseUrl: baseUrl ?? undefined,
-    models: defaults.models as Record<string, string> | undefined,
-    modelConfigs: defaults.modelConfigs,
-    defaultModel: defaultModel ?? undefined,
-    defaultMaxTokens: parseInt(process.env.LLM_MAX_TOKENS ?? '', 10) || undefined,
-    defaultTemperature: parseFloat(process.env.LLM_TEMPERATURE ?? '') || undefined,
-    retries: parseInt(process.env.LLM_RETRIES ?? '2', 10) || undefined,
-    retryDelay: parseInt(process.env.LLM_RETRY_DELAY ?? '1000', 10) || undefined,
-    headers: process.env.LLM_EXTRA_HEADERS
-      ? JSON.parse(process.env.LLM_EXTRA_HEADERS)
-      : undefined,
-  }, true)
+  try {
+    await addProvider({
+      name: defaultName,
+      apiKey,
+      baseUrl: baseUrl ?? undefined,
+      models: defaults.models as Record<string, string> | undefined,
+      modelConfigs: defaults.modelConfigs,
+      defaultModel: defaultModel ?? undefined,
+      defaultMaxTokens: parseInt(process.env.LLM_MAX_TOKENS ?? '', 10) || undefined,
+      defaultTemperature: parseFloat(process.env.LLM_TEMPERATURE ?? '') || undefined,
+      retries: parseInt(process.env.LLM_RETRIES ?? '2', 10) || undefined,
+      retryDelay: parseInt(process.env.LLM_RETRY_DELAY ?? '1000', 10) || undefined,
+      headers: process.env.LLM_EXTRA_HEADERS
+        ? JSON.parse(process.env.LLM_EXTRA_HEADERS)
+        : undefined,
+    }, true)
+  } catch (error) {
+    logger.error(`Failed to load default provider from env: ${error instanceof Error ? error.message : String(error)}`)
+  }
 
   const extraProvidersEnv = process.env.SGA_PROVIDERS
   if (extraProvidersEnv) {
     try {
       const extraProviders = JSON.parse(extraProvidersEnv) as StoredProviderConfig[]
       for (const p of extraProviders) {
-        await addProvider(p)
+        try {
+          await addProvider(p)
+        } catch (error) {
+          logger.error(`Failed to load provider "${p.name}" from SGA_PROVIDERS: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
     } catch {
       // ignore invalid JSON
@@ -159,8 +245,12 @@ export async function loadProvidersFromEnv(): Promise<void> {
 
 export async function loadProvidersFromConfig(configs: StoredProviderConfig[], defaultName?: string): Promise<void> {
   for (const config of configs) {
-    const setAsDefault = defaultName ? config.name === defaultName : false
-    await addProvider(config, setAsDefault)
+    try {
+      const setAsDefault = defaultName ? config.name === defaultName : false
+      await addProvider(config, setAsDefault)
+    } catch (error) {
+      logger.error(`Failed to load provider "${config.name}" from config file: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
   if (defaultName) {
     setDefaultProvider(defaultName)

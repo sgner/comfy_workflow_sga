@@ -307,12 +307,36 @@ export class OpenAIProvider implements LLMProvider {
     return !!this.config.apiKey
   }
 
+  private resolveRequestConfig(model: string, stream: boolean): {
+    baseUrl: string
+    apiKey: string
+    headers: Record<string, string>
+  } {
+    const modelConfig = this.getModelConfig(model)
+    const rawBaseUrl = stream
+      ? (modelConfig?.streamingBaseUrl ?? modelConfig?.baseUrl ?? this.config.baseUrl)
+      : (modelConfig?.baseUrl ?? this.config.baseUrl)
+    const baseUrl = this.normalizeBaseUrl(rawBaseUrl)
+    const apiKey = modelConfig?.apiKey ?? this.config.apiKey
+    const headers = { ...this.config.headers, ...modelConfig?.headers }
+    return { baseUrl, apiKey, headers }
+  }
+
+  private normalizeBaseUrl(baseUrl: string): string {
+    const trimmed = baseUrl.replace(/\/$/, '')
+    if (trimmed.endsWith('/chat/completions')) {
+      return trimmed.slice(0, -'/chat/completions'.length)
+    }
+    return trimmed
+  }
+
   async createMessage(options: ProviderRequestOptions): Promise<ProviderResponse> {
     const model = this.resolveModel(options.model)
     const modelConfig = this.getModelConfig(options.model)
     const maxTokens = options.maxTokens ?? modelConfig?.defaultMaxTokens ?? this.config.defaultMaxTokens ?? OPENAI_DEFAULT_MAX_TOKENS
 
     const body = this.buildRequestBody(options, model, maxTokens, false)
+    const reqConfig = this.resolveRequestConfig(options.model, false)
 
     const retries = this.config.retries ?? 2
     const retryDelay = this.config.retryDelay ?? 1000
@@ -320,12 +344,12 @@ export class OpenAIProvider implements LLMProvider {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+        const response = await fetch(`${reqConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.config.apiKey}`,
-            ...this.config.headers,
+            'Authorization': `Bearer ${reqConfig.apiKey}`,
+            ...reqConfig.headers,
           },
           body: JSON.stringify(body),
           signal: options.signal,
@@ -356,13 +380,14 @@ export class OpenAIProvider implements LLMProvider {
     const maxTokens = options.maxTokens ?? modelConfig?.defaultMaxTokens ?? this.config.defaultMaxTokens ?? OPENAI_DEFAULT_MAX_TOKENS
 
     const body = this.buildRequestBody(options, model, maxTokens, true)
+    const reqConfig = this.resolveRequestConfig(options.model, true)
 
-    const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+    const response = await fetch(`${reqConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-        ...this.config.headers,
+        'Authorization': `Bearer ${reqConfig.apiKey}`,
+        ...reqConfig.headers,
       },
       body: JSON.stringify(body),
       signal: options.signal,
@@ -470,22 +495,33 @@ export class OpenAIProvider implements LLMProvider {
       const toolResultParts = msg.content.filter(b => b.type === 'tool_result')
 
       if (msg.role === 'assistant' && toolUseParts.length > 0) {
-        const content: unknown[] = textParts.map(b => ({ type: 'text', text: b.text }))
-        for (const tu of toolUseParts) {
-          content.push({
-            type: 'function',
+        // OpenAI format: assistant message with tool_calls at top level
+        const assistantMsg: Record<string, unknown> = {
+          role: 'assistant',
+          content: textParts.map(b => b.text).join('\n') || null,
+          tool_calls: toolUseParts.map(tu => ({
             id: tu.id,
+            type: 'function',
             function: {
               name: tu.name,
               arguments: JSON.stringify(tu.input ?? {}),
             },
-          })
+          })),
         }
-        result.push({ role: 'assistant', content })
+        result.push(assistantMsg)
       } else if (msg.role === 'assistant') {
         result.push({ role: 'assistant', content: this.extractTextFromContent(msg.content) })
+      } else if (msg.role === 'user') {
+        // User message with tool results: send text parts as user message first
+        if (textParts.length > 0) {
+          result.push({
+            role: 'user',
+            content: textParts.map(b => b.text).join('\n'),
+          })
+        }
       }
 
+      // Tool results must follow the assistant message that made the tool call
       for (const tr of toolResultParts) {
         result.push({
           role: 'tool',

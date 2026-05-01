@@ -3,6 +3,12 @@ import type { Session, CreateSessionRequest, SendMessageRequest, SendMessageResp
 import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput } from './session.js'
 import type { Message } from '../core/types.js'
 import type { PendingAction, UserApprovalResponse, UserInputResponse, SuspendedContext } from './interaction.js'
+import { createLogger } from '../utils/logger.js'
+import { getSessionStore } from './session-store.js'
+import { getMemoryManager } from '../memory/manager.js'
+import { MemoryExtractor } from '../memory/extractor.js'
+
+const logger = createLogger('routes')
 import { createApprovalRequest } from './interaction.js'
 import { createBuiltinTools } from '../tools/built-in/index.js'
 import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent } from '../agents/index.js'
@@ -12,7 +18,6 @@ import { getRegisteredProviders, getProviderDefaults } from '../providers/regist
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
 import type { PermissionResult } from '../tools/base.js'
 
-const sessions: Map<string, Session> = new Map()
 const costTrackers: Map<string, CostTracker> = new Map()
 const pendingResolvers: Map<string, {
   resolve: (response: unknown) => void
@@ -29,7 +34,8 @@ function getProviderForSession(session: Session, messageProviderName?: string): 
 }
 
 export function handleListSessions(_req: Request, res: Response): void {
-  const list = Array.from(sessions.values()).map(s => ({
+  const store = getSessionStore()
+  const list = Array.from(store.values()).map(s => ({
     id: s.id,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
@@ -57,6 +63,7 @@ export function handleCreateSession(req: Request, res: Response): void {
     }
   }
 
+  const store = getSessionStore()
   const session = createSession({
     model: body.model,
     permissionMode: body.permissionMode,
@@ -67,14 +74,15 @@ export function handleCreateSession(req: Request, res: Response): void {
     mcpServers: body.mcpServers,
     providerName: body.providerName,
   })
-  sessions.set(session.id, session)
+  store.set(session)
   costTrackers.set(session.id, new CostTracker({ maxBudgetUsd: body.maxBudgetUsd }))
   res.status(201).json({ session })
 }
 
 export function handleGetSession(req: Request, res: Response): void {
   const sessionId = getSessionId(req)
-  const session = sessions.get(sessionId)
+  const store = getSessionStore()
+  const session = store.get(sessionId)
   if (!session) {
     res.status(404).json({ error: 'Session not found' })
     return
@@ -102,11 +110,12 @@ export function handleGetSession(req: Request, res: Response): void {
 
 export function handleDeleteSession(req: Request, res: Response): void {
   const sessionId = getSessionId(req)
-  if (!sessions.has(sessionId)) {
+  const store = getSessionStore()
+  if (!store.has(sessionId)) {
     res.status(404).json({ error: 'Session not found' })
     return
   }
-  sessions.delete(sessionId)
+  store.delete(sessionId)
   costTrackers.delete(sessionId)
   pendingResolvers.delete(sessionId)
   activeSSEConnections.delete(sessionId)
@@ -116,7 +125,8 @@ export function handleDeleteSession(req: Request, res: Response): void {
 export async function handleSendMessage(req: Request, res: Response): Promise<void> {
   const sessionId = getSessionId(req)
   const body: SendMessageRequest = req.body
-  const session = sessions.get(sessionId)
+  const store = getSessionStore()
+  const session = store.get(sessionId)
 
   if (!session) {
     res.status(404).json({ error: 'Session not found' })
@@ -138,13 +148,15 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     return
   }
 
+  logger.info(`Session ${sessionId}: received message, content length=${body.content.length}, stream=${body.stream ?? false}`)
+
   const userMessage: Message = {
     id: `msg-${Date.now()}`,
     role: 'user',
     content: [{ type: 'text', text: body.content }],
     timestamp: Date.now(),
   }
-  addMessageToSession(session, userMessage)
+  store.appendMessage(session.id, userMessage)
 
   if (body.stream) {
     handleStreamResponse(req, res, session, body)
@@ -154,6 +166,8 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
   try {
     const provider = getProviderForSession(session, body.providerName)
     const model = body.model ?? session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+    logger.info(`Session ${sessionId}: using provider=${provider.name}, model=${model}`)
+
     const tools = createBuiltinTools()
     const agentDefs = getBuiltinAgentDefinitions()
     const agentDef = body.agentType
@@ -171,9 +185,12 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
       messages: session.messages,
       tools,
       model,
+      provider,
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
     })
+
+    logger.info(`Session ${sessionId}: agent completed, content length=${result.content.length}, turns=${result.turnCount}, tokens={in:${result.usage.inputTokens}, out:${result.usage.outputTokens}}`)
 
     const assistantMessage: Message = {
       id: `msg-${Date.now()}`,
@@ -181,8 +198,10 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
       content: [{ type: 'text', text: result.content }],
       timestamp: Date.now(),
     }
-    addMessageToSession(session, assistantMessage)
-    updateSessionUsage(session, result.usage)
+    store.appendMessage(session.id, assistantMessage)
+    store.appendUsage(session.id, result.usage)
+
+    triggerMemoryExtraction(session.messages, provider, model)
 
     const response: SendMessageResponse = {
       sessionId: session.id,
@@ -193,9 +212,10 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
 
     res.json(response)
   } catch (error) {
-    session.status = 'error'
-    session.error = error instanceof Error ? error.message : String(error)
-    res.status(500).json({ error: session.error })
+    const errMsg = error instanceof Error ? error.message : String(error)
+    store.updateStatus(session.id, 'error', errMsg)
+    logger.error(`Session ${sessionId}: error during message processing: ${errMsg}`)
+    res.status(500).json({ error: errMsg })
   }
 }
 
@@ -248,6 +268,7 @@ async function handleStreamResponse(
       messages: session.messages,
       tools,
       model,
+      provider,
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
       onProgress: async (event: unknown) => {
@@ -340,13 +361,14 @@ async function handleStreamResponse(
       content: [{ type: 'text', text: result.content }],
       timestamp: Date.now(),
     }
-    addMessageToSession(session, assistantMessage)
-    updateSessionUsage(session, result.usage)
+    getSessionStore().appendMessage(session.id, assistantMessage)
+    getSessionStore().appendUsage(session.id, result.usage)
+
+    triggerMemoryExtraction(session.messages, provider, model)
 
     sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
   } catch (error) {
-    session.status = 'error'
-    session.error = error instanceof Error ? error.message : String(error)
+    getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
     sendEvent({ type: 'error', data: session.error })
     sendEvent({ type: 'done', data: null })
   }
@@ -358,7 +380,8 @@ async function handleStreamResponse(
 export function handleUserInput(req: Request, res: Response): void {
   const sessionId = getSessionId(req)
   const body: UserInputRequest = req.body
-  const session = sessions.get(sessionId)
+  const store = getSessionStore()
+  const session = store.get(sessionId)
 
   if (!session) {
     res.status(404).json({ error: 'Session not found' })
@@ -411,7 +434,8 @@ export function handleUserInput(req: Request, res: Response): void {
 
 export function handleGetMessages(req: Request, res: Response): void {
   const sessionId = getSessionId(req)
-  const session = sessions.get(sessionId)
+  const store = getSessionStore()
+  const session = store.get(sessionId)
   if (!session) {
     res.status(404).json({ error: 'Session not found' })
     return
@@ -421,7 +445,8 @@ export function handleGetMessages(req: Request, res: Response): void {
 
 export function handleGetUsage(req: Request, res: Response): void {
   const sessionId = getSessionId(req)
-  const session = sessions.get(sessionId)
+  const store = getSessionStore()
+  const session = store.get(sessionId)
   if (!session) {
     res.status(404).json({ error: 'Session not found' })
     return
@@ -516,10 +541,19 @@ export function handleListConfiguredProviders(_req: Request, res: Response): voi
 
 export async function handleAddProvider(req: Request, res: Response): Promise<void> {
   const config: StoredProviderConfig = req.body
-  if (!config.name || !config.apiKey) {
-    res.status(400).json({ error: 'name and apiKey are required' })
+
+  const { validateProviderConfig } = await import('../providers/provider-store.js')
+  const validation = validateProviderConfig(config)
+
+  if (!validation.valid) {
+    res.status(400).json({
+      error: `Provider "${config.name ?? ''}" does not meet minimum configuration requirements`,
+      errors: validation.errors,
+      warnings: validation.warnings,
+    })
     return
   }
+
   const setAsDefault = req.body.setAsDefault === true
   try {
     const provider = await addProvider(config, setAsDefault)
@@ -528,6 +562,7 @@ export async function handleAddProvider(req: Request, res: Response): Promise<vo
       defaultModel: provider.config.defaultModel,
       isDefault: getDefaultProviderName() === config.name,
       hasExtension: !!config.extension,
+      warnings: validation.warnings.length > 0 ? validation.warnings : undefined,
     })
   } catch (error) {
     res.status(400).json({
@@ -560,9 +595,27 @@ export function handleHealth(_req: Request, res: Response): void {
     status: 'ok',
     version: '1.0.0',
     uptime: process.uptime(),
-    sessions: sessions.size,
+    sessions: getSessionStore().size(),
     defaultProvider: dp?.name ?? 'none',
     configuredProviders: getAllProviderNames(),
     availableProviderTypes: getRegisteredProviders(),
+  })
+}
+
+function triggerMemoryExtraction(
+  messages: Message[],
+  provider: LLMProvider,
+  model: string,
+): void {
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) return
+
+  const extractor = new MemoryExtractor(memoryManager)
+  extractor.setProvider(provider, model)
+
+  if (!extractor.shouldExtract(messages.length)) return
+
+  extractor.extractMemories(messages).catch(err => {
+    logger.warn(`Background memory extraction failed: ${err instanceof Error ? err.message : String(err)}`)
   })
 }

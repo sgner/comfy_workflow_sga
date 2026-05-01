@@ -76,17 +76,7 @@ const compressed = await compressMessages(messages, {
 
 ## 压缩流程
 
-```
-1. 估算当前消息的 Token 数
-2. 如果未超过阈值，直接返回原始消息
-3. 如果超过阈值：
-   a. 分离系统提示词和最近 N 轮对话
-   b. 对剩余消息进行摘要压缩
-   c. 将摘要 + 保留的消息合并
-   d. 重新估算 Token 数
-   e. 如果仍超过阈值，增加压缩力度
-4. 返回压缩后的消息
-```
+![上下文压缩流程](diagrams/context-compression.svg)
 
 ## 相关文档
 

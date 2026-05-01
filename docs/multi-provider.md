@@ -9,8 +9,118 @@ SGA-Template 支持多种 LLM 供应商，通过统一的 Provider 接口抽象�
 核心特性：
 - **多供应商配置** — 支持 .env、配置文件、API 三种方式配置多个供应商
 - **模型级配置** — 每个模型独立配置上下文窗口、价格、能力等
+- **配置验证** — 启动时自动验证供应商配置，不满足最小配置的供应商会被警告并跳过
 - **Provider 扩展** — 支持自定义 Provider 模块动态加载
 - **请求/响应转换器** — 支持中转供应商的 API 格式差异
+
+## 最小配置要求
+
+> 📄 相关源文件：`src/providers/provider-store.ts`（`validateProviderConfig` 函数）
+
+框架在加载供应商配置时会进行验证。**不满足最小配置的供应商将被丢弃**，不会注册到框架中。
+
+### 必填字段
+
+| 字段 | 说明 | 备注 |
+|------|------|------|
+| `name` | 供应商名称 | 非空字符串 |
+| `apiKey` | API 密钥 | 非空字符串 |
+| `baseUrl` | API 基础 URL | 内置供应商（anthropic、openai、deepseek 等）可省略，框架自动填充默认值 |
+| `defaultModel` | 默认模型 | 内置供应商可省略，框架自动填充默认值 |
+
+### modelConfigs 中模型的最小配置
+
+| 字段 | 说明 | 备注 |
+|------|------|------|
+| `id` | 实际发送给 API 的模型 ID | 必填 |
+
+其他字段（`displayName`、`contextWindow`、`supportsToolUse` 等）均为可选。
+
+### 验证行为
+
+| 场景 | 行为 |
+|------|------|
+| 缺少 `name` | ❌ 验证失败，供应商被丢弃 |
+| 缺少 `apiKey` | ❌ 验证失败，供应商被丢弃 |
+| 缺少 `baseUrl`（非内置供应商） | ❌ 验证失败，供应商被丢弃 |
+| 缺少 `defaultModel` | ❌ 验证失败，供应商被丢弃 |
+| 缺少 `modelConfigs` | ⚠️ 警告，供应商仍可使用（但无模型能力信息） |
+| `modelConfigs` 中模型缺少 `id` | ❌ 验证失败，供应商被丢弃 |
+| 同时配置 `providerModule` 和转换器 | ⚠️ 警告，`providerModule` 优先，转换器被忽略 |
+
+### 验证失败时的日志输出
+
+当供应商配置不满足最小要求时，框架会在控制台输出错误日志：
+
+```
+[2026-04-28T12:00:00.000Z] [ERROR] [provider-store] Provider "my-provider" validation failed: apiKey is required and must be a non-empty string
+[2026-04-28T12:00:00.000Z] [ERROR] [provider-store] Provider "my-provider" validation failed: baseUrl is required when the provider is not a built-in type (anthropic, openai, deepseek, zhipu, moonshot, qwen)
+[2026-04-28T12:00:00.000Z] [ERROR] [provider-store] Failed to load provider "my-provider" from config file: Provider "my-provider" does not meet minimum configuration requirements: apiKey is required and must be a non-empty string; baseUrl is required when the provider is not a built-in type. This provider will be discarded.
+```
+
+### 通过 API 添加时的错误响应
+
+```bash
+curl -X POST http://localhost:3000/api/v1/providers \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-provider"}'
+```
+
+响应（HTTP 400）：
+
+```json
+{
+  "error": "Provider \"my-provider\" does not meet minimum configuration requirements",
+  "errors": [
+    "apiKey is required and must be a non-empty string",
+    "baseUrl is required when the provider is not a built-in type (anthropic, openai, deepseek, zhipu, moonshot, qwen)",
+    "defaultModel is required (either explicitly set or available as a built-in default)"
+  ],
+  "warnings": []
+}
+```
+
+### 配置示例
+
+**内置供应商的最小配置**（自动填充 baseUrl 和 defaultModel）：
+
+```json
+{
+  "name": "deepseek",
+  "apiKey": "sk-xxx"
+}
+```
+
+**自定义供应商的最小配置**（必须提供 baseUrl 和 defaultModel）：
+
+```json
+{
+  "name": "my-provider",
+  "apiKey": "sk-xxx",
+  "baseUrl": "https://api.example.com/v1",
+  "defaultModel": "gpt-5.5"
+}
+```
+
+**带模型配置的推荐配置**：
+
+```json
+{
+  "name": "my-provider",
+  "apiKey": "sk-xxx",
+  "baseUrl": "https://api.example.com/v1",
+  "defaultModel": "gpt-5.5",
+  "modelConfigs": {
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "displayName": "GPT-5.5",
+      "contextWindow": 128000,
+      "supportsToolUse": true,
+      "supportsStreaming": true
+    }
+  }
+}
+```
 
 ## 多供应商配置
 
@@ -85,7 +195,7 @@ SGA_PROVIDERS=[{"name":"openai","apiKey":"sk-yyy","defaultModel":"gpt-4o"},{"nam
 }
 ```
 
-也可以在用户主目录下创建 `~/.sga-template/providers.json`（格式相同）。
+也可以在用户主目录下创建 `~/.sga/providers.json`（格式相同）。
 
 ### 方式三：API 动态添加
 
@@ -116,7 +226,7 @@ curl -X DELETE http://localhost:3000/api/v1/providers/deepseek
 
 1. `.env` 文件中的 `LLM_*` 环境变量（默认供应商）
 2. `.env` 文件中的 `SGA_PROVIDERS`（额外供应商）
-3. `~/.sga-template/providers.json`（全局配置）
+3. `~/.sga/providers.json`（全局配置）
 4. `./sga-providers.json`（项目配置）
 5. API 动态添加的供应商
 
@@ -147,8 +257,123 @@ export interface ModelConfig {
   defaultTemperature?: number      // 默认温度
   maxTemperature?: number          // 最大温度
   thinkingBudget?: number          // 默认思考预算
+  baseUrl?: string                 // 模型专属请求地址（覆盖供应商级 baseUrl）
+  streamingBaseUrl?: string        // 流式请求专属地址（优先于 baseUrl）
+  apiKey?: string                  // 模型专属 API Key（覆盖供应商级 apiKey）
+  headers?: Record<string, string> // 模型专属请求头（合并到供应商级 headers）
   extra?: Record<string, unknown>  // 模型特定参数
 }
+```
+
+### 模型级请求配置
+
+> 📄 相关源文件：`src/providers/types.ts`（ModelConfig 定义）、`src/providers/openai.ts`（`resolveRequestConfig` 方法）、`src/providers/anthropic.ts`（`resolveRequestConfig` 方法）、`src/providers/transformable-provider.ts`（`resolveRequestConfig` 方法）
+
+框架支持在模型级别配置独立的请求地址、API Key 和请求头。这对于中转商场景非常有用，例如：
+
+- **不同模型使用不同的请求地址** — 某些中转商为不同模型提供不同的 API 端点
+- **流式和非流式使用不同地址** — 某些中转商的流式请求和非流式请求走不同的 URL
+- **不同模型使用不同的 API Key** — 按模型分配密钥，便于权限控制和计费
+
+#### 优先级规则
+
+请求时，框架按以下优先级解析配置：
+
+| 配置项 | 优先级（高→低） |
+|--------|----------------|
+| **非流式 baseUrl** | `modelConfig.baseUrl` → `provider.baseUrl` |
+| **流式 baseUrl** | `modelConfig.streamingBaseUrl` → `modelConfig.baseUrl` → `provider.baseUrl` |
+| **API Key** | `modelConfig.apiKey` → `provider.apiKey` |
+| **Headers** | `provider.headers` + `modelConfig.headers`（合并，模型级覆盖供应商级同名 key） |
+
+#### baseUrl 配置说明
+
+`baseUrl` 支持两种配置方式：
+
+1. **标准方式（推荐）** — 只配置到 `/v1`，框架自动拼接 `/chat/completions`：
+   ```json
+   "baseUrl": "https://api.example.com/v1"
+   ```
+   最终请求地址：`https://api.example.com/v1/chat/completions`
+
+2. **完整 URL 方式** — 配置完整端点地址，框架会自动提取基础路径：
+   ```json
+   "baseUrl": "https://api.example.com/v1/chat/completions"
+   ```
+   最终请求地址：`https://api.example.com/v1/chat/completions`
+
+> 框架内部会自动识别并处理以 `/chat/completions` 或 `/messages` 结尾的完整 URL，无需担心重复拼接。推荐使用标准方式（只配置到 `/v1`），代码更清晰。
+
+#### 配置示例
+
+**场景一：不同模型使用不同请求地址和 API Key**
+
+```json
+{
+  "name": "t8star",
+  "apiKey": "sk-default-key",
+  "baseUrl": "https://api.t8star.com/v1",
+  "defaultModel": "gpt-5.5",
+  "modelConfigs": {
+    "gpt-5.5": {
+      "id": "t8star_gpt5.5",
+      "baseUrl": "https://api.t8star.com/v1",
+      "apiKey": "sk-gpt55-key"
+    },
+    "claude-sonnet": {
+      "id": "t8star_sonnet",
+      "baseUrl": "https://claude.t8star.com/v1",
+      "apiKey": "sk-claude-key"
+    }
+  }
+}
+```
+
+**场景二：流式和非流式使用不同地址**
+
+```json
+{
+  "name": "t8star",
+  "apiKey": "sk-xxx",
+  "baseUrl": "https://api.t8star.com/v1",
+  "defaultModel": "gpt-5.5",
+  "modelConfigs": {
+    "gpt-5.5": {
+      "id": "t8star_gpt5.5",
+      "baseUrl": "https://api.t8star.com/v1",
+      "streamingBaseUrl": "https://stream.t8star.com/v1"
+    }
+  }
+}
+```
+
+**场景三：模型级自定义请求头**
+
+```json
+{
+  "name": "t8star",
+  "apiKey": "sk-xxx",
+  "baseUrl": "https://api.t8star.com/v1",
+  "defaultModel": "gpt-5.5",
+  "headers": {
+    "X-Custom-Header": "provider-value"
+  },
+  "modelConfigs": {
+    "gpt-5.5": {
+      "id": "t8star_gpt5.5",
+      "headers": {
+        "X-Model-Header": "model-value",
+        "X-Custom-Header": "model-override"
+      }
+    }
+  }
+}
+```
+
+最终 `gpt-5.5` 模型的请求头为：
+```
+X-Custom-Header: model-override    (模型级覆盖了供应商级)
+X-Model-Header: model-value        (模型级新增)
 ```
 
 ### 内置模型配置
@@ -633,6 +858,55 @@ await addProvider({
   defaultModel: 'my-model-v1',
 })
 ```
+
+## 工具调用支持
+
+框架完整支持 OpenAI 格式的工具调用（Function Calling），包括：
+
+1. **工具调用请求**：Assistant 消息中的 `tool_calls` 字段
+2. **工具结果返回**：`tool` 角色的消息，通过 `tool_call_id` 关联
+
+### 消息格式转换
+
+框架内部使用统一的消息格式，在发送到不同供应商时会自动转换为对应格式：
+
+**内部格式 → OpenAI 格式**：
+```typescript
+// Assistant 消息包含 tool_use
+{
+  role: 'assistant',
+  content: [{ type: 'text', text: 'Let me check that' }],
+  tool_calls: [{
+    id: 'call_abc123',
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      arguments: '{"location": "Beijing"}'
+    }
+  }]
+}
+
+// User 消息包含 tool_result
+{
+  role: 'tool',
+  tool_call_id: 'call_abc123',
+  content: '{"temperature": 25, "condition": "sunny"}'
+}
+```
+
+### TransformableProvider 工具调用
+
+`TransformableProvider`（用于中转供应商）完全支持工具调用：
+- 正确转换历史消息中的 `tool_use` 和 `tool_result`
+- 保持 `tool_call_id` 的一致性
+- 支持多轮工具调用对话
+
+### 故障排查
+
+如果遇到 "No tool call found for function call output" 错误，请检查：
+1. 历史消息中是否包含对应的 `tool_calls` assistant 消息
+2. `tool_call_id` 是否匹配
+3. 消息顺序是否正确（tool 消息必须紧跟在对应的 assistant 消息之后）
 
 ## 相关文档
 

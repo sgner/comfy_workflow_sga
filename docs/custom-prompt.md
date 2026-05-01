@@ -133,6 +133,32 @@ const agent = new BaseAgentDefinition({
 })
 ```
 
+## SGA.md / CLAUDE.md 自动加载
+
+框架会自动加载以下位置的指令文件，注入到系统提示词中：
+
+### 全局配置
+- `/etc/sga/SGA.md`
+- `/etc/claude-code/CLAUDE.md`
+
+### 用户级配置
+- `~/.sga/SGA.md`（默认）
+- `~/.claude/CLAUDE.md`（兼容）
+
+### 项目级配置（按优先级）
+- `SGA.md`（项目根目录）
+- `CLAUDE.md`（项目根目录，兼容）
+- `.sga/SGA.md`
+- `.claude/CLAUDE.md`（兼容）
+- `.sga/rules/*.md`
+- `.claude/rules/*.md`（兼容）
+
+### 本地配置
+- `SGA.local.md`
+- `CLAUDE.local.md`（兼容）
+
+> **SGA 优先原则**：当 SGA.md 和 CLAUDE.md 同时存在时，SGA.md 的内容优先加载。框架保持与 Claude Code 的兼容性，但推荐使用 SGA 命名空间。
+
 ## 相关文档
 
 - [自定义 Agent](custom-agent.md)

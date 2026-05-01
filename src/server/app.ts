@@ -117,16 +117,36 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
   const { initBundledSkills } = await import('../skills/index.js')
   const { loadMCPServersFromConfig } = await import('../mcp/index.js')
   const { loadProvidersFromEnv, loadProvidersFromConfig } = await import('../providers/provider-store.js')
+  const { getSessionStore, setSessionStore, SessionStore } = await import('./session-store.js')
   const { readFile } = await import('fs/promises')
   const { join } = await import('path')
   const { homedir } = await import('os')
   const { existsSync } = await import('fs')
+  const { migrateIfNeeded } = await import('../memory/paths.js')
+
+  // 检查并执行数据迁移（当 SGA_HOME 被显式配置时）
+  migrateIfNeeded()
 
   initBundledSkills()
 
+  const sessionStore = new SessionStore(
+    process.env.SESSION_DIR ?? join(process.cwd(), 'data', 'sessions')
+  )
+  setSessionStore(sessionStore)
+  await sessionStore.init()
+
+  const { initMemoryManager } = await import('../memory/manager.js')
+  const { getMemoryManager } = await import('../memory/manager.js')
+  const { getSgaHome } = await import('../memory/paths.js')
+  await initMemoryManager({
+    pathConfig: {
+      projectRoot: process.cwd(),
+    },
+  })
+
   await loadProvidersFromEnv()
 
-  const providersConfigPath = join(homedir(), '.sga-template', 'providers.json')
+  const providersConfigPath = join(getSgaHome(), 'providers.json')
   if (existsSync(providersConfigPath)) {
     try {
       const content = await readFile(providersConfigPath, 'utf-8')
@@ -152,7 +172,7 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     }
   }
 
-  const mcpConfigPath = join(homedir(), '.sga-template', 'mcp-servers.json')
+  const mcpConfigPath = join(getSgaHome(), 'mcp-servers.json')
   if (existsSync(mcpConfigPath)) {
     try {
       const content = await readFile(mcpConfigPath, 'utf-8')
@@ -160,6 +180,15 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
       loadMCPServersFromConfig(configs)
     } catch {
       // ignore invalid config
+    }
+  }
+
+  const { getDefaultProvider } = await import('../providers/provider-store.js')
+  const defaultProvider = getDefaultProvider()
+  if (defaultProvider) {
+    const memoryManager = getMemoryManager()
+    if (memoryManager) {
+      memoryManager.setProvider(defaultProvider, defaultProvider.config.defaultModel)
     }
   }
 

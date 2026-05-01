@@ -130,9 +130,9 @@ Hook 命令执行时，会注入以下环境变量：
 
 | 变量 | 说明 |
 |------|------|
-| `CLAUDE_HOOK_EVENT` | 当前事件类型 |
-| `CLAUDE_TOOL_NAME` | 当前工具名 |
-| `CLAUDE_SESSION_ID` | 当前会话 ID |
+| `SGA_HOOK_EVENT` | 当前事件类型 |
+| `SGA_TOOL_NAME` | 当前工具名 |
+| `SGA_SESSION_ID` | 当前会话 ID |
 
 ## 使用场景
 

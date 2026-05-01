@@ -8,21 +8,7 @@ SGA-Template 的 HTTP 服务层设计为可嵌入任何产品的前端后端架�
 
 ## 架构模式
 
-```
-┌─────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
-│   前端应用       │────▶│   SGA-Template       │────▶│   LLM Provider  │
-│   (React/Vue/   │◀────│   HTTP Server        │◀────│   (Anthropic/   │
-│    Flutter/...)  │ SSE │   (Express)          │     │    OpenAI/...)  │
-└─────────────────┘     └─────────────────────┘     └─────────────────┘
-                              │
-                              ▼
-                        ┌───────────┐
-                        │   Tools   │
-                        │   Skills  │
-                        │   MCP     │
-                        │   Memory  │
-                        └───────────┘
-```
+![Agent 后端架构模式](diagrams/agent-backend-architecture.svg)
 
 ## 集成方式
 

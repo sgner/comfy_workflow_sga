@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 340" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#d97706"/>
+    </marker>
+    <filter id="s1" x="-4%" y="-4%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0001"/>
+    </filter>
+  </defs>
+
+  <rect width="820" height="340" fill="#fffbeb" rx="8"/>
+  <text x="410" y="30" text-anchor="middle" font-size="16" font-weight="700" fill="#92400e">自动记忆提取流程</text>
+
+  <!-- Step 1 -->
+  <rect x="20" y="55" width="140" height="56" rx="8" fill="#fff" stroke="#d97706" stroke-width="1.5" filter="url(#s1)"/>
+  <text x="90" y="76" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">对话消息</text>
+  <text x="90" y="92" text-anchor="middle" font-size="9" fill="#64748b">messages[]</text>
+  <text x="90" y="104" text-anchor="middle" font-size="9" fill="#64748b">max 20k chars</text>
+
+  <line x1="160" y1="83" x2="190" y2="83" stroke="#d97706" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Step 2 -->
+  <rect x="190" y="55" width="140" height="56" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" filter="url(#s1)"/>
+  <text x="260" y="76" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">对话摘要</text>
+  <text x="260" y="92" text-anchor="middle" font-size="9" fill="#64748b">summarizeConversation()</text>
+  <text x="260" y="104" text-anchor="middle" font-size="9" fill="#64748b">[User]: ... [Assistant]: ...</text>
+
+  <line x1="330" y1="83" x2="360" y2="83" stroke="#d97706" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Step 3 -->
+  <rect x="360" y="55" width="140" height="56" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" filter="url(#s1)"/>
+  <text x="430" y="76" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">提取提示词</text>
+  <text x="430" y="92" text-anchor="middle" font-size="9" fill="#64748b">buildExtractionPrompt()</text>
+  <text x="430" y="104" text-anchor="middle" font-size="9" fill="#64748b">含现有记忆清单</text>
+
+  <line x1="500" y1="83" x2="530" y2="83" stroke="#d97706" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Step 4 -->
+  <rect x="530" y="55" width="140" height="56" rx="8" fill="#d97706" filter="url(#s1)"/>
+  <text x="600" y="76" text-anchor="middle" font-size="11" font-weight="600" fill="#fff">LLM 调用</text>
+  <text x="600" y="92" text-anchor="middle" font-size="9" fill="#fef3c7">提取记忆 Agent</text>
+  <text x="600" y="104" text-anchor="middle" font-size="9" fill="#fef3c7">temperature: 0.3</text>
+
+  <line x1="670" y1="83" x2="700" y2="83" stroke="#d97706" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Step 5 -->
+  <rect x="700" y="55" width="100" height="56" rx="8" fill="#fff" stroke="#d97706" stroke-width="1.5" filter="url(#s1)"/>
+  <text x="750" y="76" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">提取结果</text>
+  <text x="750" y="92" text-anchor="middle" font-size="9" fill="#64748b">结构化</text>
+  <text x="750" y="104" text-anchor="middle" font-size="9" fill="#64748b">记忆块</text>
+
+  <!-- Arrow down from Step 5 -->
+  <line x1="750" y1="111" x2="750" y2="145" stroke="#d97706" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Step 6 -->
+  <rect x="640" y="145" width="160" height="48" rx="8" fill="#fff" stroke="#d97706" stroke-width="1.5" filter="url(#s1)"/>
+  <text x="720" y="166" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">解析并保存</text>
+  <text x="720" y="182" text-anchor="middle" font-size="9" fill="#64748b">parseAndSaveMemories()</text>
+
+  <!-- Arrow down -->
+  <line x1="720" y1="193" x2="720" y2="220" stroke="#d97706" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Step 7 -->
+  <rect x="640" y="220" width="160" height="48" rx="8" fill="#fff" stroke="#d97706" stroke-width="1.5" filter="url(#s1)"/>
+  <text x="720" y="241" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">更新索引</text>
+  <text x="720" y="257" text-anchor="middle" font-size="9" fill="#64748b">updateEntrypoint()</text>
+
+  <!-- Memory file example -->
+  <rect x="20" y="145" width="280" height="160" rx="8" fill="#fff" stroke="#8b5cf6" stroke-width="1" filter="url(#s1)"/>
+  <text x="160" y="167" text-anchor="middle" font-size="11" font-weight="600" fill="#6d28d9">记忆文件格式</text>
+  <line x1="36" y1="175" x2="284" y2="175" stroke="#e9d5ff" stroke-width="0.5"/>
+  <text x="40" y="192" font-size="9" fill="#6d28d9" font-family="monospace">---</text>
+  <text x="40" y="205" font-size="9" fill="#6d28d9" font-family="monospace">type: project</text>
+  <text x="40" y="218" font-size="9" fill="#6d28d9" font-family="monospace">description: "项目编码规范"</text>
+  <text x="40" y="231" font-size="9" fill="#6d28d9" font-family="monospace">created_at: 2025-04-30T10:00:00Z</text>
+  <text x="40" y="244" font-size="9" fill="#6d28d9" font-family="monospace">---</text>
+  <text x="40" y="260" font-size="9" fill="#334155" font-family="monospace">- 使用 TypeScript strict 模式</text>
+  <text x="40" y="273" font-size="9" fill="#334155" font-family="monospace">- 所有函数必须有返回类型注解</text>
+  <text x="40" y="286" font-size="9" fill="#334155" font-family="monospace">- 使用 ESLint + Prettier</text>
+
+  <!-- Config -->
+  <rect x="340" y="145" width="260" height="100" rx="8" fill="#fff" stroke="#64748b" stroke-width="1" filter="url(#s1)"/>
+  <text x="470" y="167" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">提取配置</text>
+  <line x1="356" y1="175" x2="584" y2="175" stroke="#e2e8f0" stroke-width="0.5"/>
+  <text x="360" y="192" font-size="10" fill="#475569">enabled: true</text>
+  <text x="360" y="208" font-size="10" fill="#475569">maxTurnsBetweenExtractions: 3</text>
+  <text x="360" y="224" font-size="10" fill="#475569">maxConversationChars: 20,000</text>
+  <text x="360" y="240" font-size="10" fill="#475569">防重入: extracting 标志</text>
+
+  <text x="410" y="320" text-anchor="middle" font-size="9" fill="#94a3b8">SGA-Template Memory Extraction Flow</text>
+</svg>

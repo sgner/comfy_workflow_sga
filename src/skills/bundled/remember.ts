@@ -8,15 +8,15 @@ Review the user's memory landscape and produce a clear report of proposed change
 ## Steps
 
 ### 1. Gather all memory layers
-Read CLAUDE.md and CLAUDE.local.md from the project root (if they exist). Review the auto-memory content in the system prompt.
+Read SGA.md, SGA.local.md, CLAUDE.md, and CLAUDE.local.md from the project root (if they exist). Review the auto-memory content in the system prompt.
 
 ### 2. Classify each auto-memory entry
 For each substantive entry in auto-memory, determine the best destination:
 
 | Destination | What belongs there | Examples |
 |---|---|---|
-| **CLAUDE.md** | Project conventions for all contributors | "use bun not npm", "API routes use kebab-case" |
-| **CLAUDE.local.md** | Personal instructions not for other contributors | "I prefer concise responses", "don't auto-commit" |
+| **SGA.md / CLAUDE.md** | Project conventions for all contributors | "use bun not npm", "API routes use kebab-case" |
+| **SGA.local.md / CLAUDE.local.md** | Personal instructions not for other contributors | "I prefer concise responses", "don't auto-commit" |
 | **Stay in auto-memory** | Working notes, temporary context | Session-specific observations |
 
 ### 3. Identify cleanup opportunities
@@ -36,12 +36,13 @@ Output a structured report grouped by action type:
 - Present ALL proposals before making any changes
 - Do NOT modify files without explicit user approval
 - Ask about ambiguous entries — don't guess
+- Prefer SGA.md over CLAUDE.md when writing new content; CLAUDE.md is read for compatibility
 `
 
 export function registerRememberSkill(): void {
   registerBundledSkill({
     name: 'remember',
-    description: 'Review auto-memory entries and propose promotions to CLAUDE.md, CLAUDE.local.md, or shared memory. Also detects outdated, conflicting, and duplicate entries across memory layers.',
+    description: 'Review auto-memory entries and propose promotions to SGA.md, CLAUDE.md, or shared memory. Also detects outdated, conflicting, and duplicate entries across memory layers.',
     whenToUse: 'Use when the user wants to review, organize, or promote their auto-memory entries.',
     userInvocable: true,
     prompt: REMEMBER_PROMPT,

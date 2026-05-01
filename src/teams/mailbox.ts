@@ -2,10 +2,11 @@ import { readFile, writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
+import { getSgaHome } from '../memory/paths.js'
 import type { TeamFile, TeamMessage } from './types.js'
 
 export function getTeamsBaseDir(): string {
-  return join(homedir(), '.claude', 'teams')
+  return join(getSgaHome(), 'teams')
 }
 
 export function getTeamDir(teamName: string): string {

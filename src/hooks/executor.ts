@@ -66,9 +66,9 @@ export class HookExecutor {
       const { execSync } = await import('child_process')
       const env = {
         ...process.env,
-        CLAUDE_HOOK_EVENT: hook.event,
-        CLAUDE_TOOL_NAME: context.toolName ?? '',
-        CLAUDE_SESSION_ID: context.sessionId ?? '',
+        SGA_HOOK_EVENT: hook.event,
+        SGA_TOOL_NAME: context.toolName ?? '',
+        SGA_SESSION_ID: context.sessionId ?? '',
       }
 
       const stdout = execSync(hook.command, {

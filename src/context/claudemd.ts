@@ -2,26 +2,36 @@ import { readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
+import { getSgaHome } from '../memory/paths.js'
 
-export interface ClaudeMdConfig {
+export interface SgaMdConfig {
   globalPaths?: string[]
   userPath?: string
   projectPaths?: string[]
   localPath?: string
 }
 
-export const DEFAULT_CLAUDE_MD_PATHS: ClaudeMdConfig = {
-  globalPaths: ['/etc/claude-code/CLAUDE.md'],
-  userPath: join(homedir(), '.claude', 'CLAUDE.md'),
+/** @deprecated Use SgaMdConfig instead */
+export type ClaudeMdConfig = SgaMdConfig
+
+export const DEFAULT_SGA_MD_PATHS: SgaMdConfig = {
+  globalPaths: ['/etc/sga/SGA.md', '/etc/claude-code/CLAUDE.md'],
+  userPath: join(getSgaHome(), 'SGA.md'),
   projectPaths: [],
-  localPath: 'CLAUDE.local.md',
+  localPath: 'SGA.local.md',
 }
 
-export async function loadClaudeMd(config: ClaudeMdConfig = {}): Promise<string> {
-  const paths = resolveClaudeMdPaths(config)
+/** @deprecated Use DEFAULT_SGA_MD_PATHS instead */
+export const DEFAULT_CLAUDE_MD_PATHS = DEFAULT_SGA_MD_PATHS
+
+export async function loadSgaMd(config: SgaMdConfig = {}): Promise<string> {
+  const paths = resolveSgaMdPaths(config)
+  const seen = new Set<string>()
   const contents: string[] = []
 
   for (const path of paths) {
+    if (seen.has(path)) continue
+    seen.add(path)
     const content = await loadSingleFile(path)
     if (content) {
       const expanded = await expandAtReferences(content, path)
@@ -32,26 +42,43 @@ export async function loadClaudeMd(config: ClaudeMdConfig = {}): Promise<string>
   return contents.join('\n\n')
 }
 
-function resolveClaudeMdPaths(config: ClaudeMdConfig): string[] {
+/** @deprecated Use loadSgaMd instead */
+export const loadClaudeMd = loadSgaMd
+
+function resolveSgaMdPaths(config: SgaMdConfig): string[] {
   const paths: string[] = []
 
-  for (const p of config.globalPaths ?? DEFAULT_CLAUDE_MD_PATHS.globalPaths ?? []) {
+  for (const p of config.globalPaths ?? DEFAULT_SGA_MD_PATHS.globalPaths ?? []) {
     paths.push(p)
   }
 
-  paths.push(config.userPath ?? DEFAULT_CLAUDE_MD_PATHS.userPath!)
+  const sgaHome = getSgaHome()
+  paths.push(config.userPath ?? DEFAULT_SGA_MD_PATHS.userPath!)
+  if (sgaHome !== join(homedir(), '.claude')) {
+    paths.push(join(homedir(), '.claude', 'CLAUDE.md'))
+  }
 
   for (const p of config.projectPaths ?? []) {
+    paths.push(join(p, 'SGA.md'))
     paths.push(join(p, 'CLAUDE.md'))
+    paths.push(join(p, '.sga', 'SGA.md'))
     paths.push(join(p, '.claude', 'CLAUDE.md'))
-    const rulesDir = join(p, '.claude', 'rules')
-    if (existsSync(rulesDir)) {
-      paths.push(join(rulesDir, '*.md'))
+
+    const sgaRulesDir = join(p, '.sga', 'rules')
+    if (existsSync(sgaRulesDir)) {
+      paths.push(join(sgaRulesDir, '*.md'))
+    }
+    const claudeRulesDir = join(p, '.claude', 'rules')
+    if (existsSync(claudeRulesDir)) {
+      paths.push(join(claudeRulesDir, '*.md'))
     }
   }
 
   if (config.localPath) {
     paths.push(config.localPath)
+  }
+  if (config.localPath !== 'CLAUDE.local.md') {
+    paths.push('CLAUDE.local.md')
   }
 
   return paths
