@@ -11,6 +11,7 @@ export { AskUserQuestionTool, type QuestionOption } from './ask-user-question.js
 export { NotebookEditTool } from './notebook-edit.js'
 export { SkillTool } from './skill.js'
 export { LSPTool } from './lsp.js'
+export { AgentTool, getRunningTask, getAllRunningTasks, killRunningTask, waitForTask, cleanupCompletedTasks, type AgentToolInput, type AgentToolOutput, type AgentSpawnMode } from './agent.js'
 
 import { BashTool } from './bash.js'
 import { FileReadTool } from './file-read.js'
@@ -25,9 +26,11 @@ import { AskUserQuestionTool } from './ask-user-question.js'
 import { NotebookEditTool } from './notebook-edit.js'
 import { SkillTool } from './skill.js'
 import { LSPTool } from './lsp.js'
+import { AgentTool } from './agent.js'
 import type { Tool } from '../base.js'
+import type { AgentDefinition } from '../../agents/definition.js'
 
-export function createBuiltinTools(): Tool[] {
+export function createBuiltinTools(agentDefinitions?: AgentDefinition[]): Tool[] {
   return [
     new BashTool(),
     new FileReadTool(),
@@ -42,5 +45,6 @@ export function createBuiltinTools(): Tool[] {
     new NotebookEditTool(),
     new SkillTool(),
     new LSPTool(),
+    new AgentTool(agentDefinitions ?? []),
   ]
 }

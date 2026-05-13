@@ -33,7 +33,7 @@ export { HookRegistry, HookExecutor, type HookEventType, type HookDefinition, ty
 
 export { TaskManager, type Task, type TaskStatus, type TaskProgress, type TaskNotification } from './tasks/index.js'
 
-export { registerMCPServer, unregisterMCPServer, getMCPServer, getAllMCPServers, getConnectedMCPServers, getAllMCPTools, getAllMCPResources, connectMCPServer, disconnectMCPServer, connectAllMCPServers, loadMCPServersFromConfig, onMCPEvent, type MCPServerConfig, type MCPTool, type MCPResource, type MCPServerState } from './mcp/index.js'
+export { registerMCPServer, unregisterMCPServer, getMCPServer, getAllMCPServers, getConnectedMCPServers, getAllMCPTools, getAllMCPResources, getConnectedMCPClients, connectMCPServer, disconnectMCPServer, connectAllMCPServers, disconnectAllMCPServers, refreshMCPServer, loadMCPServersFromConfig, onMCPEvent, MCPClient, MCPToolAdapter, createMCPToolAdapters, createAllMCPToolAdapters, type MCPServerConfig, type MCPTool, type MCPResource, type MCPServerState, type MCPCallResult, type MCPPrompt } from './mcp/index.js'
 
 export { APIClient, APIError, MODEL_ALIASES, DEFAULT_MAX_TOKENS, type APIClientConfig, type APIRequestOptions, type APIResponse, type APIStreamChunk } from './api/index.js'
 

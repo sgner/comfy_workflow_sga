@@ -10,6 +10,15 @@ import {
   handleGetMessages,
   handleGetUsage,
   handleListAgents,
+  handleCreateAgent,
+  handleCoordinate,
+  handleGeneratePlan,
+  handleListSnapshots,
+  handleResumePlan,
+  handleListTasks,
+  handleGetTask,
+  handleKillTask,
+  handleTaskNotifications,
   handleListTools,
   handleListConfiguredProviders,
   handleAddProvider,
@@ -85,6 +94,15 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.get(`${base}/sessions/:sessionId/usage`, handleGetUsage)
 
   app.get(`${base}/agents`, handleListAgents)
+  app.post(`${base}/agents`, handleCreateAgent)
+  app.post(`${base}/coordinate`, handleCoordinate)
+  app.post(`${base}/coordinate/plan`, handleGeneratePlan)
+  app.get(`${base}/coordinate/snapshots`, handleListSnapshots)
+  app.post(`${base}/coordinate/resume`, handleResumePlan)
+  app.get(`${base}/tasks`, handleListTasks)
+  app.get(`${base}/tasks/:taskId`, handleGetTask)
+  app.delete(`${base}/tasks/:taskId`, handleKillTask)
+  app.get(`${base}/tasks/notifications`, handleTaskNotifications)
   app.get(`${base}/tools`, handleListTools)
 
   app.get(`${base}/providers`, handleListConfiguredProviders)
@@ -181,6 +199,17 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     } catch {
       // ignore invalid config
     }
+  }
+
+  const { connectAllMCPServers } = await import('../mcp/index.js')
+  try {
+    const connectedServers = await connectAllMCPServers()
+    if (connectedServers.length > 0) {
+      const successCount = connectedServers.filter(s => s.status === 'connected').length
+      console.log(`[sga-template] MCP servers: ${successCount}/${connectedServers.length} connected`)
+    }
+  } catch {
+    // MCP connection failures are non-fatal
   }
 
   const { getDefaultProvider } = await import('../providers/provider-store.js')

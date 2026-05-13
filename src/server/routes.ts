@@ -11,7 +11,12 @@ import { MemoryExtractor } from '../memory/extractor.js'
 const logger = createLogger('routes')
 import { createApprovalRequest } from './interaction.js'
 import { createBuiltinTools } from '../tools/built-in/index.js'
-import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent } from '../agents/index.js'
+import { assembleToolPool } from '../tools/registry.js'
+import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
+import { createAllMCPToolAdapters } from '../mcp/adapter.js'
+import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan, listSnapshots, getCoordinatorSystemPrompt } from '../agents/index.js'
+import { getTaskManager } from '../tasks/index.js'
+import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks } from '../tools/built-in/agent.js'
 import { CostTracker } from '../utils/cost-tracker.js'
 import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider } from '../providers/provider-store.js'
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
@@ -31,6 +36,21 @@ function getSessionId(req: Request): string {
 
 function getProviderForSession(session: Session, messageProviderName?: string): LLMProvider {
   return resolveProvider(messageProviderName ?? session.config.providerName)
+}
+
+function buildToolPool(): import('../tools/base.js').Tool[] {
+  const builtinTools = createBuiltinTools()
+  const mcpClients = getConnectedMCPClients()
+  const mcpToolAdapters = createAllMCPToolAdapters(mcpClients)
+  return assembleToolPool(builtinTools, mcpToolAdapters)
+}
+
+async function buildToolPoolWithAgents(): Promise<import('../tools/base.js').Tool[]> {
+  const agentDefs = await getAllAgentDefinitions()
+  const builtinTools = createBuiltinTools(agentDefs)
+  const mcpClients = getConnectedMCPClients()
+  const mcpToolAdapters = createAllMCPToolAdapters(mcpClients)
+  return assembleToolPool(builtinTools, mcpToolAdapters)
 }
 
 export function handleListSessions(_req: Request, res: Response): void {
@@ -168,7 +188,7 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     const model = body.model ?? session.config.model ?? provider.config.defaultModel ?? 'sonnet'
     logger.info(`Session ${sessionId}: using provider=${provider.name}, model=${model}`)
 
-    const tools = createBuiltinTools()
+    const tools = buildToolPool()
     const agentDefs = getBuiltinAgentDefinitions()
     const agentDef = body.agentType
       ? getAgentDefinitionByName(body.agentType, agentDefs)
@@ -243,7 +263,7 @@ async function handleStreamResponse(
   try {
     const provider = getProviderForSession(session, body.providerName)
     const model = body.model ?? session.config.model ?? provider.config.defaultModel ?? 'sonnet'
-    const tools = createBuiltinTools()
+    const tools = buildToolPool()
     const agentDefs = getBuiltinAgentDefinitions()
     const agentDef = body.agentType
       ? getAgentDefinitionByName(body.agentType, agentDefs)
@@ -458,24 +478,346 @@ export function handleGetUsage(req: Request, res: Response): void {
   })
 }
 
-export function handleListAgents(_req: Request, res: Response): void {
-  const agents = getBuiltinAgentDefinitions().map(a => ({
-    name: a.name,
-    description: a.description,
-    subagentType: a.subagentType,
-    isBackground: a.isBackground(),
-    isProactive: a.isProactive(),
-  }))
+export async function handleListAgents(_req: Request, res: Response): Promise<void> {
+  const allAgents = await getAllAgentDefinitions()
+  const agents = allAgents.map(a => {
+    const base = {
+      name: a.name,
+      description: a.description,
+      subagentType: a.subagentType,
+      isBuiltIn: a.isBuiltIn(),
+      isBackground: a.isBackground(),
+      isProactive: a.isProactive(),
+    }
+    if (isCustomAgent(a)) {
+      return { ...base, source: a.source, isUserInvocable: a.isUserInvocable, contextMode: a.contextMode }
+    }
+    return base
+  })
   res.json({ agents })
 }
 
+export async function handleCreateAgent(req: Request, res: Response): Promise<void> {
+  const { name, description, prompt, tools, disallowedTools, model, background } = req.body
+
+  if (!name || !description || !prompt) {
+    res.status(400).json({ error: 'name, description, and prompt are required' })
+    return
+  }
+
+  const agentDef = createAgentFromConfig({
+    name,
+    description,
+    prompt,
+    tools,
+    disallowedTools,
+    model,
+    background,
+    source: 'api',
+  })
+
+  res.status(201).json({ agent: agentDefinitionToJSON(agentDef) })
+}
+
+export async function handleCoordinate(req: Request, res: Response): Promise<void> {
+  const { query, strategy, maxConcurrency, model, providerName, dynamic } = req.body
+
+  if (!query) {
+    res.status(400).json({ error: 'query is required' })
+    return
+  }
+
+  try {
+    const allAgentDefs = await getAllAgentDefinitions()
+    const provider = providerName
+      ? resolveProvider(providerName)
+      : getDefaultProvider()
+
+    if (!provider) {
+      res.status(500).json({ error: 'No LLM provider available' })
+      return
+    }
+
+    const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
+    const toolPool = await buildToolPoolWithAgents()
+
+    let plan: import('../agents/coordinator.js').CoordinatorPlan
+    if (dynamic) {
+      plan = await generateDynamicPlan(query, allAgentDefs, provider, resolvedModel)
+    } else {
+      plan = createCoordinatorPlanFromUserQuery(query, allAgentDefs)
+    }
+    if (strategy) plan.strategy = strategy
+
+    const coordinator = new Coordinator({
+      maxConcurrency: maxConcurrency ?? 3,
+      defaultModel: resolvedModel,
+      provider,
+      tools: toolPool,
+      agentDefinitions: allAgentDefs,
+    })
+
+    const result = await coordinator.execute(plan)
+
+    res.json({
+      plan: {
+        id: result.plan.id,
+        query: result.plan.query,
+        strategy: result.plan.strategy,
+        tasks: result.plan.tasks.map(t => ({
+          id: t.id,
+          description: t.description,
+          phase: t.phase,
+          agentType: t.agentType,
+          dependsOn: t.dependsOn,
+        })),
+        createdAt: result.plan.createdAt,
+        updatedAt: result.plan.updatedAt,
+      },
+      tasks: result.tasks.map(t => ({
+        id: t.id,
+        description: t.description,
+        phase: t.phase,
+        agentType: t.agentType,
+        status: t.status,
+        result: t.result ? {
+          content: t.result.content,
+          durationMs: t.result.durationMs,
+          turnCount: t.result.turnCount,
+          toolUseCount: t.result.toolUseCount,
+        } : undefined,
+        error: t.error,
+      })),
+      synthesis: result.synthesis,
+      totalUsage: result.totalUsage,
+      totalDurationMs: result.totalDurationMs,
+    })
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    logger.error(`Coordinator execution failed: ${errMsg}`)
+    res.status(500).json({ error: errMsg })
+  }
+}
+
+export async function handleGeneratePlan(req: Request, res: Response): Promise<void> {
+  const { query, model, providerName } = req.body
+
+  if (!query) {
+    res.status(400).json({ error: 'query is required' })
+    return
+  }
+
+  try {
+    const allAgentDefs = await getAllAgentDefinitions()
+    const provider = providerName
+      ? resolveProvider(providerName)
+      : getDefaultProvider()
+
+    if (!provider) {
+      res.status(500).json({ error: 'No LLM provider available' })
+      return
+    }
+
+    const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
+    const plan = await generateDynamicPlan(query, allAgentDefs, provider, resolvedModel)
+
+    res.json({
+      plan: {
+        id: plan.id,
+        query: plan.query,
+        strategy: plan.strategy,
+        tasks: plan.tasks.map(t => ({
+          id: t.id,
+          description: t.description,
+          phase: t.phase,
+          agentType: t.agentType,
+          prompt: t.prompt,
+          dependsOn: t.dependsOn,
+        })),
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+      },
+    })
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    logger.error(`Plan generation failed: ${errMsg}`)
+    res.status(500).json({ error: errMsg })
+  }
+}
+
+export function handleListSnapshots(_req: Request, res: Response): void {
+  const snapshots = listSnapshots()
+  res.json({ snapshots })
+}
+
+export async function handleResumePlan(req: Request, res: Response): Promise<void> {
+  const { snapshotPath, maxConcurrency, model, providerName } = req.body
+
+  if (!snapshotPath) {
+    res.status(400).json({ error: 'snapshotPath is required' })
+    return
+  }
+
+  try {
+    const provider = providerName
+      ? resolveProvider(providerName)
+      : getDefaultProvider()
+
+    if (!provider) {
+      res.status(500).json({ error: 'No LLM provider available' })
+      return
+    }
+
+    const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
+    const allAgentDefs = await getAllAgentDefinitions()
+    const toolPool = await buildToolPoolWithAgents()
+
+    const coordinator = new Coordinator({
+      maxConcurrency: maxConcurrency ?? 3,
+      defaultModel: resolvedModel,
+      provider,
+      tools: toolPool,
+      agentDefinitions: allAgentDefs,
+    })
+
+    const result = await coordinator.resumeFromSnapshot(snapshotPath)
+
+    res.json({
+      plan: {
+        id: result.plan.id,
+        query: result.plan.query,
+        strategy: result.plan.strategy,
+        tasks: result.plan.tasks.map(t => ({
+          id: t.id,
+          description: t.description,
+          phase: t.phase,
+          agentType: t.agentType,
+          dependsOn: t.dependsOn,
+        })),
+      },
+      tasks: result.tasks.map(t => ({
+        id: t.id,
+        description: t.description,
+        phase: t.phase,
+        agentType: t.agentType,
+        status: t.status,
+        result: t.result ? {
+          content: t.result.content,
+          durationMs: t.result.durationMs,
+          turnCount: t.result.turnCount,
+          toolUseCount: t.result.toolUseCount,
+        } : undefined,
+        error: t.error,
+      })),
+      synthesis: result.synthesis,
+      totalUsage: result.totalUsage,
+      totalDurationMs: result.totalDurationMs,
+    })
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    logger.error(`Resume plan failed: ${errMsg}`)
+    res.status(500).json({ error: errMsg })
+  }
+}
+
+export function handleListTasks(_req: Request, res: Response): void {
+  const taskManager = getTaskManager()
+  const tasks = taskManager.getAll().map(t => ({
+    id: t.id,
+    name: t.name,
+    kind: t.kind,
+    status: t.status,
+    agentType: t.agentType,
+    createdAt: t.createdAt,
+    completedAt: t.completedAt,
+    progress: t.progress,
+    output: t.output,
+    error: t.error,
+    parentTaskId: t.parentTaskId,
+  }))
+  res.json({ tasks })
+}
+
+export function handleGetTask(req: Request, res: Response): void {
+  const taskId = req.params.taskId as string
+  const taskManager = getTaskManager()
+  const task = taskManager.get(taskId)
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' })
+    return
+  }
+  res.json({
+    id: task.id,
+    name: task.name,
+    kind: task.kind,
+    status: task.status,
+    agentType: task.agentType,
+    createdAt: task.createdAt,
+    completedAt: task.completedAt,
+    progress: task.progress,
+    output: task.output,
+    error: task.error,
+    parentTaskId: task.parentTaskId,
+    metadata: task.metadata,
+  })
+}
+
+export function handleKillTask(req: Request, res: Response): void {
+  const taskId = req.params.taskId as string
+
+  const agentTaskKilled = killRunningTask(taskId)
+  if (agentTaskKilled) {
+    res.json({ success: true, message: `Agent task ${taskId} killed` })
+    return
+  }
+
+  const taskManager = getTaskManager()
+  const task = taskManager.get(taskId)
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' })
+    return
+  }
+  taskManager.kill(taskId)
+  res.json({ success: true, message: `Task ${taskId} killed` })
+}
+
+export function handleTaskNotifications(req: Request, res: Response): void {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+
+  const taskManager = getTaskManager()
+
+  const handler = (notification: import('../tasks/types.js').TaskNotification) => {
+    try {
+      res.write(`data: ${JSON.stringify(notification)}\n\n`)
+    } catch {
+      // connection closed
+    }
+  }
+
+  taskManager.onNotification(handler)
+
+  req.on('close', () => {
+    taskManager.removeNotificationHandler(handler)
+  })
+}
+
 export function handleListTools(_req: Request, res: Response): void {
-  const tools = createBuiltinTools().map(t => ({
+  const tools = buildToolPool().map(t => ({
     name: t.name,
     description: t.description,
     definition: t.getDefinition(),
   }))
-  res.json({ tools })
+  const mcpTools = getAllMCPTools().map(t => ({
+    name: `mcp__${t.serverName}__${t.name}`,
+    originalName: t.name,
+    serverName: t.serverName,
+    description: t.description,
+    inputSchema: t.inputSchema,
+  }))
+  res.json({ tools, mcpTools, total: tools.length + mcpTools.length })
 }
 
 export function handleListConfiguredProviders(_req: Request, res: Response): void {

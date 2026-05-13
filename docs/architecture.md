@@ -57,8 +57,9 @@ src/
 │   └── executor.ts     # Hook 注册与执行
 ├── mcp/            # MCP 协议集成
 │   ├── types.ts        # MCP 类型定义
-│   ├── client.ts       # MCP 客户端
-│   ├── manager.ts      # MCP 管理器
+│   ├── client.ts       # MCPClient 完整客户端（JSON-RPC 2.0）
+│   ├── manager.ts      # MCP 服务器管理器（生命周期管理）
+│   ├── adapter.ts      # MCPToolAdapter 工具适配器（MCPTool → Tool）
 │   └── index.ts        # 统一导出
 ├── tasks/          # 任务系统
 │   └── manager.ts      # TaskManager 任务管理

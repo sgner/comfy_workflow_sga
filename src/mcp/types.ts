@@ -1,4 +1,5 @@
 export interface MCPServerConfig {
+  name: string
   command: string
   args?: string[]
   env?: Record<string, string>
@@ -8,6 +9,8 @@ export interface MCPServerConfig {
   headers?: Record<string, string>
   restartOnFailure?: boolean
   maxRestartAttempts?: number
+  disabled?: boolean
+  alwaysAllow?: string[]
 }
 
 export interface MCPTool {

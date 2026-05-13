@@ -1,2 +1,6 @@
-export { registerMCPServer, unregisterMCPServer, getMCPServer, getAllMCPServers, getConnectedMCPServers, getAllMCPTools, getAllMCPResources, connectMCPServer, disconnectMCPServer, connectAllMCPServers, loadMCPServersFromConfig, onMCPEvent } from './manager.js'
-export type { MCPServerConfig, MCPTool, MCPResource, MCPServerState } from './manager.js'
+export { registerMCPServer, unregisterMCPServer, getMCPServer, getAllMCPServers, getConnectedMCPServers, getAllMCPTools, getAllMCPResources, getConnectedMCPClients, connectMCPServer, disconnectMCPServer, connectAllMCPServers, disconnectAllMCPServers, refreshMCPServer, loadMCPServersFromConfig, onMCPEvent } from './manager.js'
+export type { MCPServerState } from './manager.js'
+export { MCPClient } from './client.js'
+export type { MCPTransport } from './client.js'
+export { MCPToolAdapter, createMCPToolAdapters, createAllMCPToolAdapters } from './adapter.js'
+export type { MCPServerConfig, MCPTool, MCPResource, MCPPrompt, MCPCallResult } from './types.js'
