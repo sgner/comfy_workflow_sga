@@ -1,6 +1,6 @@
 # 记忆系统
 
-> 📄 相关源文件：`src/memory/manager.ts`（核心管理器）、`src/memory/extractor.ts`（自动提取）、`src/memory/retrieval.ts`（智能检索）、`src/memory/scanner.ts`（扫描）、`src/memory/prompt.ts`（提示词构建）、`src/memory/paths.ts`（路径管理）、`src/memory/types.ts`（类型定义）
+> 📄 相关源文件：`src/memory/manager.ts`（核心管理器）、`src/memory/extractor.ts`（自动提取）、`src/memory/retrieval.ts`（智能检索）、`src/memory/scanner.ts`（扫描）、`src/memory/prompt.ts`（提示词构建）、`src/memory/paths.ts`（路径管理）、`src/memory/types.ts`（类型定义）、`src/memory/storage/`（存储后端抽象层）
 
 ## 概述
 
@@ -8,7 +8,19 @@
 
 1. **会话启动时** — 自动加载记忆指令和索引到系统提示词
 2. **对话过程中** — 根据用户查询智能检索相关记忆并注入上下文
-3. **对话结束后** — 后台自动提取新记忆写入文件
+3. **对话结束后** — 后台自动提取新记忆写入存储
+
+### 存储后端
+
+记忆系统支持多种存储后端，用户可以使用数据库代替本地文件系统：
+
+| 后端类型 | 说明 | 适用场景 |
+|----------|------|----------|
+| `filesystem` | 本地文件系统（默认） | 单机开发、轻量部署 |
+| `vector` | 向量数据库 | 语义搜索、大规模记忆 |
+| `sql` | 关系数据库（PostgreSQL/MySQL/SQLite） | 持久化存储、多实例共享 |
+| `mongodb` | MongoDB 文档数据库 | 灵活 Schema、全文搜索 |
+| `custom` | 自定义后端 | 特殊需求扩展 |
 
 ## 架构
 
@@ -322,6 +334,279 @@ import { buildMemoryPrompt } from 'SGA-Template'
 const memoryPrompt = buildMemoryPrompt(memoryDir, entrypointContent)
 ```
 
+## 存储后端详解
+
+### 架构设计
+
+存储后端通过 `MemoryStorageBackend` 接口实现抽象，`MemoryManager` 通过该接口与底层存储交互，无需关心具体实现：
+
+```
+MemoryManager
+    │
+    ├── MemoryStorageBackend (接口)
+    │       │
+    │       ├── FileSystemBackend  ← 默认
+    │       ├── VectorBackend
+    │       ├── SQLBackend
+    │       ├── MongoDBBackend
+    │       └── CustomBackend (用户自定义)
+    │
+    └── StorageRegistry (后端注册/工厂)
+```
+
+### MemoryStorageBackend 接口
+
+所有存储后端必须实现以下接口：
+
+```typescript
+interface MemoryStorageBackend {
+  readonly type: StorageBackendType
+
+  initialize(): Promise<void>
+  close(): Promise<void>
+  list(options?: StorageQueryOptions): Promise<MemoryFile[]>
+  get(id: string): Promise<MemoryFile | null>
+  save(memory: Omit<MemoryFile, 'mtimeMs' | 'sizeBytes'> & { mtimeMs?: number; sizeBytes?: number }): Promise<MemoryFile>
+  update(id: string, updates: Partial<Pick<MemoryFile, 'content' | 'frontmatter' | 'type' | 'description'>>): Promise<MemoryFile | null>
+  delete(id: string): Promise<boolean>
+  search(options: StorageSearchOptions): Promise<StorageSearchResult[]>
+  getStats(): Promise<StorageStats>
+  exists(id: string): Promise<boolean>
+  count(options?: StorageQueryOptions): Promise<number>
+  clear(): Promise<void>
+}
+```
+
+### 配置存储后端
+
+通过 `MemoryManagerConfig` 配置存储后端：
+
+```typescript
+import { initMemoryManager } from 'SGA-Template'
+
+// 方式 1：使用配置对象（通过注册表自动创建后端）
+const manager = await initMemoryManager({
+  storage: {
+    type: 'sql',
+    connectionString: 'postgresql://user:pass@localhost:5432/memories',
+    tableName: 'agent_memories',
+    dialect: 'postgres',
+  },
+})
+
+// 方式 2：直接传入后端实例
+import { MongoDBBackend } from 'SGA-Template'
+const backend = new MongoDBBackend({
+  type: 'mongodb',
+  connectionString: 'mongodb://localhost:27017',
+  databaseName: 'sga',
+  collectionName: 'memories',
+})
+const manager = await initMemoryManager({ backend })
+
+// 方式 3：默认文件系统（无需配置）
+const manager = await initMemoryManager()
+```
+
+### FileSystemBackend（默认）
+
+基于本地文件系统的存储后端，将记忆保存为 Markdown 文件：
+
+```typescript
+import { FileSystemBackend } from 'SGA-Template'
+
+const backend = new FileSystemBackend({
+  type: 'filesystem',
+  memoryDir: '/path/to/memory',
+  scanIntervalMs: 30_000,  // 缓存刷新间隔
+})
+```
+
+特性：
+- 记忆文件为 Markdown + YAML frontmatter 格式
+- 自动维护 MEMORY.md 索引文件
+- 支持缓存刷新机制
+- 与 Claude Code 记忆文件兼容
+
+### VectorBackend
+
+向量数据库存储后端，支持语义搜索：
+
+```typescript
+import { VectorBackend } from 'SGA-Template'
+
+const backend = new VectorBackend({
+  type: 'vector',
+  connectionString: 'http://localhost:6333',  // 如 Qdrant/Pinecone
+  collectionName: 'memories',
+  embeddingDimension: 1536,
+  embeddingModel: 'text-embedding-3-small',
+  apiKey: 'your-api-key',
+})
+
+// 设置嵌入函数（用于将文本转为向量）
+backend.setEmbeddingFunction(async (text: string) => {
+  const response = await openai.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+  })
+  return response.data[0].embedding
+})
+```
+
+特性：
+- 支持语义搜索（余弦相似度）
+- 支持关键词搜索（降级方案）
+- 可自定义嵌入函数
+- 无嵌入函数时自动降级为关键词搜索
+
+### SQLBackend
+
+关系数据库存储后端，支持 PostgreSQL、MySQL、SQLite：
+
+```typescript
+import { SQLBackend } from 'SGA-Template'
+
+const backend = new SQLBackend({
+  type: 'sql',
+  connectionString: 'postgresql://user:pass@localhost:5432/sga',
+  tableName: 'memories',
+  dialect: 'postgres',  // 'postgres' | 'mysql' | 'sqlite'
+})
+
+// 设置查询和执行函数（对接实际数据库驱动）
+backend.setQueryFunction(async (sql: string, params?: unknown[]) => {
+  const result = await pool.query(sql, params)
+  return result.rows
+})
+
+backend.setExecuteFunction(async (sql: string, params?: unknown[]) => {
+  await pool.execute(sql, params)
+})
+```
+
+特性：
+- 支持 PostgreSQL 全文搜索（`to_tsvector`/`to_tsquery`）
+- 支持 MySQL 全文搜索（`MATCH ... AGAINST`）
+- 支持 SQLite 基础 LIKE 搜索
+- 自动建表（设置 `executeFn` 后）
+- UPSERT 语义（插入或更新）
+- 无数据库连接时使用内存 Map 作为降级
+
+### MongoDBBackend
+
+MongoDB 文档数据库存储后端：
+
+```typescript
+import { MongoDBBackend } from 'SGA-Template'
+
+const backend = new MongoDBBackend({
+  type: 'mongodb',
+  connectionString: 'mongodb://localhost:27017',
+  databaseName: 'sga',
+  collectionName: 'memories',
+})
+
+// 设置集合实例（对接实际 MongoDB 驱动）
+import { MongoClient } from 'mongodb'
+const client = new MongoClient('mongodb://localhost:27017')
+await client.connect()
+const db = client.db('sga')
+const collection = db.collection('memories')
+
+backend.setCollection(collection)
+```
+
+特性：
+- 支持 MongoDB 全文搜索（`$text` + `$search`）
+- 使用 `$set` 操作符实现部分更新
+- 支持标签过滤（`$in` 操作符）
+- 全文搜索失败时自动降级为关键词搜索
+- 无集合实例时使用内存 Map 作为降级
+
+### 自定义存储后端
+
+用户可以实现 `MemoryStorageBackend` 接口创建自定义后端：
+
+```typescript
+import type { MemoryStorageBackend, StorageBackendType } from 'SGA-Template'
+
+class RedisBackend implements MemoryStorageBackend {
+  readonly type: StorageBackendType = 'custom'
+
+  // 实现所有接口方法...
+  async initialize(): Promise<void> { /* ... */ }
+  async close(): Promise<void> { /* ... */ }
+  async list(options?) { /* ... */ }
+  async get(id) { /* ... */ }
+  async save(memory) { /* ... */ }
+  async update(id, updates) { /* ... */ }
+  async delete(id) { /* ... */ }
+  async search(options) { /* ... */ }
+  async getStats() { /* ... */ }
+  async exists(id) { /* ... */ }
+  async count(options?) { /* ... */ }
+  async clear() { /* ... */ }
+}
+```
+
+### 注册自定义后端
+
+通过 `registerBackend` 将自定义后端注册到工厂：
+
+```typescript
+import { registerBackend, initMemoryManager } from 'SGA-Template'
+import type { StorageBackendConfig, MemoryStorageBackend } from 'SGA-Template'
+
+registerBackend('redis', (config: StorageBackendConfig) => {
+  return new RedisBackend(config as RedisBackendConfig)
+})
+
+// 然后就可以通过配置使用
+const manager = await initMemoryManager({
+  storage: {
+    type: 'redis',
+    host: 'localhost',
+    port: 6379,
+  },
+})
+```
+
+### 查询选项
+
+所有后端共享统一的查询接口：
+
+```typescript
+interface StorageQueryOptions {
+  limit?: number       // 返回数量限制
+  offset?: number      // 偏移量（分页）
+  types?: MemoryType[] // 按类型过滤
+  tags?: string[]      // 按标签过滤
+  since?: number       // 起始时间戳（ms）
+  until?: number       // 截止时间戳（ms）
+}
+
+interface StorageSearchOptions {
+  query: string        // 搜索查询
+  limit?: number       // 返回数量限制
+  threshold?: number   // 最低相似度阈值（0-1）
+  useSemantic?: boolean // 是否使用语义搜索
+}
+```
+
+### 存储统计
+
+```typescript
+const stats = await manager.getBackend().getStats()
+// {
+//   totalMemories: 42,
+//   totalSizeBytes: 128000,
+//   byType: { project: 20, user: 15, feedback: 5, reference: 2 },
+//   oldestAt: 1714454400000,
+//   newestAt: 1714540800000,
+// }
+```
+
 ## 完整工作流
 
 ```typescript
@@ -359,6 +644,8 @@ if (extractor.shouldExtract(messages.length)) {
 | SessionMemory | 当前会话 markdown 笔记 | ❌ 暂无 | 🔜 |
 | 代理记忆 | 三级作用域 user/project/local | ❌ 暂无 | 🔜 |
 | 团队同步 | Pull/Push API + delta 上传 | ❌ 暂无 | 🔜 |
+| 存储后端抽象 | 仅文件系统 | 文件系统/向量/SQL/MongoDB/自定义 | ✅ |
+| 数据库语义搜索 | ❌ | 向量余弦相似度/全文搜索 | ✅ |
 
 ## 相关文档
 

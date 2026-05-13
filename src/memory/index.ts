@@ -10,3 +10,10 @@ export { MemoryManager, getMemoryManager, setMemoryManager, initMemoryManager } 
 export type { MemoryManagerConfig } from './manager.js'
 export { MemoryExtractor, DEFAULT_EXTRACTOR_CONFIG } from './extractor.js'
 export type { MemoryExtractorConfig } from './extractor.js'
+
+export type { StorageBackendType, StorageQueryOptions, StorageSearchOptions, StorageSearchResult, StorageBackendConfig, StorageStats, FileSystemBackendConfig, VectorBackendConfig, SQLBackendConfig, MongoDBBackendConfig, MemoryStorageBackend } from './storage/types.js'
+export { FileSystemBackend } from './storage/filesystem.js'
+export { VectorBackend } from './storage/vector.js'
+export { SQLBackend } from './storage/sql.js'
+export { MongoDBBackend } from './storage/mongodb.js'
+export { registerBackend, createBackend, getRegisteredBackendTypes, isBackendRegistered } from './storage/registry.js'
