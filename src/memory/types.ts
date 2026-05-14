@@ -1,4 +1,6 @@
-export type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'session'
+
+export type MemoryScope = 'global' | 'project' | 'session'
 
 export interface MemoryFile {
   path: string
@@ -13,6 +15,8 @@ export interface MemoryFile {
 export interface MemoryFrontmatter {
   type?: MemoryType
   description?: string
+  scope?: MemoryScope
+  sessionId?: string
   created_at?: string
   updated_at?: string
   tags?: string[]
@@ -39,22 +43,46 @@ export interface MemoryExtractConfig {
   allowedTools: string[]
 }
 
-export const MEMORY_TYPES: Record<MemoryType, { label: string; description: string }> = {
+export const MEMORY_TYPES: Record<MemoryType, { label: string; description: string; defaultScope: MemoryScope }> = {
   user: {
     label: 'User',
     description: 'User preferences, patterns, and personal context',
+    defaultScope: 'global',
   },
   feedback: {
     label: 'Feedback',
     description: 'Behavioral feedback and correction patterns',
+    defaultScope: 'project',
   },
   project: {
     label: 'Project',
     description: 'Project-specific knowledge and dynamics',
+    defaultScope: 'project',
   },
   reference: {
     label: 'Reference',
     description: 'External references and documentation pointers',
+    defaultScope: 'project',
+  },
+  session: {
+    label: 'Session',
+    description: 'Session-specific temporary context and working notes',
+    defaultScope: 'session',
+  },
+}
+
+export const MEMORY_SCOPES: Record<MemoryScope, { label: string; description: string }> = {
+  global: {
+    label: 'Global',
+    description: 'Cross-project shared memory (user preferences, universal knowledge)',
+  },
+  project: {
+    label: 'Project',
+    description: 'Project-scoped memory shared across all sessions in the same project',
+  },
+  session: {
+    label: 'Session',
+    description: 'Session-isolated memory visible only within the current conversation',
   },
 }
 

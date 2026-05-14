@@ -9,6 +9,8 @@ import { ALL_AGENT_DISALLOWED_TOOLS } from './definition.js'
 import { createDefaultPipeline, orchestrateToolCalls, ToolExecutionError } from '../tools/execution.js'
 import { createLogger } from '../utils/logger.js'
 import { getMemoryManager } from '../memory/manager.js'
+import { getWorkingSet } from '../memory/working-set-registry.js'
+import { buildContext, detectFocusMode } from '../memory/context-builder.js'
 
 const logger = createLogger('agent-runner')
 
@@ -51,18 +53,42 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const memoryManager = getMemoryManager()
   if (memoryManager) {
     try {
-      const memorySection = await memoryManager.buildSystemPromptSection()
-      if (memorySection) {
-        systemPromptContent = systemPromptContent + '\n\n' + memorySection
-      }
-
       const userQuery = extractTextFromMessages(options.messages) ?? prompt
-      if (userQuery) {
-        const memoryContext = await memoryManager.getMemoryContextForQuery(userQuery)
-        if (memoryContext) {
-          systemPromptContent = systemPromptContent + '\n\n' + memoryContext
+
+      const ws = getWorkingSet()
+      if (ws && userQuery) {
+        const lastUserMsg = options.messages
+          ? [...options.messages].reverse().find(m => m.role === 'user')
+          : null
+        if (lastUserMsg) {
+          const msgText = lastUserMsg.content
+            .filter(c => c.type === 'text' && c.text)
+            .map(c => c.text!)
+            .join('\n')
+          ws.detectAndPinFromContent(msgText, 'user-message')
         }
       }
+
+      const contextResult = await buildContext(memoryManager, ws, {
+        userQuery: userQuery || '',
+        messages: options.messages?.map(m => ({
+          role: m.role,
+          content: m.content.filter(c => c.type === 'text' && c.text).map(c => c.text!).join('\n'),
+        })),
+      })
+
+      if (contextResult.systemPrompt) {
+        systemPromptContent = systemPromptContent + '\n\n' + contextResult.systemPrompt
+      }
+
+      logger.info(
+        `Context built: focus=${contextResult.focusMode}, ` +
+        `workingSet=${contextResult.workingSetItems}, ` +
+        `memories=${contextResult.memoryItemsInjected}, ` +
+        `dedup=${contextResult.dedupRemoved}, ` +
+        `compressed=${contextResult.compressedItems}, ` +
+        `tokens=${contextResult.totalTokensUsed}`,
+      )
     } catch (error) {
       logger.warn(`Failed to inject memory context: ${error instanceof Error ? error.message : String(error)}`)
     }

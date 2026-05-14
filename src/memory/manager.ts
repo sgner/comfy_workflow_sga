@@ -1,13 +1,13 @@
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
-import type { MemoryFile, MemoryRetrievalResult } from './types.js'
-import { MEMORY_MAX_RELEVANT, DEFAULT_MEMORY_EXTRACT_CONFIG } from './types.js'
+import type { MemoryFile, MemoryRetrievalResult, MemoryScope, MemoryType } from './types.js'
+import { MEMORY_MAX_RELEVANT, DEFAULT_MEMORY_EXTRACT_CONFIG, MEMORY_TYPES } from './types.js'
 import { getAutoMemPath, ensureMemoryDirExists, getMemoryEntrypointPath, type MemoryPathConfig } from './paths.js'
 import { findRelevantMemories, DEFAULT_RETRIEVER_CONFIG, setRetrievalProvider } from './retrieval.js'
 import { buildMemoryPrompt, buildExtractPrompt, truncateEntrypointContent } from './prompt.js'
 import { createLogger } from '../utils/logger.js'
 import type { LLMProvider } from '../providers/types.js'
-import type { MemoryStorageBackend, StorageBackendConfig } from './storage/types.js'
+import type { MemoryStorageBackend, StorageBackendConfig, StorageQueryOptions, StorageSearchOptions } from './storage/types.js'
 import { createBackend } from './storage/registry.js'
 import { FileSystemBackend } from './storage/filesystem.js'
 
@@ -20,6 +20,7 @@ export interface MemoryManagerConfig {
   extractConfig?: typeof DEFAULT_MEMORY_EXTRACT_CONFIG
   storage?: StorageBackendConfig
   backend?: MemoryStorageBackend
+  sessionId?: string
 }
 
 export class MemoryManager {
@@ -29,10 +30,12 @@ export class MemoryManager {
   private cachedMemories: MemoryFile[] | null = null
   private lastScanTime = 0
   private scanIntervalMs = 30_000
+  private sessionId: string
 
   constructor(config: MemoryManagerConfig = {}) {
     this.config = config
     this.memoryDir = getAutoMemPath(config.pathConfig)
+    this.sessionId = config.sessionId ?? generateSessionId()
 
     if (config.backend) {
       this.backend = config.backend
@@ -55,7 +58,7 @@ export class MemoryManager {
     }
 
     await this.refreshCache()
-    logger.info(`MemoryManager initialized, backend=${this.backend.type}, memories=${this.cachedMemories?.length ?? 0}`)
+    logger.info(`MemoryManager initialized, backend=${this.backend.type}, sessionId=${this.sessionId}, memories=${this.cachedMemories?.length ?? 0}`)
   }
 
   getMemoryDir(): string {
@@ -70,13 +73,26 @@ export class MemoryManager {
     return this.backend.type
   }
 
+  getSessionId(): string {
+    return this.sessionId
+  }
+
+  setSessionId(sessionId: string): void {
+    this.sessionId = sessionId
+    this.cachedMemories = null
+    logger.debug(`Session ID updated: ${sessionId}`)
+  }
+
   setProvider(provider: LLMProvider, model?: string): void {
     setRetrievalProvider(provider, model)
   }
 
   async refreshCache(): Promise<void> {
     try {
-      this.cachedMemories = await this.backend.list()
+      this.cachedMemories = await this.backend.list({
+        scope: 'session',
+        sessionId: this.sessionId,
+      })
       this.lastScanTime = Date.now()
     } catch (error) {
       logger.warn(`Failed to refresh cache: ${error instanceof Error ? error.message : String(error)}`)
@@ -89,6 +105,26 @@ export class MemoryManager {
       await this.refreshCache()
     }
     return this.cachedMemories ?? []
+  }
+
+  async listMemoriesByScope(scope: MemoryScope, options?: Omit<StorageQueryOptions, 'scope' | 'sessionId'>): Promise<MemoryFile[]> {
+    return this.backend.list({
+      ...options,
+      scope,
+      sessionId: this.sessionId,
+    })
+  }
+
+  async listGlobalMemories(options?: Omit<StorageQueryOptions, 'scope' | 'sessionId'>): Promise<MemoryFile[]> {
+    return this.listMemoriesByScope('global', options)
+  }
+
+  async listProjectMemories(options?: Omit<StorageQueryOptions, 'scope' | 'sessionId'>): Promise<MemoryFile[]> {
+    return this.listMemoriesByScope('project', options)
+  }
+
+  async listSessionMemories(options?: Omit<StorageQueryOptions, 'scope' | 'sessionId'>): Promise<MemoryFile[]> {
+    return this.listMemoriesByScope('session', options)
   }
 
   async buildSystemPromptSection(): Promise<string> {
@@ -114,14 +150,21 @@ export class MemoryManager {
     const stats = await this.backend.getStats()
     const memories = await this.ensureCache()
 
-    const memoryTypesSection = `- **User** (user): User preferences, patterns, and personal context
-- **Feedback** (feedback): Behavioral feedback and correction patterns
-- **Project** (project): Project-specific knowledge and dynamics
-- **Reference** (reference): External references and documentation pointers`
+    const memoryTypesSection = Object.entries(MEMORY_TYPES)
+      .map(([key, val]) => `- **${val.label}** (${key}): ${val.description} [scope: ${val.defaultScope}]`)
+      .join('\n')
+
+    const scopeSection = `## Memory Scopes
+- **Global**: Cross-project shared memory (user preferences, universal knowledge)
+- **Project**: Project-scoped memory shared across all sessions in the same project
+- **Session**: Session-isolated memory visible only within the current conversation (session: ${this.sessionId})`
 
     const indexLines = memories.length === 0
       ? 'No memories stored yet.'
-      : memories.map(m => `- [${m.type}] ${m.description}`).join('\n')
+      : memories.map(m => {
+          const scope = m.frontmatter.scope ?? MEMORY_TYPES[m.type as MemoryType]?.defaultScope ?? 'project'
+          return `- [${m.type}][${scope}] ${m.description}`
+        }).join('\n')
 
     return `# Auto Memory
 
@@ -129,6 +172,8 @@ You have a persistent memory system backed by **${this.backend.type}** storage.
 
 ## Types of Memory
 ${memoryTypesSection}
+
+${scopeSection}
 
 ## What NOT to Save
 - Information already in SGA.md, CLAUDE.md, or project documentation
@@ -138,8 +183,9 @@ ${memoryTypesSection}
 
 ## How to Save Memories
 Use the memory save API to create new memory entries with type, description, and content.
+You can specify the scope (global, project, or session) to control visibility.
 
-## Memory Index (Total: ${stats.totalMemories})
+## Memory Index (Total: ${stats.totalMemories}, Session: ${this.sessionId})
 \`\`\`
 ${indexLines}
 \`\`\``
@@ -149,6 +195,8 @@ ${indexLines}
     const searchResults = await this.backend.search({
       query,
       limit: this.config.maxRelevant ?? MEMORY_MAX_RELEVANT,
+      scope: 'session',
+      sessionId: this.sessionId,
     })
 
     if (searchResults.length > 0) {
@@ -189,7 +237,8 @@ ${indexLines}
       parts.push('## Relevant Memories')
       for (const memory of result.memories) {
         const warning = result.freshnessWarnings.get(memory.path)
-        parts.push(`### [${memory.type}] ${memory.description}`)
+        const scope = memory.frontmatter.scope ?? 'project'
+        parts.push(`### [${memory.type}][${scope}] ${memory.description}`)
         const contentLines = memory.content.split('\n')
         const bodyStart = contentLines.findIndex((_, i) => {
           if (i === 0) return false
@@ -207,8 +256,15 @@ ${indexLines}
     return parts.join('\n')
   }
 
-  async saveMemoryFile(filename: string, type: string, description: string, content: string): Promise<void> {
+  async saveMemoryFile(
+    filename: string,
+    type: string,
+    description: string,
+    content: string,
+    scope?: MemoryScope,
+  ): Promise<void> {
     const now = new Date().toISOString()
+    const resolvedScope = scope ?? this.inferScope(type as MemoryType)
 
     await this.backend.save({
       path: filename,
@@ -218,12 +274,14 @@ ${indexLines}
       frontmatter: {
         type: type as MemoryFile['type'],
         description,
+        scope: resolvedScope,
+        sessionId: resolvedScope === 'session' ? this.sessionId : undefined,
         created_at: now,
         updated_at: now,
       },
     })
 
-    logger.info(`Saved memory: ${filename} (type=${type}, backend=${this.backend.type})`)
+    logger.info(`Saved memory: ${filename} (type=${type}, scope=${resolvedScope}, backend=${this.backend.type})`)
 
     this.cachedMemories = null
     await this.ensureCache()
@@ -231,6 +289,31 @@ ${indexLines}
     if (this.isFileSystemBackend()) {
       await this.updateEntrypoint()
     }
+  }
+
+  inferScope(type: MemoryType): MemoryScope {
+    const typeConfig = MEMORY_TYPES[type]
+    return typeConfig?.defaultScope ?? 'project'
+  }
+
+  async deleteSessionMemories(): Promise<number> {
+    const sessionMemories = await this.listSessionMemories()
+    let deleted = 0
+
+    for (const m of sessionMemories) {
+      if (m.frontmatter.scope === 'session') {
+        const ok = await this.backend.delete(m.path)
+        if (ok) deleted++
+      }
+    }
+
+    if (deleted > 0) {
+      this.cachedMemories = null
+      await this.ensureCache()
+      logger.info(`Deleted ${deleted} session memories for session ${this.sessionId}`)
+    }
+
+    return deleted
   }
 
   async updateEntrypoint(): Promise<void> {
@@ -243,6 +326,7 @@ ${indexLines}
       '# Memory Index',
       '',
       `Last updated: ${new Date().toISOString()}`,
+      `Session: ${this.sessionId}`,
       '',
     ]
 
@@ -251,8 +335,27 @@ ${indexLines}
     } else {
       lines.push(`Total memories: ${memories.length}`)
       lines.push('')
-      for (const m of memories) {
-        lines.push(`- [${m.type}] ${m.description} (\`${m.path}\`)`)
+
+      const globalMems = memories.filter(m => m.frontmatter.scope === 'global' || (!m.frontmatter.scope && m.type === 'user'))
+      const projectMems = memories.filter(m => m.frontmatter.scope === 'project' || (!m.frontmatter.scope && m.type !== 'user' && m.type !== 'session'))
+      const sessionMems = memories.filter(m => m.frontmatter.scope === 'session')
+
+      if (globalMems.length > 0) {
+        lines.push('## Global')
+        for (const m of globalMems) lines.push(`- [${m.type}] ${m.description} (\`${m.path}\`)`)
+        lines.push('')
+      }
+
+      if (projectMems.length > 0) {
+        lines.push('## Project')
+        for (const m of projectMems) lines.push(`- [${m.type}] ${m.description} (\`${m.path}\`)`)
+        lines.push('')
+      }
+
+      if (sessionMems.length > 0) {
+        lines.push(`## Session (${this.sessionId})`)
+        for (const m of sessionMems) lines.push(`- [${m.type}] ${m.description} (\`${m.path}\`)`)
+        lines.push('')
       }
     }
 
@@ -271,7 +374,10 @@ ${indexLines}
 
   buildExtractionPrompt(conversationSummary: string): string {
     const memories = this.cachedMemories ?? []
-    const manifest = memories.map(m => `[${m.type}] ${m.description}`).join('\n')
+    const manifest = memories.map(m => {
+      const scope = m.frontmatter.scope ?? 'project'
+      return `[${m.type}][${scope}] ${m.description}`
+    }).join('\n')
     return buildExtractPrompt(conversationSummary, manifest)
   }
 
@@ -295,4 +401,10 @@ export async function initMemoryManager(config?: MemoryManagerConfig): Promise<M
   await manager.init()
   setMemoryManager(manager)
   return manager
+}
+
+function generateSessionId(): string {
+  const timestamp = Date.now().toString(36)
+  const random = Math.random().toString(36).slice(2, 8)
+  return `sess_${timestamp}_${random}`
 }

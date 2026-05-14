@@ -1,4 +1,4 @@
-import type { MemoryFile, MemoryFrontmatter, MemoryType } from '../types.js'
+import type { MemoryFile, MemoryFrontmatter, MemoryScope, MemoryType } from '../types.js'
 
 export type StorageBackendType = 'filesystem' | 'vector' | 'sql' | 'mongodb' | 'custom'
 
@@ -9,6 +9,8 @@ export interface StorageQueryOptions {
   tags?: string[]
   since?: number
   until?: number
+  scope?: MemoryScope
+  sessionId?: string
 }
 
 export interface StorageSearchOptions {
@@ -16,6 +18,8 @@ export interface StorageSearchOptions {
   limit?: number
   threshold?: number
   useSemantic?: boolean
+  scope?: MemoryScope
+  sessionId?: string
 }
 
 export interface StorageSearchResult {
@@ -64,6 +68,7 @@ export interface StorageStats {
   totalMemories: number
   totalSizeBytes: number
   byType: Record<string, number>
+  byScope: Record<string, number>
   oldestAt: number | null
   newestAt: number | null
 }

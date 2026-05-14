@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import type { MemoryFile } from '../types.js'
+import type { MemoryFile, MemoryScope } from '../types.js'
 import { createLogger } from '../../utils/logger.js'
 import type {
   MemoryStorageBackend,
@@ -19,6 +19,8 @@ interface MongoDocument {
   type: string
   description: string
   content: string
+  scope?: MemoryScope
+  sessionId?: string
   tags: string[]
   createdAt: string
   updatedAt: string
@@ -102,6 +104,8 @@ export class MongoDBBackend implements MemoryStorageBackend {
       type: memory.type,
       description: memory.description,
       content: memory.content,
+      scope: memory.frontmatter.scope,
+      sessionId: memory.frontmatter.sessionId,
       tags: memory.frontmatter.tags ?? [],
       createdAt: memory.frontmatter.created_at ?? now,
       updatedAt: now,
@@ -109,7 +113,7 @@ export class MongoDBBackend implements MemoryStorageBackend {
     }
 
     for (const [k, v] of Object.entries(memory.frontmatter)) {
-      if (!['type', 'description', 'tags', 'created_at', 'updated_at'].includes(k)) {
+      if (!['type', 'description', 'tags', 'scope', 'sessionId', 'created_at', 'updated_at'].includes(k)) {
         doc.metadata[k] = v
       }
     }
@@ -137,6 +141,8 @@ export class MongoDBBackend implements MemoryStorageBackend {
     if (updates.type !== undefined) setFields.type = updates.type
     if (updates.description !== undefined) setFields.description = updates.description
     if (updates.frontmatter?.tags) setFields.tags = updates.frontmatter.tags
+    if (updates.frontmatter?.scope) setFields.scope = updates.frontmatter.scope
+    if (updates.frontmatter?.sessionId !== undefined) setFields.sessionId = updates.frontmatter.sessionId
 
     if (this.collection) {
       await this.collection.updateOne({ id }, { $set: setFields })
@@ -148,6 +154,8 @@ export class MongoDBBackend implements MemoryStorageBackend {
       if (updates.type !== undefined) doc.type = updates.type
       if (updates.description !== undefined) doc.description = updates.description
       if (updates.frontmatter?.tags) doc.tags = updates.frontmatter.tags
+      if (updates.frontmatter?.scope) doc.scope = updates.frontmatter.scope
+      if (updates.frontmatter?.sessionId !== undefined) doc.sessionId = updates.frontmatter.sessionId
       doc.updatedAt = now
     }
 
@@ -168,21 +176,24 @@ export class MongoDBBackend implements MemoryStorageBackend {
     const threshold = options.threshold ?? 0
 
     if (this.collection) {
-      return this.mongoSearch(options.query, limit)
+      return this.mongoSearch(options)
     }
 
-    const all = await this.list()
+    const all = await this.list({ scope: options.scope, sessionId: options.sessionId })
     return this.keywordSearch(all, options.query, limit, threshold)
   }
 
   async getStats(): Promise<StorageStats> {
     const all = await this.list()
     const byType: Record<string, number> = {}
+    const byScope: Record<string, number> = {}
     let oldest: number | null = null
     let newest: number | null = null
 
     for (const m of all) {
       byType[m.type] = (byType[m.type] ?? 0) + 1
+      const scope = m.frontmatter.scope ?? 'project'
+      byScope[scope] = (byScope[scope] ?? 0) + 1
       if (oldest === null || m.mtimeMs < oldest) oldest = m.mtimeMs
       if (newest === null || m.mtimeMs > newest) newest = m.mtimeMs
     }
@@ -191,6 +202,7 @@ export class MongoDBBackend implements MemoryStorageBackend {
       totalMemories: all.length,
       totalSizeBytes: all.reduce((sum, m) => sum + m.sizeBytes, 0),
       byType,
+      byScope,
       oldestAt: oldest,
       newestAt: newest,
     }
@@ -230,6 +242,38 @@ export class MongoDBBackend implements MemoryStorageBackend {
       filter.type = { $in: options.types }
     }
 
+    if (options?.scope) {
+      if (options.scope === 'global') {
+        filter.$or = [
+          { scope: 'global' },
+          { scope: { $exists: false }, type: 'user' },
+        ]
+      } else if (options.scope === 'project') {
+        filter.$or = [
+          { scope: { $in: ['global', 'project'] } },
+          { scope: { $exists: false } },
+        ]
+      } else if (options.scope === 'session') {
+        if (options.sessionId) {
+          filter.$or = [
+            { scope: { $in: ['global', 'project'] } },
+            { scope: 'session', sessionId: options.sessionId },
+          ]
+        } else {
+          filter.$or = [
+            { scope: { $in: ['global', 'project'] } },
+            { scope: { $exists: false } },
+          ]
+        }
+      }
+    }
+
+    if (options?.sessionId && options.scope !== 'session') {
+      filter.$or = filter.$or
+        ? { $and: [filter.$or, { $or: [{ sessionId: options.sessionId }, { scope: { $ne: 'session' } }] }] }
+        : [{ sessionId: options.sessionId }, { scope: { $ne: 'session' } }]
+    }
+
     if (options?.since || options?.until) {
       const updatedAt: Record<string, unknown> = {}
       if (options.since) updatedAt.$gte = new Date(options.since).toISOString()
@@ -258,6 +302,14 @@ export class MongoDBBackend implements MemoryStorageBackend {
   private listFromMemory(options?: StorageQueryOptions): MemoryFile[] {
     let docs = [...this.documents.values()]
 
+    if (options?.scope) {
+      docs = this.filterDocsByScope(docs, options.scope, options.sessionId)
+    }
+
+    if (options?.sessionId && options.scope !== 'session') {
+      docs = docs.filter(d => d.sessionId === options.sessionId || d.scope !== 'session')
+    }
+
     if (options?.types && options.types.length > 0) {
       docs = docs.filter(d => options.types!.includes(d.type as MemoryFile['type']))
     }
@@ -274,10 +326,43 @@ export class MongoDBBackend implements MemoryStorageBackend {
     return docs.map(d => this.docToMemory(d))
   }
 
-  private async mongoSearch(query: string, limit: number): Promise<StorageSearchResult[]> {
+  private filterDocsByScope(docs: MongoDocument[], scope: MemoryScope, sessionId?: string): MongoDocument[] {
+    if (scope === 'global') {
+      return docs.filter(d => d.scope === 'global' || (!d.scope && d.type === 'user'))
+    }
+
+    if (scope === 'project') {
+      return docs.filter(d => {
+        if (!d.scope) return d.type !== 'session'
+        return d.scope === 'global' || d.scope === 'project'
+      })
+    }
+
+    if (scope === 'session') {
+      return docs.filter(d => {
+        if (!d.scope) return true
+        if (d.scope === 'global' || d.scope === 'project') return true
+        if (d.scope === 'session') return d.sessionId === sessionId
+        return false
+      })
+    }
+
+    return docs
+  }
+
+  private async mongoSearch(options: StorageSearchOptions): Promise<StorageSearchResult[]> {
+    const limit = options.limit ?? 10
+    const filter: Record<string, unknown> = {}
+
+    if (options.scope || options.sessionId) {
+      const scopeFilter = this.buildFilter({ scope: options.scope, sessionId: options.sessionId })
+      Object.assign(filter, scopeFilter)
+    }
+
     try {
       const docs = await this.collection!.find({
-        $text: { $search: query },
+        ...filter,
+        $text: { $search: options.query },
       }).sort({ score: { $meta: 'textScore' } }).limit(limit).toArray() as (MongoDocument & { score?: number })[]
 
       return docs.map(d => ({
@@ -285,8 +370,8 @@ export class MongoDBBackend implements MemoryStorageBackend {
         score: d.score ?? 0,
       }))
     } catch {
-      const all = await this.list()
-      return this.keywordSearch(all, query, limit, 0)
+      const all = await this.list({ scope: options.scope, sessionId: options.sessionId })
+      return this.keywordSearch(all, options.query, limit, 0)
     }
   }
 
@@ -326,6 +411,8 @@ export class MongoDBBackend implements MemoryStorageBackend {
       frontmatter: {
         type: doc.type as MemoryFile['type'],
         description: doc.description,
+        scope: doc.scope,
+        sessionId: doc.sessionId,
         tags: doc.tags,
         created_at: doc.createdAt,
         updated_at: doc.updatedAt,

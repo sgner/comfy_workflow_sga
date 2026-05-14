@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import type { MemoryFile } from '../types.js'
+import type { MemoryFile, MemoryScope } from '../types.js'
 import { createLogger } from '../../utils/logger.js'
 import type {
   MemoryStorageBackend,
@@ -21,6 +21,8 @@ interface VectorDocument {
     type: string
     description: string
     tags: string[]
+    scope?: MemoryScope
+    sessionId?: string
     createdAt: string
     updatedAt: string
     [key: string]: unknown
@@ -61,6 +63,17 @@ export class VectorBackend implements MemoryStorageBackend {
 
   async list(options?: StorageQueryOptions): Promise<MemoryFile[]> {
     let docs = [...this.documents.values()]
+
+    if (options?.scope) {
+      docs = this.filterByScope(docs, options.scope, options.sessionId)
+    }
+
+    if (options?.sessionId) {
+      docs = docs.filter(d =>
+        d.metadata.sessionId === options.sessionId ||
+        d.metadata.scope !== 'session'
+      )
+    }
 
     if (options?.types && options.types.length > 0) {
       docs = docs.filter(d => options.types!.includes(d.metadata.type as MemoryFile['type']))
@@ -119,6 +132,8 @@ export class VectorBackend implements MemoryStorageBackend {
         type: memory.type,
         description: memory.description,
         tags: memory.frontmatter.tags ?? [],
+        scope: memory.frontmatter.scope,
+        sessionId: memory.frontmatter.sessionId,
         createdAt: memory.frontmatter.created_at ?? now,
         updatedAt: memory.frontmatter.updated_at ?? now,
       },
@@ -149,6 +164,8 @@ export class VectorBackend implements MemoryStorageBackend {
     if (updates.type !== undefined) existing.metadata.type = updates.type
     if (updates.description !== undefined) existing.metadata.description = updates.description
     if (updates.frontmatter?.tags) existing.metadata.tags = updates.frontmatter.tags
+    if (updates.frontmatter?.scope) existing.metadata.scope = updates.frontmatter.scope
+    if (updates.frontmatter?.sessionId) existing.metadata.sessionId = updates.frontmatter.sessionId
     existing.metadata.updatedAt = now
 
     return this.docToMemory(existing)
@@ -161,6 +178,10 @@ export class VectorBackend implements MemoryStorageBackend {
   async search(options: StorageSearchOptions): Promise<StorageSearchResult[]> {
     const limit = options.limit ?? 10
     const threshold = options.threshold ?? 0.5
+
+    if (options.scope || options.sessionId) {
+      return this.scopedSearch(options)
+    }
 
     if (options.useSemantic !== false && this.embeddingFn) {
       try {
@@ -177,11 +198,14 @@ export class VectorBackend implements MemoryStorageBackend {
   async getStats(): Promise<StorageStats> {
     const docs = [...this.documents.values()]
     const byType: Record<string, number> = {}
+    const byScope: Record<string, number> = {}
     let oldest: number | null = null
     let newest: number | null = null
 
     for (const d of docs) {
       byType[d.metadata.type] = (byType[d.metadata.type] ?? 0) + 1
+      const scope = d.metadata.scope ?? 'project'
+      byScope[scope] = (byScope[scope] ?? 0) + 1
       const ts = new Date(d.metadata.updatedAt).getTime()
       if (oldest === null || ts < oldest) oldest = ts
       if (newest === null || ts > newest) newest = ts
@@ -191,6 +215,7 @@ export class VectorBackend implements MemoryStorageBackend {
       totalMemories: docs.length,
       totalSizeBytes: docs.reduce((sum, d) => sum + Buffer.byteLength(d.content, 'utf-8'), 0),
       byType,
+      byScope,
       oldestAt: oldest,
       newestAt: newest,
     }
@@ -208,6 +233,75 @@ export class VectorBackend implements MemoryStorageBackend {
   async clear(): Promise<void> {
     this.documents.clear()
     logger.info('Cleared all vector store documents')
+  }
+
+  private filterByScope(docs: VectorDocument[], scope: MemoryScope, sessionId?: string): VectorDocument[] {
+    if (scope === 'global') {
+      return docs.filter(d => d.metadata.scope === 'global' || (!d.metadata.scope && d.metadata.type === 'user'))
+    }
+
+    if (scope === 'project') {
+      return docs.filter(d => {
+        const mScope = d.metadata.scope
+        if (!mScope) return d.metadata.type !== 'session'
+        return mScope === 'global' || mScope === 'project'
+      })
+    }
+
+    if (scope === 'session') {
+      return docs.filter(d => {
+        const mScope = d.metadata.scope
+        if (!mScope) return true
+        if (mScope === 'global' || mScope === 'project') return true
+        if (mScope === 'session') return d.metadata.sessionId === sessionId
+        return false
+      })
+    }
+
+    return docs
+  }
+
+  private scopedSearch(options: StorageSearchOptions): StorageSearchResult[] {
+    let docs = [...this.documents.values()]
+
+    if (options.scope) {
+      docs = this.filterByScope(docs, options.scope, options.sessionId)
+    }
+
+    if (options.sessionId) {
+      docs = docs.filter(d =>
+        d.metadata.sessionId === options.sessionId ||
+        d.metadata.scope !== 'session'
+      )
+    }
+
+    const queryLower = options.query.toLowerCase()
+    const queryTerms = queryLower.split(/\s+/).filter(t => t.length >= 2)
+    const limit = options.limit ?? 10
+    const threshold = options.threshold ?? 0
+
+    const results: StorageSearchResult[] = []
+
+    for (const doc of docs) {
+      const descLower = doc.metadata.description.toLowerCase()
+      const contentLower = doc.content.toLowerCase()
+      let score = 0
+
+      for (const term of queryTerms) {
+        if (descLower.includes(term)) score += 3
+        if (contentLower.includes(term)) score += 1
+      }
+
+      if (score > 0) {
+        const normalizedScore = Math.min(score / 10, 1.0)
+        if (normalizedScore >= threshold) {
+          results.push({ memory: this.docToMemory(doc), score: normalizedScore })
+        }
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score)
+    return results.slice(0, limit)
   }
 
   private cosineSearch(queryEmbedding: number[], limit: number, threshold: number): StorageSearchResult[] {
@@ -263,6 +357,8 @@ export class VectorBackend implements MemoryStorageBackend {
         type: doc.metadata.type as MemoryFile['type'],
         description: doc.metadata.description,
         tags: doc.metadata.tags,
+        scope: doc.metadata.scope,
+        sessionId: doc.metadata.sessionId,
         created_at: doc.metadata.createdAt,
         updated_at: doc.metadata.updatedAt,
       },

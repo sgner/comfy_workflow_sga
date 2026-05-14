@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import type { MemoryFile } from '../types.js'
+import type { MemoryFile, MemoryScope } from '../types.js'
 import { createLogger } from '../../utils/logger.js'
 import type {
   MemoryStorageBackend,
@@ -18,6 +18,8 @@ interface SQLRow {
   type: string
   description: string
   content: string
+  scope: string
+  session_id: string
   tags: string
   created_at: string
   updated_at: string
@@ -59,6 +61,8 @@ export class SQLBackend implements MemoryStorageBackend {
           type VARCHAR(50) NOT NULL DEFAULT 'project',
           description TEXT NOT NULL DEFAULT '',
           content TEXT NOT NULL,
+          scope VARCHAR(20) DEFAULT 'project',
+          session_id VARCHAR(255) DEFAULT '',
           tags TEXT DEFAULT '[]',
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -101,9 +105,11 @@ export class SQLBackend implements MemoryStorageBackend {
     const id = memory.path || randomUUID()
     const now = new Date().toISOString()
     const tags = memory.frontmatter.tags ?? []
+    const scope = memory.frontmatter.scope ?? 'project'
+    const sessionId = memory.frontmatter.sessionId ?? ''
     const metadata: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(memory.frontmatter)) {
-      if (!['type', 'description', 'tags', 'created_at', 'updated_at'].includes(k)) {
+      if (!['type', 'description', 'tags', 'scope', 'sessionId', 'created_at', 'updated_at'].includes(k)) {
         metadata[k] = v
       }
     }
@@ -111,16 +117,18 @@ export class SQLBackend implements MemoryStorageBackend {
     if (this.executeFn) {
       const tableName = this.config.tableName ?? 'memories'
       await this.executeFn(
-        `INSERT INTO ${tableName} (id, type, description, content, tags, created_at, updated_at, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO ${tableName} (id, type, description, content, scope, session_id, tags, created_at, updated_at, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (id) DO UPDATE SET
            type = EXCLUDED.type,
            description = EXCLUDED.description,
            content = EXCLUDED.content,
+           scope = EXCLUDED.scope,
+           session_id = EXCLUDED.session_id,
            tags = EXCLUDED.tags,
            updated_at = EXCLUDED.updated_at,
            metadata = EXCLUDED.metadata`,
-        [id, memory.type, memory.description, memory.content, JSON.stringify(tags), memory.frontmatter.created_at ?? now, now, JSON.stringify(metadata)],
+        [id, memory.type, memory.description, memory.content, scope, sessionId, JSON.stringify(tags), memory.frontmatter.created_at ?? now, now, JSON.stringify(metadata)],
       )
     } else {
       this.rows.set(id, {
@@ -128,6 +136,8 @@ export class SQLBackend implements MemoryStorageBackend {
         type: memory.type,
         description: memory.description,
         content: memory.content,
+        scope,
+        session_id: sessionId,
         tags: JSON.stringify(tags),
         created_at: memory.frontmatter.created_at ?? now,
         updated_at: now,
@@ -171,6 +181,14 @@ export class SQLBackend implements MemoryStorageBackend {
         setClauses.push(`tags = $${paramIdx++}`)
         params.push(JSON.stringify(updates.frontmatter.tags))
       }
+      if (updates.frontmatter?.scope) {
+        setClauses.push(`scope = $${paramIdx++}`)
+        params.push(updates.frontmatter.scope)
+      }
+      if (updates.frontmatter?.sessionId !== undefined) {
+        setClauses.push(`session_id = $${paramIdx++}`)
+        params.push(updates.frontmatter.sessionId)
+      }
 
       setClauses.push(`updated_at = $${paramIdx++}`)
       params.push(now)
@@ -188,6 +206,8 @@ export class SQLBackend implements MemoryStorageBackend {
       if (updates.type !== undefined) row.type = updates.type
       if (updates.description !== undefined) row.description = updates.description
       if (updates.frontmatter?.tags) row.tags = JSON.stringify(updates.frontmatter.tags)
+      if (updates.frontmatter?.scope) row.scope = updates.frontmatter.scope
+      if (updates.frontmatter?.sessionId !== undefined) row.session_id = updates.frontmatter.sessionId
       row.updated_at = now
     }
 
@@ -209,21 +229,24 @@ export class SQLBackend implements MemoryStorageBackend {
     const threshold = options.threshold ?? 0
 
     if (this.queryFn && options.useSemantic !== true) {
-      return this.sqlSearch(options.query, limit)
+      return this.sqlSearch(options)
     }
 
-    const all = await this.list()
+    const all = await this.list({ scope: options.scope, sessionId: options.sessionId })
     return this.keywordSearch(all, options.query, limit, threshold)
   }
 
   async getStats(): Promise<StorageStats> {
     const all = await this.list()
     const byType: Record<string, number> = {}
+    const byScope: Record<string, number> = {}
     let oldest: number | null = null
     let newest: number | null = null
 
     for (const m of all) {
       byType[m.type] = (byType[m.type] ?? 0) + 1
+      const scope = m.frontmatter.scope ?? 'project'
+      byScope[scope] = (byScope[scope] ?? 0) + 1
       if (oldest === null || m.mtimeMs < oldest) oldest = m.mtimeMs
       if (newest === null || m.mtimeMs > newest) newest = m.mtimeMs
     }
@@ -232,6 +255,7 @@ export class SQLBackend implements MemoryStorageBackend {
       totalMemories: all.length,
       totalSizeBytes: all.reduce((sum, m) => sum + m.sizeBytes, 0),
       byType,
+      byScope,
       oldestAt: oldest,
       newestAt: newest,
     }
@@ -257,6 +281,16 @@ export class SQLBackend implements MemoryStorageBackend {
       if (options?.types && options.types.length > 0) {
         conditions.push(`type IN (${options.types.map(() => `$${idx++}`).join(', ')})`)
         params.push(...options.types)
+      }
+
+      if (options?.scope) {
+        conditions.push(`scope = $${idx++}`)
+        params.push(options.scope)
+      }
+
+      if (options?.sessionId) {
+        conditions.push(`(session_id = $${idx++} OR scope != 'session')`)
+        params.push(options.sessionId)
       }
 
       if (conditions.length > 0) {
@@ -292,6 +326,26 @@ export class SQLBackend implements MemoryStorageBackend {
       params.push(...options.types)
     }
 
+    if (options?.scope) {
+      if (options.scope === 'global') {
+        conditions.push(`(scope = 'global' OR (scope = 'project' AND type = 'user'))`)
+      } else if (options.scope === 'project') {
+        conditions.push(`(scope IN ('global', 'project') OR scope IS NULL)`)
+      } else if (options.scope === 'session') {
+        if (options.sessionId) {
+          conditions.push(`(scope IN ('global', 'project') OR (scope = 'session' AND session_id = $${idx++}))`)
+          params.push(options.sessionId)
+        } else {
+          conditions.push(`(scope IN ('global', 'project') OR scope IS NULL)`)
+        }
+      }
+    }
+
+    if (options?.sessionId && options.scope !== 'session') {
+      conditions.push(`(session_id = $${idx++} OR scope != 'session')`)
+      params.push(options.sessionId)
+    }
+
     if (options?.since) {
       conditions.push(`updated_at >= $${idx++}`)
       params.push(new Date(options.since).toISOString())
@@ -316,6 +370,14 @@ export class SQLBackend implements MemoryStorageBackend {
   private listFromMemory(options?: StorageQueryOptions): MemoryFile[] {
     let rows = [...this.rows.values()]
 
+    if (options?.scope) {
+      rows = this.filterRowsByScope(rows, options.scope, options.sessionId)
+    }
+
+    if (options?.sessionId && options.scope !== 'session') {
+      rows = rows.filter(r => r.session_id === options.sessionId || r.scope !== 'session')
+    }
+
     if (options?.types && options.types.length > 0) {
       rows = rows.filter(r => options.types!.includes(r.type as MemoryFile['type']))
     }
@@ -328,7 +390,31 @@ export class SQLBackend implements MemoryStorageBackend {
     return rows.map(r => this.rowToMemory(r))
   }
 
-  private async sqlSearch(query: string, limit: number): Promise<StorageSearchResult[]> {
+  private filterRowsByScope(rows: SQLRow[], scope: MemoryScope, sessionId?: string): SQLRow[] {
+    if (scope === 'global') {
+      return rows.filter(r => r.scope === 'global' || (!r.scope && r.type === 'user'))
+    }
+
+    if (scope === 'project') {
+      return rows.filter(r => {
+        if (!r.scope) return r.type !== 'session'
+        return r.scope === 'global' || r.scope === 'project'
+      })
+    }
+
+    if (scope === 'session') {
+      return rows.filter(r => {
+        if (!r.scope) return true
+        if (r.scope === 'global' || r.scope === 'project') return true
+        if (r.scope === 'session') return r.session_id === sessionId
+        return false
+      })
+    }
+
+    return rows
+  }
+
+  private async sqlSearch(options: StorageSearchOptions): Promise<StorageSearchResult[]> {
     const tableName = this.config.tableName ?? 'memories'
     const dialect = this.config.dialect ?? 'postgres'
 
@@ -341,11 +427,27 @@ export class SQLBackend implements MemoryStorageBackend {
       searchExpr = `(description LIKE '%' || $1 || '%' OR content LIKE '%' || $1 || '%')`
     }
 
+    const conditions = [searchExpr]
+    const params: unknown[] = [options.query]
+    let idx = 2
+
+    if (options.scope) {
+      if (options.scope === 'session' && options.sessionId) {
+        conditions.push(`(scope IN ('global', 'project') OR (scope = 'session' AND session_id = $${idx++}))`)
+        params.push(options.sessionId)
+      } else if (options.scope === 'project') {
+        conditions.push(`(scope IN ('global', 'project') OR scope IS NULL)`)
+      } else if (options.scope === 'global') {
+        conditions.push(`(scope = 'global' OR (scope = 'project' AND type = 'user'))`)
+      }
+    }
+
+    const limit = options.limit ?? 10
     const rows = await this.queryFn!(
       `SELECT *, CASE WHEN description LIKE '%' || $1 || '%' THEN 3 ELSE 0 END +
        CASE WHEN content LIKE '%' || $1 || '%' THEN 1 ELSE 0 END AS score
-       FROM ${tableName} WHERE ${searchExpr} ORDER BY score DESC LIMIT $2`,
-      [query, limit],
+       FROM ${tableName} WHERE ${conditions.join(' AND ')} ORDER BY score DESC LIMIT $${idx}`,
+      [...params, limit],
     )
 
     return rows.map(r => ({
@@ -400,6 +502,8 @@ export class SQLBackend implements MemoryStorageBackend {
       frontmatter: {
         type: row.type as MemoryFile['type'],
         description: row.description,
+        scope: (row.scope || undefined) as MemoryScope | undefined,
+        sessionId: row.session_id || undefined,
         tags,
         created_at: row.created_at,
         updated_at: row.updated_at,

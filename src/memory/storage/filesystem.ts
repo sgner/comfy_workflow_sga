@@ -1,7 +1,7 @@
 import { readdir, stat, readFile, writeFile, mkdir, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import type { MemoryFile, MemoryFrontmatter } from '../types.js'
+import type { MemoryFile, MemoryFrontmatter, MemoryScope } from '../types.js'
 import { MEMORY_MAX_FILES } from '../types.js'
 import { parseFrontmatter } from '../scanner.js'
 import { ensureMemoryDirExists } from '../paths.js'
@@ -47,6 +47,17 @@ export class FileSystemBackend implements MemoryStorageBackend {
   async list(options?: StorageQueryOptions): Promise<MemoryFile[]> {
     const all = await this.ensureCache()
     let filtered = [...all]
+
+    if (options?.scope) {
+      filtered = this.filterByScope(filtered, options.scope, options.sessionId)
+    }
+
+    if (options?.sessionId) {
+      filtered = filtered.filter(m =>
+        m.frontmatter.sessionId === options.sessionId ||
+        m.frontmatter.scope !== 'session'
+      )
+    }
 
     if (options?.types && options.types.length > 0) {
       filtered = filtered.filter(m => options.types!.includes(m.type))
@@ -138,7 +149,19 @@ export class FileSystemBackend implements MemoryStorageBackend {
   }
 
   async search(options: StorageSearchOptions): Promise<StorageSearchResult[]> {
-    const all = await this.ensureCache()
+    let all = await this.ensureCache()
+
+    if (options.scope) {
+      all = this.filterByScope(all, options.scope, options.sessionId)
+    }
+
+    if (options.sessionId) {
+      all = all.filter(m =>
+        m.frontmatter.sessionId === options.sessionId ||
+        m.frontmatter.scope !== 'session'
+      )
+    }
+
     const queryLower = options.query.toLowerCase()
     const queryTerms = queryLower.split(/\s+/).filter(t => t.length >= 2)
     const limit = options.limit ?? 10
@@ -160,12 +183,15 @@ export class FileSystemBackend implements MemoryStorageBackend {
   async getStats(): Promise<StorageStats> {
     const all = await this.ensureCache()
     const byType: Record<string, number> = {}
+    const byScope: Record<string, number> = {}
     let totalSize = 0
     let oldest: number | null = null
     let newest: number | null = null
 
     for (const m of all) {
       byType[m.type] = (byType[m.type] ?? 0) + 1
+      const scope = m.frontmatter.scope ?? 'project'
+      byScope[scope] = (byScope[scope] ?? 0) + 1
       totalSize += m.sizeBytes
       if (oldest === null || m.mtimeMs < oldest) oldest = m.mtimeMs
       if (newest === null || m.mtimeMs > newest) newest = m.mtimeMs
@@ -175,6 +201,7 @@ export class FileSystemBackend implements MemoryStorageBackend {
       totalMemories: all.length,
       totalSizeBytes: totalSize,
       byType,
+      byScope,
       oldestAt: oldest,
       newestAt: newest,
     }
@@ -218,6 +245,32 @@ export class FileSystemBackend implements MemoryStorageBackend {
       await this.refreshCache()
     }
     return this.cachedMemories ?? []
+  }
+
+  private filterByScope(memories: MemoryFile[], scope: MemoryScope, sessionId?: string): MemoryFile[] {
+    if (scope === 'global') {
+      return memories.filter(m => m.frontmatter.scope === 'global' || (!m.frontmatter.scope && m.type === 'user'))
+    }
+
+    if (scope === 'project') {
+      return memories.filter(m => {
+        const mScope = m.frontmatter.scope
+        if (!mScope) return m.type !== 'session'
+        return mScope === 'global' || mScope === 'project'
+      })
+    }
+
+    if (scope === 'session') {
+      return memories.filter(m => {
+        const mScope = m.frontmatter.scope
+        if (!mScope) return true
+        if (mScope === 'global' || mScope === 'project') return true
+        if (mScope === 'session') return m.frontmatter.sessionId === sessionId
+        return false
+      })
+    }
+
+    return memories
   }
 
   private async scanMemoryFiles(): Promise<MemoryFile[]> {
@@ -277,9 +330,20 @@ export class FileSystemBackend implements MemoryStorageBackend {
       '---',
       `type: ${type}`,
       `description: "${description.replace(/"/g, '\\"')}"`,
+    ]
+
+    if (fm.scope) {
+      frontmatterLines.push(`scope: ${fm.scope}`)
+    }
+
+    if (fm.sessionId) {
+      frontmatterLines.push(`sessionId: ${fm.sessionId}`)
+    }
+
+    frontmatterLines.push(
       `created_at: ${fm.created_at ?? now}`,
       `updated_at: ${now}`,
-    ]
+    )
 
     if (fm.tags && fm.tags.length > 0) {
       frontmatterLines.push(`tags: ${fm.tags.join(', ')}`)
@@ -318,6 +382,8 @@ export class FileSystemBackend implements MemoryStorageBackend {
     const ageDays = (Date.now() - memory.mtimeMs) / (1000 * 60 * 60 * 24)
     if (ageDays <= 1) score += 2
     else if (ageDays <= 7) score += 1
+
+    if (memory.frontmatter.scope === 'session') score += 1
 
     return score
   }
