@@ -31,6 +31,7 @@ export interface APIRequestOptions {
     cache_control?: { type: 'ephemeral' }
   }>
   thinkingBudget?: number
+  reasoningEffort?: 'low' | 'medium' | 'high'
 }
 
 export interface APIResponse {

@@ -71,6 +71,7 @@ export interface SystemPromptPriority {
   custom?: string
   default?: string
   append?: string
+  thinkingEffort?: string
 }
 
 export function buildEffectiveSystemPrompt(priority: SystemPromptPriority): SystemPrompt {
@@ -84,6 +85,7 @@ export function buildEffectiveSystemPrompt(priority: SystemPromptPriority): Syst
 
   const parts = [content]
   if (priority.append) parts.push(priority.append)
+  if (priority.thinkingEffort) parts.push(priority.thinkingEffort)
 
   return {
     role: 'system',

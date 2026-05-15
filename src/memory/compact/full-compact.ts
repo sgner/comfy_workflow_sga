@@ -1,5 +1,6 @@
 import type { Message, MessageContent } from '../../core/types.js'
 import type { LLMProvider, ProviderRequestOptions } from '../../providers/types.js'
+import { getSgaConfig } from '../../config.js'
 import { estimateMessageTokens } from './micro-compact.js'
 import { createLogger } from '../../utils/logger.js'
 
@@ -12,6 +13,18 @@ export interface FullCompactConfig {
   bufferTokens: number
   warningThresholdTokens: number
   maxConsecutiveFailures: number
+}
+
+export function getFullCompactConfig(): FullCompactConfig {
+  const cfg = getSgaConfig().compact
+  return {
+    enabled: cfg.fullEnabled,
+    maxOutputTokens: cfg.fullMaxOutputTokens,
+    maxPTLRetries: cfg.fullMaxPTLRetries,
+    bufferTokens: cfg.fullBufferTokens,
+    warningThresholdTokens: cfg.fullWarningThresholdTokens,
+    maxConsecutiveFailures: cfg.fullMaxConsecutiveFailures,
+  }
 }
 
 export const DEFAULT_FULL_COMPACT_CONFIG: FullCompactConfig = {
@@ -214,7 +227,7 @@ export async function compactConversation(
         throw new Error('Conversation too long for compaction. Please manually reduce context.')
       }
 
-      const tokenGap = preCompactTokenCount - (modelConfig?.contextWindow ?? 200_000)
+      const tokenGap = preCompactTokenCount - (modelConfig?.contextWindow ?? getSgaConfig().compact.modelMaxTokens)
       const truncated = truncateHeadForPTLRetry(messagesToSummarize, Math.max(tokenGap, 10_000))
       if (!truncated) {
         throw new Error('Conversation too long for compaction after retries.')

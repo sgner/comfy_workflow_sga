@@ -1,7 +1,12 @@
 import type { Message, MessageContent } from '../../core/types.js'
+import { getSgaConfig } from '../../config.js'
 import { createLogger } from '../../utils/logger.js'
 
 const logger = createLogger('post-compact-restore')
+
+export function getPostCompactConfig() {
+  return getSgaConfig().postCompact
+}
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -67,9 +72,11 @@ export function capturePreCompactState(
 
 export function createPostCompactAttachments(
   preCompactState: PostCompactState,
-  maxFiles: number = POST_COMPACT_MAX_FILES_TO_RESTORE,
-  tokenBudget: number = POST_COMPACT_TOKEN_BUDGET,
 ): RestoredAttachment[] {
+  const cfg = getPostCompactConfig()
+  const maxFiles = cfg.maxFilesToRestore
+  const tokenBudget = cfg.tokenBudget
+
   const attachments: RestoredAttachment[] = []
   let tokensUsed = 0
 
@@ -95,7 +102,7 @@ export function createPostCompactAttachments(
 
   const skillAttachments = createSkillAttachments(
     preCompactState.skillStates,
-    POST_COMPACT_SKILLS_TOKEN_BUDGET,
+    cfg.skillsTokenBudget,
   )
 
   for (const att of skillAttachments) {
@@ -136,7 +143,7 @@ function createFileAttachments(
     .slice(0, maxFiles)
 
   return entries.map(([path, state]) => {
-    const maxTokens = POST_COMPACT_MAX_TOKENS_PER_FILE
+    const maxTokens = getPostCompactConfig().maxTokensPerFile
     const content = state.content.length > maxTokens * 4
       ? state.content.slice(0, maxTokens * 4) + '\n... (truncated)'
       : state.content
@@ -171,7 +178,7 @@ function createSkillAttachments(
   let tokensUsed = 0
 
   for (const skill of skillStates) {
-    const maxTokens = POST_COMPACT_MAX_TOKENS_PER_SKILL
+    const maxTokens = getPostCompactConfig().maxTokensPerSkill
     const content = skill.skillContent.length > maxTokens * 4
       ? skill.skillContent.slice(0, maxTokens * 4) + '\n... (truncated)'
       : skill.skillContent

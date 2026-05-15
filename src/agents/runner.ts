@@ -1,4 +1,4 @@
-import type { Message, ModelAlias, UsageMetrics, PermissionMode } from '../core/types.js'
+import type { Message, ModelAlias, UsageMetrics, PermissionMode, ThinkingEffort } from '../core/types.js'
 import type { AgentDefinition } from './definition.js'
 import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { SystemPrompt } from '../context/system-prompt.js'
@@ -11,6 +11,7 @@ import { createLogger } from '../utils/logger.js'
 import { getMemoryManager } from '../memory/manager.js'
 import { getWorkingSet } from '../memory/working-set-registry.js'
 import { buildContext, detectFocusMode } from '../memory/context-builder.js'
+import { resolveThinkingStrategy } from './thinking-prompts.js'
 
 const logger = createLogger('agent-runner')
 
@@ -46,9 +47,21 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   const resolvedModel = resolveAgentModel(agentDefinition.getModel(), model)
   const agentTools = resolveAgentTools(agentDefinition, tools)
+
+  const modelConfig = provider.getModelConfig(resolvedModel)
+  const thinkingStrategy = resolveThinkingStrategy(
+    agentDefinition.getEffort(),
+    modelConfig?.supportsThinking ?? false,
+    modelConfig?.supportsReasoningEffort ?? false,
+  )
+
   let systemPromptContent = await agentDefinition.getSystemPrompt({
     toolUseContext: options.parentContext ?? createDefaultToolUseContext(tools),
   })
+
+  if (thinkingStrategy.promptInjection) {
+    systemPromptContent = systemPromptContent + '\n\n' + thinkingStrategy.promptSuffix
+  }
 
   const memoryManager = getMemoryManager()
   if (memoryManager) {
@@ -113,6 +126,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     options,
     options.pipeline ?? createDefaultPipeline(),
     options.orchestrationConfig,
+    thinkingStrategy,
   )
 
   const lastAssistantMsg = result.messages
@@ -146,6 +160,14 @@ async function executeAgentLoop(
   options: AgentRunOptions,
   pipeline: ToolExecutionPipeline,
   orchestrationConfig?: ToolOrchestrationConfig,
+  thinkingStrategy?: {
+    nativeThinking: boolean
+    nativeReasoningEffort: boolean
+    promptInjection: boolean
+    thinkingBudget: number | undefined
+    reasoningEffort: 'low' | 'medium' | 'high' | undefined
+    promptSuffix: string
+  },
 ): Promise<AgentLoopResult> {
   const maxTurns = options.maxTurns ?? 50
   let turnCount = 0
@@ -198,6 +220,8 @@ async function executeAgentLoop(
       stream: false,
       systemPrompt: systemPromptContent || undefined,
       signal: options.signal,
+      thinkingBudget: thinkingStrategy?.nativeThinking ? thinkingStrategy.thinkingBudget : undefined,
+      reasoningEffort: thinkingStrategy?.nativeReasoningEffort ? thinkingStrategy.reasoningEffort : undefined,
     }
 
     let response: ProviderResponse

@@ -76,6 +76,7 @@ export const OPENAI_MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsToolUse: true,
     supportsStreaming: true,
     supportsThinking: true,
+    supportsReasoningEffort: true,
     defaultMaxTokens: 32768,
     defaultTemperature: 1,
   },
@@ -90,6 +91,7 @@ export const OPENAI_MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsToolUse: true,
     supportsStreaming: true,
     supportsThinking: true,
+    supportsReasoningEffort: true,
     defaultMaxTokens: 32768,
     defaultTemperature: 1,
   },
@@ -104,6 +106,7 @@ export const OPENAI_MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsToolUse: true,
     supportsStreaming: true,
     supportsThinking: true,
+    supportsReasoningEffort: true,
     defaultMaxTokens: 32768,
     defaultTemperature: 1,
   },
@@ -449,6 +452,10 @@ export class OpenAIProvider implements LLMProvider {
     if (options.tools && options.tools.length > 0) {
       body.tools = this.convertTools(options.tools)
       body.tool_choice = 'auto'
+    }
+
+    if (options.reasoningEffort) {
+      body.reasoning_effort = options.reasoningEffort
     }
 
     return body

@@ -1,4 +1,5 @@
 import type { Message, MessageContent } from '../../core/types.js'
+import { getSgaConfig } from '../../config.js'
 import { createLogger } from '../../utils/logger.js'
 
 const logger = createLogger('micro-compact')
@@ -15,6 +16,16 @@ export interface MicroCompactConfig {
   gapThresholdMinutes: number
   keepRecent: number
   maxToolResultTokens: number
+}
+
+export function getMicroCompactConfig(): MicroCompactConfig {
+  const cfg = getSgaConfig().compact
+  return {
+    enabled: cfg.microEnabled,
+    gapThresholdMinutes: cfg.microGapThresholdMinutes,
+    keepRecent: cfg.microKeepRecent,
+    maxToolResultTokens: cfg.microMaxToolResultTokens,
+  }
 }
 
 export const DEFAULT_MICRO_COMPACT_CONFIG: MicroCompactConfig = {

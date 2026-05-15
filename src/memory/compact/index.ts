@@ -1,8 +1,9 @@
 import type { Message } from '../../core/types.js'
 import type { LLMProvider } from '../../providers/types.js'
-import { microCompactMessages, type MicroCompactConfig, type MicroCompactResult, DEFAULT_MICRO_COMPACT_CONFIG } from './micro-compact.js'
-import { sessionMemoryCompact, type SessionMemoryCompactConfig, type SessionMemoryCompactResult, DEFAULT_SM_COMPACT_CONFIG } from './session-memory-compact.js'
-import { compactConversation, shouldAutoCompact, calculateTokenWarningState, type FullCompactConfig, type CompactSummaryResult, DEFAULT_FULL_COMPACT_CONFIG } from './full-compact.js'
+import { getSgaConfig } from '../../config.js'
+import { microCompactMessages, type MicroCompactConfig, type MicroCompactResult, DEFAULT_MICRO_COMPACT_CONFIG, getMicroCompactConfig } from './micro-compact.js'
+import { sessionMemoryCompact, type SessionMemoryCompactConfig, type SessionMemoryCompactResult, DEFAULT_SM_COMPACT_CONFIG, getSessionMemoryCompactConfig } from './session-memory-compact.js'
+import { compactConversation, shouldAutoCompact, calculateTokenWarningState, type FullCompactConfig, type CompactSummaryResult, DEFAULT_FULL_COMPACT_CONFIG, getFullCompactConfig } from './full-compact.js'
 import { estimateMessageTokens } from './micro-compact.js'
 import { createLogger } from '../../utils/logger.js'
 
@@ -16,6 +17,17 @@ export interface AutoCompactConfig {
   full: FullCompactConfig
   modelMaxTokens: number
   preferSessionMemory: boolean
+}
+
+export function getAutoCompactConfig(): AutoCompactConfig {
+  const cfg = getSgaConfig().compact
+  return {
+    micro: getMicroCompactConfig(),
+    sessionMemory: getSessionMemoryCompactConfig(),
+    full: getFullCompactConfig(),
+    modelMaxTokens: cfg.modelMaxTokens,
+    preferSessionMemory: cfg.preferSessionMemory,
+  }
 }
 
 export const DEFAULT_AUTO_COMPACT_CONFIG: AutoCompactConfig = {

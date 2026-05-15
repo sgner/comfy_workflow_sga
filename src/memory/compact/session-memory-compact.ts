@@ -1,4 +1,5 @@
 import type { Message, MessageContent } from '../../core/types.js'
+import { getSgaConfig } from '../../config.js'
 import { estimateMessageTokens } from './micro-compact.js'
 import { createLogger } from '../../utils/logger.js'
 
@@ -9,6 +10,16 @@ export interface SessionMemoryCompactConfig {
   minTextBlockMessages: number
   maxTokens: number
   maxSessionMemoryTokens: number
+}
+
+export function getSessionMemoryCompactConfig(): SessionMemoryCompactConfig {
+  const cfg = getSgaConfig().compact
+  return {
+    minTokens: cfg.smMinTokens,
+    minTextBlockMessages: cfg.smMinTextBlockMessages,
+    maxTokens: cfg.smMaxTokens,
+    maxSessionMemoryTokens: cfg.smMaxSessionMemoryTokens,
+  }
 }
 
 export const DEFAULT_SM_COMPACT_CONFIG: SessionMemoryCompactConfig = {

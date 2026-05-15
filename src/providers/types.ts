@@ -30,6 +30,7 @@ export interface ProviderRequestOptions {
   signal?: AbortSignal
   systemPrompt?: string | ProviderSystemPromptBlock[]
   thinkingBudget?: number
+  reasoningEffort?: 'low' | 'medium' | 'high'
 }
 
 export interface ProviderSystemPromptBlock {
@@ -82,6 +83,7 @@ export interface ModelConfig {
   supportsToolUse?: boolean
   supportsStreaming?: boolean
   supportsThinking?: boolean
+  supportsReasoningEffort?: boolean
   defaultMaxTokens?: number
   defaultTemperature?: number
   maxTemperature?: number

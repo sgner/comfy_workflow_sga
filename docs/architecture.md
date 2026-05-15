@@ -15,6 +15,7 @@ src/
 ├── agents/         # Agent 定义与运行
 │   ├── definition.ts   # AgentDefinition 接口、BaseAgentDefinition 基类
 │   ├── runner.ts       # Agent 执行引擎（runAgent）
+│   ├── thinking-prompts.ts  # 思考力度策略解析与提示词模板
 │   ├── fork.ts         # 子 Agent 分叉执行
 │   └── built-in/       # 内置 Agent 定义
 ├── tools/          # 工具系统
@@ -43,6 +44,29 @@ src/
 │   ├── prompt.ts       # 记忆提示词构建与提取提示词
 │   ├── manager.ts      # MemoryManager 核心管理器（初始化/缓存/检索/持久化）
 │   ├── extractor.ts    # MemoryExtractor 自动记忆提取（后台 LLM 提取）
+│   ├── context-budget.ts   # 上下文预算管理（Token 分配 + 溢出控制）
+│   ├── working-set.ts      # 工作集/锚点（长内容锚定 + 淡出/摘要）
+│   ├── context-builder.ts  # 上下文构建器（预算分配 + 优先级排序）
+│   ├── dedup.ts            # 记忆去重与压缩（哈希/描述/Jaccard）
+│   ├── team-memory-sync.ts # 团队记忆同步（Pull/Push + 冲突解决）
+│   ├── storage/            # 存储后端抽象层
+│   │   ├── types.ts            # 存储后端接口定义
+│   │   ├── registry.ts         # 后端注册与工厂
+│   │   ├── filesystem.ts       # 文件系统后端（默认）
+│   │   ├── vector.ts           # 向量数据库后端
+│   │   ├── sql.ts              # SQL 数据库后端
+│   │   └── mongodb.ts          # MongoDB 后端
+│   ├── compact/            # 三级上下文压缩
+│   │   ├── index.ts            # AutoCompactor 自动压缩调度
+│   │   ├── micro-compact.ts    # Level 1: 微压缩（清除旧工具输出）
+│   │   ├── session-memory-compact.ts  # Level 2: 会话记忆压缩
+│   │   ├── full-compact.ts     # Level 3: 全量压缩（LLM 摘要）
+│   │   ├── post-compact-restore.ts  # 压缩后状态恢复
+│   │   └── tool-summary.ts     # 工具调用摘要
+│   ├── consolidation/      # 记忆整合
+│   │   ├── auto-dream.ts       # AutoDream 整合调度（三重门控）
+│   │   ├── consolidation-lock.ts  # 分布式锁
+│   │   └── consolidation-prompt.ts  # 整合提示词
 │   └── index.ts        # 统一导出
 ├── skills/         # 技能系统
 │   ├── types.ts             # 技能类型定义
@@ -75,10 +99,12 @@ src/
 │   ├── skills-mcp-routes.ts  # Skills 与 MCP 管理 API
 │   ├── main.ts               # 服务启动入口（含优雅关闭）
 │   └── index.ts              # 服务层统一导出
-└── utils/          # 工具函数
-    ├── helpers.ts      # 通用工具函数
-    ├── logger.ts       # 日志系统
-    └── cost-tracker.ts # 成本追踪
+├── utils/          # 工具函数
+│   ├── helpers.ts      # 通用工具函数
+│   ├── logger.ts       # 日志系统
+│   ├── cost-tracker.ts # 成本追踪
+│   └── circuit-breaker.ts  # 熔断器（压缩/整合故障保护）
+├── config.ts       # 统一配置模块（从 .env 加载所有 SGA_ 前缀环境变量）
 ```
 
 ## 核心数据流

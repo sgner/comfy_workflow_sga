@@ -925,10 +925,10 @@ ws?.unpin('old-workflow-id')
 | 自动提取 | 分叉代理 + 互斥 + 合并 | 后台 LLM 提取 + 防重入 | ✅ |
 | MEMORY.md 索引 | 始终加载到上下文 | 自动维护 + 注入提示词 | ✅ |
 | 新鲜度管理 | 独立模块 | 集成在检索中 | ✅ |
-| AutoDream | 五重门控 + 四阶段整合 | ❌ 暂无 | 🔜 |
+| AutoDream | 五重门控 + 四阶段整合 | 三重门控 + LLM 整合 + 环境变量配置 | ✅ |
 | SessionMemory | 当前会话 markdown 笔记 | 三级作用域隔离 + 自动推断 | ✅ |
 | 代理记忆 | 三级作用域 user/project/local | global/project/session 作用域 | ✅ |
-| 团队同步 | Pull/Push API + delta 上传 | ❌ 暂无 | 🔜 |
+| 团队同步 | Pull/Push API + delta 上传 | 自动同步 + 冲突解决 + 环境变量配置 | ✅ |
 | 存储后端抽象 | 仅文件系统 | 文件系统/向量/SQL/MongoDB/自定义 | ✅ |
 | 数据库语义搜索 | ❌ | 向量余弦相似度/全文搜索 | ✅ |
 | 会话隔离 | ❌ | Session ID + 作用域过滤 | ✅ |
@@ -939,9 +939,160 @@ ws?.unpin('old-workflow-id')
 | 注意力聚焦 | ❌ | deep_focus/balanced/exploratory | ✅ |
 | 上下文切换 | ❌ | 锚点淡出 + 焦点模式切换 | ✅ |
 
+## 记忆整合（AutoDream）
+
+> 📄 相关源文件：`src/memory/consolidation/auto-dream.ts`（整合调度）、`src/memory/consolidation/consolidation-lock.ts`（分布式锁）、`src/memory/consolidation/consolidation-prompt.ts`（整合提示词）
+
+记忆整合在后台自动将碎片化的会话记忆合并为结构化长期记忆，避免记忆膨胀和冗余。
+
+### 三重门控
+
+整合操作需要同时满足三个条件才会触发：
+
+1. **时间门控** — 距上次整合至少 `SGA_CONSOLIDATION_MIN_HOURS` 小时（默认 24 小时）
+2. **会话门控** — 至少有 `SGA_CONSOLIDATION_MIN_SESSIONS` 个新会话（默认 5 个）
+3. **锁门控** — 成功获取整合锁（防止并发整合）
+
+### 整合流程
+
+```
+shouldConsolidate()
+    │
+    ├── 1. 检查是否启用
+    ├── 2. 检查时间门控
+    ├── 3. 检查扫描间隔节流
+    ├── 4. 扫描新会话
+    ├── 5. 检查会话门控
+    └── 6. 获取整合锁
+            │
+            ▼
+executeAutoDream()
+    │
+    ├── 1. 读取所有记忆
+    ├── 2. 构建整合提示词
+    ├── 3. 调用 LLM 生成整合摘要
+    ├── 4. 写入整合后的记忆
+    ├── 5. 记录整合完成
+    └── 6. 释放整合锁
+```
+
+### 分布式锁
+
+整合锁使用文件系统实现，支持：
+- **互斥访问** — 同一时刻只有一个整合操作运行
+- **过期检测** — 锁持有超过 `SGA_CONSOLIDATION_LOCK_STALE_MS`（默认 1 小时）自动释放
+- **进程检测** — 检查锁持有者进程是否存活
+
+### 环境变量配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SGA_CONSOLIDATION_ENABLED` | `true` | 是否启用记忆整合 |
+| `SGA_CONSOLIDATION_MIN_HOURS` | `24` | 距上次整合至少多少小时 |
+| `SGA_CONSOLIDATION_MIN_SESSIONS` | `5` | 至少有多少新会话才触发 |
+| `SGA_CONSOLIDATION_MAX_OUTPUT_TOKENS` | `16000` | 整合 LLM 最大输出 token 数 |
+| `SGA_CONSOLIDATION_MODEL` | `haiku` | 整合使用的模型 |
+| `SGA_CONSOLIDATION_LOCK_STALE_MS` | `3600000` | 整合锁过期时间（毫秒） |
+| `SGA_CONSOLIDATION_SCAN_INTERVAL_MS` | `600000` | 整合扫描间隔（毫秒） |
+
+### API
+
+```typescript
+import { shouldConsolidate, executeAutoDream, getAutoDreamConfig } from 'SGA-Template'
+
+if (await shouldConsolidate(memoryManager)) {
+  const result = await executeAutoDream(memoryManager, provider, 'haiku')
+  console.log(result.consolidated)       // true
+  console.log(result.hoursSinceLast)     // 48
+  console.log(result.sessionsReviewed)   // 12
+  console.log(result.summary)            // '整合了用户偏好和项目知识...'
+}
+```
+
+## 团队记忆同步
+
+> 📄 相关源文件：`src/memory/team-memory-sync.ts`
+
+多 Agent 之间的记忆自动同步与冲突解决，确保团队成员共享关键知识。
+
+### 同步机制
+
+```
+Agent A 写入记忆
+    │
+    ▼
+TeamMemorySync 检测变更
+    │
+    ├── Pull：从共享存储拉取其他 Agent 的记忆
+    ├── Push：将本地新记忆推送到共享存储
+    └── 冲突解决：根据策略处理同步冲突
+```
+
+### 冲突解决策略
+
+| 策略 | 说明 |
+|------|------|
+| `last_write_wins` | 最后写入者胜出（默认） |
+| `merge` | 自动合并内容 |
+| `manual` | 标记冲突，等待人工处理 |
+
+### 环境变量配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SGA_TEAM_SYNC_ENABLED` | `true` | 是否启用团队记忆同步 |
+| `SGA_TEAM_SYNC_INTERVAL_MS` | `30000` | 同步间隔（毫秒） |
+| `SGA_TEAM_SYNC_MAX_ENTRIES` | `50` | 每次同步最大条目数 |
+| `SGA_TEAM_SYNC_CONFLICT_RESOLUTION` | `last_write_wins` | 冲突解决策略 |
+
+## 统一配置模块
+
+> 📄 相关源文件：`src/config.ts`
+
+所有运行时可配置参数统一通过 `src/config.ts` 从环境变量加载，消除硬编码。
+
+### 设计原则
+
+- **环境变量优先** — 所有 `SGA_` 前缀的环境变量从 `.env` 文件或系统环境变量读取
+- **代码内 fallback** — `DEFAULT_*` 常量保留作为无 `.env` 时的默认值
+- **单例模式** — `getSgaConfig()` 首次调用时加载，后续复用
+- **可重置** — `resetSgaConfig()` 用于测试场景
+
+### 配置分类
+
+| 分类 | 环境变量前缀 | 说明 |
+|------|-------------|------|
+| 微压缩 | `SGA_COMPACT_MICRO_*` | 工具输出清理配置 |
+| 会话记忆压缩 | `SGA_COMPACT_SM_*` | 会话记忆摘要配置 |
+| 全量压缩 | `SGA_COMPACT_FULL_*` | LLM 摘要生成配置 |
+| 压缩通用 | `SGA_MODEL_MAX_TOKENS`, `SGA_COMPACT_PREFER_SESSION_MEMORY` | 模型窗口和策略选择 |
+| 记忆整合 | `SGA_CONSOLIDATION_*` | AutoDream 整合配置 |
+| 上下文预算 | `SGA_BUDGET_*` | Token 分配和阈值 |
+| 工作集 | `SGA_WORKING_SET_*` | 锚点管理配置 |
+| 压缩恢复 | `SGA_POST_COMPACT_*` | 状态恢复配置 |
+| 熔断器 | `SGA_CB_*` | 故障保护配置 |
+| 工具摘要 | `SGA_TOOL_SUMMARY_*` | 工具调用摘要配置 |
+| 团队同步 | `SGA_TEAM_SYNC_*` | 多 Agent 同步配置 |
+
+### API
+
+```typescript
+import { getSgaConfig, resetSgaConfig } from 'SGA-Template'
+
+// 获取完整配置
+const config = getSgaConfig()
+console.log(config.budget.maxContextTokens)     // 200000 或 .env 中设置的值
+console.log(config.compact.modelMaxTokens)      // 200000 或 .env 中设置的值
+console.log(config.consolidation.enabled)        // true 或 .env 中设置的值
+
+// 重置配置（测试用）
+resetSgaConfig()
+```
+
 ## 相关文档
 
 - [自定义系统提示词](custom-prompt.md)
 - [技能系统](skills.md)
 - [上下文压缩](context-compression.md)
+- [环境变量配置](environment-variables.md) — 所有可配置参数的完整列表
 - [项目架构](architecture.md)

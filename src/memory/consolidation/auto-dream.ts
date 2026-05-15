@@ -1,5 +1,6 @@
 import type { LLMProvider, ProviderRequestOptions } from '../../providers/types.js'
 import type { MemoryManager } from '../manager.js'
+import { getSgaConfig } from '../../config.js'
 import { readLastConsolidatedAt, tryAcquireConsolidationLock, rollbackConsolidationLock, recordConsolidation } from './consolidation-lock.js'
 import { buildConsolidationPrompt } from './consolidation-prompt.js'
 import { createLogger } from '../../utils/logger.js'
@@ -12,6 +13,17 @@ export interface AutoDreamConfig {
   enabled: boolean
   maxOutputTokens: number
   model: string
+}
+
+export function getAutoDreamConfig(): AutoDreamConfig {
+  const cfg = getSgaConfig().consolidation
+  return {
+    minHours: cfg.minHours,
+    minSessions: cfg.minSessions,
+    enabled: cfg.enabled,
+    maxOutputTokens: cfg.maxOutputTokens,
+    model: cfg.model,
+  }
 }
 
 export const DEFAULT_AUTO_DREAM_CONFIG: AutoDreamConfig = {
@@ -29,8 +41,6 @@ export interface ConsolidationResult {
   summary: string
   filesTouched: string[]
 }
-
-const SESSION_SCAN_INTERVAL_MS = 10 * 60 * 1000
 
 let lastSessionScanAt = 0
 
@@ -78,7 +88,7 @@ export async function executeAutoDream(
   }
 
   const sinceScanMs = Date.now() - lastSessionScanAt
-  if (sinceScanMs < SESSION_SCAN_INTERVAL_MS) {
+  if (sinceScanMs < getSgaConfig().consolidation.scanIntervalMs) {
     logger.debug(`Scan throttle — last scan was ${Math.round(sinceScanMs / 1000)}s ago`)
     return {
       consolidated: false,

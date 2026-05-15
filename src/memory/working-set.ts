@@ -1,5 +1,6 @@
 import type { ContextSlot, ContextPriority } from './context-budget.js'
 import { estimateTokens } from './context-budget.js'
+import { getSgaConfig } from '../config.js'
 import { createLogger } from '../utils/logger.js'
 
 const logger = createLogger('working-set')
@@ -28,6 +29,18 @@ export interface WorkingSetConfig {
   maxAnchorTokens: number
   autoPinThreshold: number
   summaryOnFade: boolean
+}
+
+export function getWorkingSetConfig(): WorkingSetConfig {
+  const cfg = getSgaConfig().workingSet
+  return {
+    maxAnchors: cfg.maxAnchors,
+    anchorFadeMs: cfg.anchorFadeMs,
+    anchorExpireMs: cfg.anchorExpireMs,
+    maxAnchorTokens: cfg.maxAnchorTokens,
+    autoPinThreshold: cfg.autoPinThreshold,
+    summaryOnFade: cfg.summaryOnFade,
+  }
 }
 
 export const DEFAULT_WORKING_SET_CONFIG: WorkingSetConfig = {

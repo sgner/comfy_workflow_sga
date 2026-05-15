@@ -43,7 +43,8 @@ export interface AgentDefinition {
 | `getAllowedTools()` | 获取允许使用的工具列表（undefined 表示全部允许） |
 | `getDisallowedTools()` | 获取禁止使用的工具列表 |
 | `getModel()` | 获取模型覆盖（可返回 'inherit' 继承父级） |
-| `getEffort()` | 获取思考力度 |
+| `getEffort()` | 获取思考力度（`low` / `medium` / `high` / `max`） |
+| `getThinkingPrompt()` | 获取思考力度提示词（用于不支持原生思考的模型） |
 | `getPermissionMode()` | 获取权限模式覆盖 |
 | `isBuiltIn()` | 是否为内置 Agent |
 | `isBackground()` | 是否为后台 Agent |
@@ -194,7 +195,7 @@ context: fork
 | `name` | `string` | Agent 名称（必填） |
 | `description` | `string` | Agent 描述（必填） |
 | `model` | `string` | 模型覆盖（sonnet/opus/haiku） |
-| `effort` | `string` | 思考力度（low/medium/high/max） |
+| `effort` | `string` | 思考力度（low/medium/high/max），详见[思考力度策略](#思考力度策略) |
 | `tools` | `string` 或 `string[]` | 允许使用的工具列表 |
 | `disallowed-tools` | `string` 或 `string[]` | 禁止使用的工具列表 |
 | `user-invocable` | `boolean` | 是否可被用户直接调用 |
@@ -805,3 +806,87 @@ const forkedContext = createSubagentContext(parentContext, {
 - [自定义系统提示词](custom-prompt.md)
 - [权限控制](permissions.md)
 - [MCP 集成](mcp-integration.md)
+
+## 思考力度策略
+
+> 📄 相关源文件：`src/agents/thinking-prompts.ts`（策略解析与提示词模板）、`src/agents/runner.ts`（运行时注入）、`src/config.ts`（环境变量加载）
+
+### 概述
+
+思考力度（Thinking Effort）控制 Agent 在回答前的推理深度。SGA 通过**自动策略适配**，让所有模型都能获得思考力度控制，无论模型是否原生支持。
+
+### 三种策略
+
+```
+Agent.getEffort()
+    │
+    ▼
+检查模型能力 (ModelConfig)
+    │
+    ├── supportsThinking = true
+    │   → 原生思考（Anthropic Claude）
+    │   → API 参数: thinking: { budget_tokens: n }
+    │
+    ├── supportsReasoningEffort = true
+    │   → 原生推理力度（OpenAI o1/o3）
+    │   → API 参数: reasoning_effort: 'low' | 'medium' | 'high'
+    │
+    └── 两者都不支持
+        → 提示词注入（GPT-4o、DeepSeek 等）
+        → 系统提示词追加思考引导 / Chain-of-Thought
+```
+
+### 模型支持矩阵
+
+| 模型 | 原生思考 | 原因推理力度 | 提示词注入 |
+|------|---------|------------|-----------|
+| Claude Sonnet 4 | ✅ `budget_tokens` | — | — |
+| Claude Opus 4 | ✅ `budget_tokens` | — | — |
+| Claude Haiku 4 | — | — | ✅ 提示词 |
+| OpenAI o1 | — | ✅ `reasoning_effort` | — |
+| OpenAI o1-mini | — | ✅ `reasoning_effort` | — |
+| OpenAI o3-mini | — | ✅ `reasoning_effort` | — |
+| GPT-4o | — | — | ✅ 提示词 |
+| DeepSeek Chat | — | — | ✅ 提示词 |
+
+### 思考力度级别
+
+| 级别 | 说明 | 原生思考预算 | 推理力度 | 提示词效果 |
+|------|------|------------|---------|-----------|
+| `low` | 快速响应 | 2,000 tokens | `low` | 简洁直接 |
+| `medium` | 平衡模式（默认） | 10,000 tokens | `medium` | 适度思考 |
+| `high` | 深度分析 | 20,000 tokens | `high` | 系统分析 + CoT |
+| `max` | 最详细推理 | 32,000 tokens | `high` | 深度推理 + CoT |
+
+### 在 Agent 定义中使用
+
+```typescript
+// 代码定义
+const agent = new BaseAgentDefinition({
+  name: 'code-analyzer',
+  description: '深度代码分析',
+  effort: 'high',  // 设置思考力度
+  // ...
+})
+```
+
+```markdown
+<!-- 文件定义 .md -->
+---
+name: code-analyzer
+description: 深度代码分析
+effort: high
+---
+```
+
+### 环境变量配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SGA_THINKING_EFFORT_DEFAULT` | `medium` | 默认思考力度 |
+| `SGA_THINKING_EFFORT_BUDGET_LOW` | `2000` | low 级别的原生思考 token 预算 |
+| `SGA_THINKING_EFFORT_BUDGET_MEDIUM` | `10000` | medium 级别的原生思考 token 预算 |
+| `SGA_THINKING_EFFORT_BUDGET_HIGH` | `20000` | high 级别的原生思考 token 预算 |
+| `SGA_THINKING_EFFORT_BUDGET_MAX` | `32000` | max 级别的原生思考 token 预算 |
+| `SGA_THINKING_EFFORT_PROMPT_INJECTION` | `true` | 是否启用提示词注入模拟 |
+| `SGA_THINKING_EFFORT_COT` | `true` | 是否使用 Chain-of-Thought 格式 |

@@ -32,6 +32,21 @@ export interface ContextBudgetConfig {
   compressionThreshold: number
 }
 
+import { getSgaConfig } from '../config.js'
+
+export function getBudgetConfig(): ContextBudgetConfig {
+  const cfg = getSgaConfig().budget
+  return {
+    maxContextTokens: cfg.maxContextTokens,
+    reservedForSystem: cfg.reservedForSystem,
+    reservedForConversation: cfg.reservedForConversation,
+    reservedForTools: cfg.reservedForTools,
+    memoryBudgetRatio: cfg.memoryBudgetRatio,
+    workingSetBudgetRatio: cfg.workingSetBudgetRatio,
+    compressionThreshold: cfg.compressionThreshold,
+  }
+}
+
 export const DEFAULT_BUDGET_CONFIG: ContextBudgetConfig = {
   maxContextTokens: 200_000,
   reservedForSystem: 4_000,

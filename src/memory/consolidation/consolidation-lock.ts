@@ -1,11 +1,11 @@
 import { existsSync, statSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
+import { getSgaConfig } from '../../config.js'
 import { createLogger } from '../../utils/logger.js'
 
 const logger = createLogger('consolidation-lock')
 
 const LOCK_FILE = '.consolidate-lock'
-const HOLDER_STALE_MS = 60 * 60 * 1000
 
 export interface ConsolidationLockResult {
   acquired: boolean
@@ -38,7 +38,7 @@ export function tryAcquireConsolidationLock(memoryDir: string): ConsolidationLoc
     // ENOENT — no prior lock
   }
 
-  if (mtimeMs !== undefined && Date.now() - mtimeMs < HOLDER_STALE_MS) {
+  if (mtimeMs !== undefined && Date.now() - mtimeMs < getSgaConfig().consolidation.lockStaleMs) {
     if (holderPid !== undefined && isProcessRunning(holderPid)) {
       logger.debug(`Lock held by live PID ${holderPid}`)
       return { acquired: false, priorMtime: mtimeMs }

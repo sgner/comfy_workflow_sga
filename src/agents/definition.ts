@@ -1,6 +1,7 @@
 import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { SystemPrompt } from '../context/system-prompt.js'
 import type { PermissionMode, ModelAlias, ThinkingEffort } from '../core/types.js'
+import { getEffortPrompt } from './thinking-prompts.js'
 
 export interface AgentDefinition {
   name: string
@@ -12,6 +13,7 @@ export interface AgentDefinition {
   getDisallowedTools(): string[]
   getModel(): ModelAlias | 'inherit' | undefined
   getEffort(): ThinkingEffort | undefined
+  getThinkingPrompt(effort?: ThinkingEffort, useChainOfThought?: boolean): string
   getPermissionMode(): PermissionMode | undefined
 
   isBuiltIn(): boolean
@@ -99,6 +101,11 @@ export class BaseAgentDefinition implements AgentDefinition {
 
   getEffort(): ThinkingEffort | undefined {
     return this.effortOverride
+  }
+
+  getThinkingPrompt(effort?: ThinkingEffort, useChainOfThought?: boolean): string {
+    const resolvedEffort = effort ?? this.effortOverride ?? 'medium'
+    return getEffortPrompt(resolvedEffort, useChainOfThought)
   }
 
   getPermissionMode(): PermissionMode | undefined {

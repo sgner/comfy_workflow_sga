@@ -108,6 +108,7 @@ export class APIClient {
       signal: options.signal,
       systemPrompt: options.systemPrompt,
       thinkingBudget: options.thinkingBudget,
+      reasoningEffort: options.reasoningEffort,
     }
   }
 

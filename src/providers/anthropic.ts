@@ -211,6 +211,9 @@ export class AnthropicProvider implements LLMProvider {
     if (options.systemPrompt) {
       body.system = options.systemPrompt
     }
+    if (options.thinkingBudget) {
+      body.thinking = { type: 'enabled', budget_tokens: options.thinkingBudget }
+    }
 
     const reqConfig = this.resolveRequestConfig(options.model, true)
 

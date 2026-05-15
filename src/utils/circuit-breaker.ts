@@ -1,3 +1,4 @@
+import { getSgaConfig } from '../config.js'
 import { createLogger } from '../utils/logger.js'
 
 const logger = createLogger('circuit-breaker')
@@ -116,20 +117,22 @@ export class CircuitBreaker {
 
 export class CompactCircuitBreaker extends CircuitBreaker {
   constructor() {
+    const cb = getSgaConfig().circuitBreaker
     super({
-      maxConsecutiveFailures: 3,
-      cooldownMs: 5 * 60 * 1000,
-      halfOpenMaxAttempts: 1,
+      maxConsecutiveFailures: cb.compactMaxFailures,
+      cooldownMs: cb.compactCooldownMs,
+      halfOpenMaxAttempts: cb.compactHalfOpenAttempts,
     })
   }
 }
 
 export class ConsolidationCircuitBreaker extends CircuitBreaker {
   constructor() {
+    const cb = getSgaConfig().circuitBreaker
     super({
-      maxConsecutiveFailures: 2,
-      cooldownMs: 30 * 60 * 1000,
-      halfOpenMaxAttempts: 1,
+      maxConsecutiveFailures: cb.consolidationMaxFailures,
+      cooldownMs: cb.consolidationCooldownMs,
+      halfOpenMaxAttempts: cb.consolidationHalfOpenAttempts,
     })
   }
 }
