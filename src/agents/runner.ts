@@ -15,6 +15,28 @@ import { resolveThinkingStrategy } from './thinking-prompts.js'
 
 const logger = createLogger('agent-runner')
 
+export interface ApprovalEvent {
+  type: 'approval_required'
+  toolName: string
+  toolInput: Record<string, unknown>
+  toolCallId: string
+  message: string
+  suggestions?: string[]
+}
+
+export interface ApprovalResponse {
+  decision: 'allow' | 'deny'
+  updatedInput?: Record<string, unknown>
+  reason?: string
+}
+
+export interface HumanInputEvent {
+  type: 'human_input_required'
+  message: string
+  context?: string
+  options?: Array<{ label: string; value: string; description?: string }>
+}
+
 export interface AgentRunOptions {
   agentDefinition: AgentDefinition
   prompt: string
@@ -31,6 +53,8 @@ export interface AgentRunOptions {
   parentContext?: ToolUseContext
   pipeline?: ToolExecutionPipeline
   orchestrationConfig?: ToolOrchestrationConfig
+  requestApproval?: (event: ApprovalEvent) => Promise<ApprovalResponse>
+  requestHumanInput?: (event: HumanInputEvent) => Promise<string>
 }
 
 export interface AgentRunResult {
@@ -300,7 +324,22 @@ async function executeAgentLoop(
       tools,
       messages: allMessages,
       abortController: new AbortController(),
-      getAppState: () => ({}),
+      getAppState: () => ({
+        requestHumanInput: options.requestHumanInput
+          ? async (event: { type: string; message: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }) => {
+              const convertedOptions = event.options?.map(o => ({
+                label: o.label,
+                value: o.label,
+                description: o.description,
+              }))
+              return options.requestHumanInput!({
+                type: 'human_input_required',
+                message: event.message,
+                options: convertedOptions,
+              })
+            }
+          : undefined,
+      }),
       setAppState: () => {},
     }
 
@@ -314,6 +353,72 @@ async function executeAgentLoop(
 
     for (const { id, name, result: execResult } of orchestratedResults) {
       toolUseCount++
+
+      if (execResult.error?.code === 'APPROVAL_REQUIRED' && options.requestApproval) {
+        logger.info(`Tool ${name} requires approval, requesting user decision`)
+
+        const approvalEvent: ApprovalEvent = {
+          type: 'approval_required',
+          toolName: name,
+          toolInput: execResult.input as Record<string, unknown>,
+          toolCallId: id,
+          message: execResult.error.message,
+        }
+
+        try {
+          const userDecision = await options.requestApproval(approvalEvent)
+
+          if (userDecision.decision === 'allow') {
+            const tool = tools.find(t => t.name === name)
+            const effectiveInput = userDecision.updatedInput ?? execResult.input as Record<string, unknown>
+
+            try {
+              const result = await tool!.call(effectiveInput, toolUseContext)
+              const resultStr = typeof result === 'string' ? result : JSON.stringify(result)
+              allMessages.push({
+                id: `result-${id}`,
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: id, content: resultStr, is_error: false }],
+                timestamp: Date.now(),
+              })
+              if (options.onProgress) {
+                options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: resultStr, isError: false } })
+              }
+            } catch (callError) {
+              const msg = callError instanceof Error ? callError.message : String(callError)
+              allMessages.push({
+                id: `result-${id}`,
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: id, content: msg, is_error: true }],
+                timestamp: Date.now(),
+              })
+              if (options.onProgress) {
+                options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: msg, isError: true } })
+              }
+            }
+          } else {
+            const denyMsg = userDecision.reason ?? 'User denied this operation.'
+            allMessages.push({
+              id: `result-${id}`,
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: id, content: denyMsg, is_error: true }],
+              timestamp: Date.now(),
+            })
+            if (options.onProgress) {
+              options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: denyMsg, isError: true } })
+            }
+          }
+        } catch (approvalError) {
+          const msg = approvalError instanceof Error ? approvalError.message : String(approvalError)
+          allMessages.push({
+            id: `result-${id}`,
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: id, content: `Approval request failed: ${msg}`, is_error: true }],
+            timestamp: Date.now(),
+          })
+        }
+        continue
+      }
 
       if (execResult.error) {
         const errMsg = execResult.error.message

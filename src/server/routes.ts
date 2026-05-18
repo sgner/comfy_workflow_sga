@@ -9,7 +9,7 @@ import { getMemoryManager } from '../memory/manager.js'
 import { MemoryExtractor } from '../memory/extractor.js'
 
 const logger = createLogger('routes')
-import { createApprovalRequest } from './interaction.js'
+import { createApprovalRequest, createHumanInputRequest } from './interaction.js'
 import { createBuiltinTools } from '../tools/built-in/index.js'
 import { assembleToolPool } from '../tools/registry.js'
 import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
@@ -201,6 +201,118 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
       return
     }
 
+    const requestApproval = async (event: import('../agents/runner.js').ApprovalEvent): Promise<import('../agents/runner.js').ApprovalResponse> => {
+      const approvalReq = createApprovalRequest({
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        message: event.message,
+        sessionId: session.id,
+        suggestions: event.suggestions,
+        isDestructive: true,
+        isReadOnly: false,
+      })
+
+      const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
+        pendingResolvers.set(approvalReq.id, {
+          resolve: (resp: unknown) => resolve(resp as UserApprovalResponse),
+          reject,
+        })
+      })
+
+      const suspendedCtx: SuspendedContext = {
+        actionId: approvalReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model,
+        systemPromptContent: '',
+        agentType: body.agentType,
+        providerName: session.config.providerName,
+      }
+
+      setSessionWaitingInput(session, {
+        type: 'approval',
+        request: approvalReq,
+        resolve: (resp: unknown) => {
+          pendingResolvers.get(approvalReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          pendingResolvers.get(approvalReq.id)?.reject(error)
+        },
+      } as PendingAction, suspendedCtx)
+
+      try {
+        const userResponse = await approvalPromise
+        clearSessionWaitingInput(session)
+        return {
+          decision: userResponse.decision,
+          updatedInput: userResponse.updatedInput,
+          reason: userResponse.reason,
+        }
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return { decision: 'deny', reason: 'Approval request cancelled' }
+      } finally {
+        pendingResolvers.delete(approvalReq.id)
+      }
+    }
+
+    const requestHumanInput = async (event: import('../agents/runner.js').HumanInputEvent): Promise<string> => {
+      const inputReq = createHumanInputRequest({
+        message: event.message,
+        sessionId: session.id,
+        context: event.context,
+        options: event.options,
+        allowFreeText: true,
+      })
+
+      const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
+        pendingResolvers.set(inputReq.id, {
+          resolve: (resp: unknown) => resolve(resp as UserInputResponse),
+          reject,
+        })
+      })
+
+      const suspendedCtx: SuspendedContext = {
+        actionId: inputReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model,
+        systemPromptContent: '',
+        agentType: body.agentType,
+        providerName: session.config.providerName,
+      }
+
+      setSessionWaitingInput(session, {
+        type: 'human_input',
+        request: inputReq,
+        resolve: (resp: unknown) => {
+          pendingResolvers.get(inputReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          pendingResolvers.get(inputReq.id)?.reject(error)
+        },
+      } as PendingAction, suspendedCtx)
+
+      try {
+        const userResponse = await inputPromise
+        clearSessionWaitingInput(session)
+        return userResponse.value
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return '[Input request cancelled]'
+      } finally {
+        pendingResolvers.delete(inputReq.id)
+      }
+    }
+
     const result = await runAgent({
       agentDefinition: agentDef,
       prompt: body.content,
@@ -210,6 +322,8 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
       provider,
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
+      requestApproval,
+      requestHumanInput,
     })
 
     logger.info(`Session ${sessionId}: agent completed, content length=${result.content.length}, turns=${result.turnCount}, tokens={in:${result.usage.inputTokens}, out:${result.usage.outputTokens}}`)
@@ -284,6 +398,129 @@ async function handleStreamResponse(
       reject: (error: Error) => void
     }> = new Map()
 
+    const requestApproval = async (event: import('../agents/runner.js').ApprovalEvent): Promise<import('../agents/runner.js').ApprovalResponse> => {
+      const approvalReq = createApprovalRequest({
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        message: event.message,
+        sessionId: session.id,
+        suggestions: event.suggestions,
+        isDestructive: true,
+        isReadOnly: false,
+      })
+
+      sendEvent({
+        type: 'approval_required',
+        data: approvalReq,
+      })
+
+      const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
+        const wrappedResolve = (resp: unknown) => resolve(resp as UserApprovalResponse)
+        const wrappedReject = (err: Error) => reject(err)
+        approvalPromiseMap.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
+        pendingResolvers.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
+      })
+
+      const suspendedCtx: SuspendedContext = {
+        actionId: approvalReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model,
+        systemPromptContent: '',
+        agentType: body.agentType,
+        providerName: session.config.providerName,
+      }
+
+      setSessionWaitingInput(session, {
+        type: 'approval',
+        request: approvalReq,
+        resolve: (resp: unknown) => {
+          approvalPromiseMap.get(approvalReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          approvalPromiseMap.get(approvalReq.id)?.reject(error)
+        },
+      } as PendingAction, suspendedCtx)
+
+      try {
+        const userResponse = await approvalPromise
+        clearSessionWaitingInput(session)
+        return {
+          decision: userResponse.decision,
+          updatedInput: userResponse.updatedInput,
+          reason: userResponse.reason,
+        }
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return { decision: 'deny', reason: 'Approval request cancelled' }
+      } finally {
+        approvalPromiseMap.delete(approvalReq.id)
+        pendingResolvers.delete(approvalReq.id)
+      }
+    }
+
+    const requestHumanInput = async (event: import('../agents/runner.js').HumanInputEvent): Promise<string> => {
+      const inputReq = createHumanInputRequest({
+        message: event.message,
+        sessionId: session.id,
+        context: event.context,
+        options: event.options,
+        allowFreeText: true,
+      })
+
+      sendEvent({
+        type: 'human_input_required',
+        data: inputReq,
+      })
+
+      const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
+        pendingResolvers.set(inputReq.id, {
+          resolve: (resp: unknown) => resolve(resp as UserInputResponse),
+          reject: (err: Error) => reject(err),
+        })
+      })
+
+      const suspendedCtx: SuspendedContext = {
+        actionId: inputReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model,
+        systemPromptContent: '',
+        agentType: body.agentType,
+        providerName: session.config.providerName,
+      }
+
+      setSessionWaitingInput(session, {
+        type: 'human_input',
+        request: inputReq,
+        resolve: (resp: unknown) => {
+          pendingResolvers.get(inputReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          pendingResolvers.get(inputReq.id)?.reject(error)
+        },
+      } as PendingAction, suspendedCtx)
+
+      try {
+        const userResponse = await inputPromise
+        clearSessionWaitingInput(session)
+        return userResponse.value
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return '[Input request cancelled]'
+      } finally {
+        pendingResolvers.delete(inputReq.id)
+      }
+    }
+
     const result = await runAgent({
       agentDefinition: agentDef,
       prompt: body.content,
@@ -294,7 +531,7 @@ async function handleStreamResponse(
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
       stream: true,
-      onProgress: async (event: unknown) => {
+      onProgress: (event: unknown) => {
         const e = event as { type: string; text?: string; toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; toolCallId?: string; message?: string; suggestions?: string[]; reason?: unknown }
         switch (e.type) {
           case 'stream_delta':
@@ -312,73 +549,10 @@ async function handleStreamResponse(
           case 'turn_end':
             sendEvent({ type: 'turn_end', data: e })
             break
-          case 'approval_required': {
-            const approvalReq = createApprovalRequest({
-              toolName: e.toolName ?? 'unknown',
-              toolInput: e.toolInput ?? {},
-              message: e.message ?? `Tool "${e.toolName}" requires approval.`,
-              sessionId: session.id,
-              suggestions: e.suggestions,
-              isDestructive: true,
-              isReadOnly: false,
-            })
-
-            sendEvent({
-              type: 'approval_required',
-              data: approvalReq,
-            })
-
-            const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
-              const wrappedResolve = (resp: unknown) => resolve(resp as UserApprovalResponse)
-              const wrappedReject = (err: Error) => reject(err)
-              approvalPromiseMap.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
-              pendingResolvers.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
-            })
-
-            const suspendedCtx: SuspendedContext = {
-              actionId: approvalReq.id,
-              sessionId: session.id,
-              messages: [...session.messages],
-              toolCalls: [],
-              pendingToolCallIndex: 0,
-              turnCount: 0,
-              usage: session.usage,
-              model,
-              systemPromptContent: '',
-              agentType: body.agentType,
-              providerName: session.config.providerName,
-            }
-
-            setSessionWaitingInput(session, {
-              type: 'approval',
-              request: approvalReq,
-              resolve: (resp: unknown) => {
-                approvalPromiseMap.get(approvalReq.id)?.resolve(resp)
-              },
-              reject: (error: Error) => {
-                approvalPromiseMap.get(approvalReq.id)?.reject(error)
-              },
-            } as PendingAction, suspendedCtx)
-
-            try {
-              const userResponse = await approvalPromise
-              clearSessionWaitingInput(session)
-
-              const permissionResult: PermissionResult = userResponse.decision === 'allow'
-                ? { behavior: 'allow', updatedInput: userResponse.updatedInput }
-                : { behavior: 'deny', message: userResponse.reason ?? 'User denied' }
-
-              return permissionResult
-            } catch (error) {
-              clearSessionWaitingInput(session)
-              return { behavior: 'deny', message: 'Approval request cancelled' } as PermissionResult
-            } finally {
-              approvalPromiseMap.delete(approvalReq.id)
-              pendingResolvers.delete(approvalReq.id)
-            }
-          }
         }
       },
+      requestApproval,
+      requestHumanInput,
     })
 
     const assistantMessage: Message = {
