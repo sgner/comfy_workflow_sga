@@ -1,4 +1,7 @@
 import { BaseAgentDefinition } from '../definition.js'
+import { ComfyUIWorkflowAgent } from './comfyui-agent.js'
+
+export { ComfyUIWorkflowAgent }
 
 export class GeneralPurposeAgent extends BaseAgentDefinition {
   constructor() {
