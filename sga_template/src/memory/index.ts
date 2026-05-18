@@ -1,0 +1,32 @@
+export type { MemoryType, MemoryScope, MemoryFile, MemoryFrontmatter, MemoryIndex, MemoryRetrievalResult, MemoryExtractConfig } from './types.js'
+export { MEMORY_TYPES, MEMORY_SCOPES, DEFAULT_MEMORY_EXTRACT_CONFIG, MEMORY_ENTRYPOINT_MAX_LINES, MEMORY_ENTRYPOINT_MAX_BYTES, MEMORY_MAX_FILES, MEMORY_MAX_RELEVANT } from './types.js'
+export { getMemoryBaseDir, getSgaHome, getAutoMemPath, validateMemoryPath, sanitizePath, ensureMemoryDirExists, getMemoryEntrypointPath, isMemoryFilePath } from './paths.js'
+export type { MemoryPathConfig } from './paths.js'
+export { scanMemoryFiles, parseFrontmatter, formatMemoryManifest } from './scanner.js'
+export { findRelevantMemories, DEFAULT_RETRIEVER_CONFIG, setRetrievalProvider } from './retrieval.js'
+export type { MemoryRetrieverConfig } from './retrieval.js'
+export { buildMemoryPrompt, truncateEntrypointContent, buildExtractPrompt } from './prompt.js'
+export { MemoryManager, getMemoryManager, setMemoryManager, initMemoryManager } from './manager.js'
+export type { MemoryManagerConfig } from './manager.js'
+export { MemoryExtractor, DEFAULT_EXTRACTOR_CONFIG } from './extractor.js'
+export type { MemoryExtractorConfig } from './extractor.js'
+
+export type { ContextSlot, ContextSlotRole, ContextPriority, ContextBudgetConfig, BudgetAllocation, ContextBuildResult } from './context-budget.js'
+export { DEFAULT_BUDGET_CONFIG, computeBudgetAllocation, estimateTokens, prioritizeSlots, fitSlotsWithinBudget, compressSlot, buildContextFromSlots } from './context-budget.js'
+
+export type { Anchor, AnchorStatus, WorkingSetConfig } from './working-set.js'
+export { WorkingSet, DEFAULT_WORKING_SET_CONFIG } from './working-set.js'
+export { initWorkingSet, getWorkingSet, setWorkingSet, resetWorkingSet } from './working-set-registry.js'
+
+export type { FocusMode, ContextBuildOptions, ContextBuilderResult } from './context-builder.js'
+export { buildContext, detectFocusMode } from './context-builder.js'
+
+export type { DedupResult, MemoryFingerprint, MemorySummary } from './dedup.js'
+export { findDuplicates, shouldDedupBeforeSave, summarizeMemoryContent } from './dedup.js'
+
+export type { StorageBackendType, StorageQueryOptions, StorageSearchOptions, StorageSearchResult, StorageBackendConfig, StorageStats, FileSystemBackendConfig, VectorBackendConfig, SQLBackendConfig, MongoDBBackendConfig, MemoryStorageBackend } from './storage/types.js'
+export { FileSystemBackend } from './storage/filesystem.js'
+export { VectorBackend } from './storage/vector.js'
+export { SQLBackend } from './storage/sql.js'
+export { MongoDBBackend } from './storage/mongodb.js'
+export { registerBackend, createBackend, getRegisteredBackendTypes, isBackendRegistered } from './storage/registry.js'

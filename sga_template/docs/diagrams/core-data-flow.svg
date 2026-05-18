@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#d97706"/>
+    </marker>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0001"/>
+    </filter>
+  </defs>
+
+  <rect width="900" height="720" fill="#f8fafc" rx="8"/>
+
+  <!-- Title -->
+  <text x="450" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#1e293b">核心数据流</text>
+
+  <!-- 用户请求 -->
+  <rect x="345" y="50" width="210" height="44" rx="22" fill="#6366f1" filter="url(#shadow)"/>
+  <text x="450" y="78" text-anchor="middle" font-size="14" font-weight="600" fill="#fff">用户请求</text>
+
+  <!-- Arrow -->
+  <line x1="450" y1="94" x2="450" y2="120" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- HTTP Server -->
+  <rect x="310" y="120" width="280" height="48" rx="8" fill="#fff" stroke="#3b82f6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="450" y="140" text-anchor="middle" font-size="13" font-weight="600" fill="#1e40af">HTTP Server</text>
+  <text x="450" y="157" text-anchor="middle" font-size="11" fill="#64748b">Express</text>
+
+  <!-- Arrow -->
+  <line x1="450" y1="168" x2="450" y2="194" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Session 管理 -->
+  <rect x="290" y="194" width="320" height="48" rx="8" fill="#fff" stroke="#8b5cf6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="450" y="214" text-anchor="middle" font-size="13" font-weight="600" fill="#6d28d9">Session 管理</text>
+  <text x="450" y="231" text-anchor="middle" font-size="11" fill="#64748b">SessionStore — JSONL 持久化</text>
+
+  <!-- Arrow -->
+  <line x1="450" y1="242" x2="450" y2="268" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Agent Runner -->
+  <rect x="310" y="268" width="280" height="48" rx="8" fill="#3b82f6" filter="url(#shadow)"/>
+  <text x="450" y="288" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">Agent Runner</text>
+  <text x="450" y="305" text-anchor="middle" font-size="11" fill="#dbeafe">runAgent()</text>
+
+  <!-- Memory 注入 branch -->
+  <line x1="310" y1="292" x2="160" y2="292" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-blue)"/>
+  <rect x="30" y="268" width="260" height="48" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1" filter="url(#shadow)"/>
+  <text x="160" y="288" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">Memory 注入</text>
+  <text x="160" y="305" text-anchor="middle" font-size="10" fill="#3b82f6">buildSystemPromptSection + getMemoryContextForQuery</text>
+
+  <!-- Arrow to Agent Loop -->
+  <line x1="450" y1="316" x2="450" y2="348" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Agent Loop -->
+  <rect x="290" y="348" width="320" height="48" rx="8" fill="#0f766e" filter="url(#shadow)"/>
+  <text x="450" y="368" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">Agent Loop</text>
+  <text x="450" y="385" text-anchor="middle" font-size="11" fill="#ccfbf1">query / tool execution cycle</text>
+
+  <!-- LLM Provider branch -->
+  <line x1="610" y1="372" x2="700" y2="372" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="700" y="348" width="170" height="48" rx="8" fill="#fff" stroke="#ef4444" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="785" y="368" text-anchor="middle" font-size="12" font-weight="600" fill="#dc2626">LLM Provider</text>
+  <text x="785" y="385" text-anchor="middle" font-size="10" fill="#64748b">API 调用</text>
+
+  <!-- Tool Execution Pipeline branch -->
+  <line x1="290" y1="372" x2="160" y2="372" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="20" y="340" width="260" height="64" rx="8" fill="#fff" stroke="#f59e0b" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="150" y="360" text-anchor="middle" font-size="12" font-weight="600" fill="#b45309">Tool Execution Pipeline</text>
+  <line x1="50" y1="370" x2="250" y2="370" stroke="#fbbf24" stroke-width="0.5"/>
+  <text x="150" y="385" text-anchor="middle" font-size="10" fill="#64748b">Permission Check → Hook → Tool.call()</text>
+  <text x="150" y="397" text-anchor="middle" font-size="10" fill="#64748b">并发/串行编排</text>
+
+  <!-- Context Compression branch -->
+  <line x1="450" y1="396" x2="450" y2="424" stroke="#64748b" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow)"/>
+  <rect x="350" y="424" width="200" height="36" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+  <text x="450" y="447" text-anchor="middle" font-size="11" font-weight="500" fill="#92400e">Context Compression（按需）</text>
+
+  <!-- Arrow to result -->
+  <line x1="450" y1="460" x2="450" y2="490" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 结果返回 -->
+  <rect x="340" y="490" width="220" height="40" rx="8" fill="#fff" stroke="#64748b" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="450" y="515" text-anchor="middle" font-size="13" font-weight="600" fill="#334155">结果返回</text>
+
+  <!-- MemoryExtractor branch -->
+  <line x1="340" y1="510" x2="160" y2="510" stroke="#d97706" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-amber)"/>
+  <rect x="20" y="488" width="260" height="44" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1" filter="url(#shadow)"/>
+  <text x="150" y="508" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">MemoryExtractor</text>
+  <text x="150" y="524" text-anchor="middle" font-size="10" fill="#b45309">后台记忆提取（异步）</text>
+
+  <!-- Arrow to output -->
+  <line x1="450" y1="530" x2="450" y2="560" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Output -->
+  <rect x="290" y="560" width="160" height="44" rx="8" fill="#10b981" filter="url(#shadow)"/>
+  <text x="370" y="580" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">SSE 流式输出</text>
+  <text x="370" y="596" text-anchor="middle" font-size="10" fill="#d1fae5">text_delta / tool_use</text>
+
+  <rect x="460" y="560" width="160" height="44" rx="8" fill="#6366f1" filter="url(#shadow)"/>
+  <text x="540" y="580" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">JSON 响应</text>
+  <text x="540" y="596" text-anchor="middle" font-size="10" fill="#e0e7ff">content + usage</text>
+
+  <!-- Legend -->
+  <rect x="30" y="640" width="840" height="60" rx="6" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="50" y="662" font-size="11" font-weight="600" fill="#475569">图例：</text>
+  <rect x="100" y="650" width="30" height="14" rx="3" fill="#3b82f6"/>
+  <text x="136" y="662" font-size="10" fill="#475569">核心模块</text>
+  <rect x="200" y="650" width="30" height="14" rx="3" fill="#fff" stroke="#64748b" stroke-width="1"/>
+  <text x="236" y="662" font-size="10" fill="#475569">处理节点</text>
+  <rect x="310" y="650" width="30" height="14" rx="3" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+  <text x="346" y="662" font-size="10" fill="#475569">按需/异步</text>
+  <line x1="430" y1="657" x2="470" y2="657" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="478" y="662" font-size="10" fill="#475569">同步流</text>
+  <line x1="530" y1="657" x2="570" y2="657" stroke="#64748b" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow)"/>
+  <text x="578" y="662" font-size="10" fill="#475569">异步/按需流</text>
+  <rect x="660" y="650" width="30" height="14" rx="3" fill="#10b981"/>
+  <text x="696" y="662" font-size="10" fill="#475569">输出</text>
+  <rect x="740" y="650" width="30" height="14" rx="3" fill="#6366f1"/>
+  <text x="776" y="662" font-size="10" fill="#475569">入口/输出</text>
+
+  <text x="50" y="688" font-size="9" fill="#94a3b8">SGA-Template Core Data Flow</text>
+</svg>

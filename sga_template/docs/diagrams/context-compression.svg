@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 520" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#64748b"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#ef4444"/>
+    </marker>
+    <filter id="s" x="-4%" y="-4%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0001"/>
+    </filter>
+  </defs>
+
+  <rect width="700" height="520" fill="#f8fafc" rx="8"/>
+  <text x="350" y="30" text-anchor="middle" font-size="16" font-weight="700" fill="#1e293b">上下文压缩流程</text>
+
+  <!-- Step 1 -->
+  <rect x="230" y="50" width="240" height="44" rx="8" fill="#3b82f6" filter="url(#s)"/>
+  <text x="350" y="70" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">1. 估算 Token 数</text>
+  <text x="350" y="86" text-anchor="middle" font-size="10" fill="#dbeafe">estimateTokenCount(messages)</text>
+
+  <!-- Decision -->
+  <line x1="350" y1="94" x2="350" y2="120" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+  <polygon points="350,120 410,150 350,180 290,150" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" filter="url(#s)"/>
+  <text x="350" y="147" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">超过</text>
+  <text x="350" y="160" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">阈值?</text>
+
+  <!-- No branch -->
+  <line x1="290" y1="150" x2="140" y2="150" stroke="#059669" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="210" y="143" text-anchor="middle" font-size="10" fill="#059669">否</text>
+  <rect x="30" y="130" width="180" height="40" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#s)"/>
+  <text x="120" y="155" text-anchor="middle" font-size="11" font-weight="600" fill="#065f46">直接返回原始消息</text>
+
+  <!-- Yes branch -->
+  <line x1="350" y1="180" x2="350" y2="210" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="365" y="198" font-size="10" fill="#ef4444">是</text>
+
+  <!-- Step 2: Snip -->
+  <rect x="200" y="210" width="300" height="56" rx="8" fill="#fff" stroke="#3b82f6" stroke-width="1.5" filter="url(#s)"/>
+  <text x="350" y="230" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">2. Snip 压缩</text>
+  <text x="350" y="246" text-anchor="middle" font-size="9" fill="#64748b">截断过长工具结果（>5000字符 → 2000字符 + ...[snipped]）</text>
+  <text x="350" y="259" text-anchor="middle" font-size="9" fill="#64748b">保留关键信息，添加省略标记</text>
+
+  <!-- Decision 2 -->
+  <line x1="350" y1="266" x2="350" y2="290" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+  <polygon points="350,290 410,318 350,346 290,318" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" filter="url(#s)"/>
+  <text x="350" y="315" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">仍超</text>
+  <text x="350" y="328" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">阈值?</text>
+
+  <!-- No branch 2 -->
+  <line x1="410" y1="318" x2="540" y2="318" stroke="#059669" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="475" y="311" text-anchor="middle" font-size="10" fill="#059669">否</text>
+  <rect x="540" y="298" width="140" height="40" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#s)"/>
+  <text x="610" y="323" text-anchor="middle" font-size="11" font-weight="600" fill="#065f46">返回结果</text>
+
+  <!-- Yes branch 2 -->
+  <line x1="350" y1="346" x2="350" y2="370" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="365" y="362" font-size="10" fill="#ef4444">是</text>
+
+  <!-- Step 3: Collapse -->
+  <rect x="200" y="370" width="300" height="48" rx="8" fill="#fff" stroke="#8b5cf6" stroke-width="1.5" filter="url(#s)"/>
+  <text x="350" y="390" text-anchor="middle" font-size="12" font-weight="600" fill="#6d28d9">3. Collapse 压缩</text>
+  <text x="350" y="406" text-anchor="middle" font-size="9" fill="#64748b">保留最近 4 条消息，对更早消息生成摘要</text>
+
+  <!-- Decision 3 -->
+  <line x1="350" y1="418" x2="350" y2="440" stroke="#64748b" stroke-width="1.5"/>
+  <text x="365" y="435" font-size="10" fill="#ef4444">仍超?</text>
+
+  <!-- Step 4: Auto-compact -->
+  <line x1="350" y1="440" x2="350" y2="460" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+  <rect x="200" y="460" width="300" height="44" rx="8" fill="#ef4444" filter="url(#s)"/>
+  <text x="350" y="480" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">4. Auto-compact 完全摘要</text>
+  <text x="350" y="496" text-anchor="middle" font-size="9" fill="#fef2f2">将整个历史压缩为一条摘要消息</text>
+
+  <text x="350" y="515" text-anchor="middle" font-size="9" fill="#94a3b8">SGA-Template Context Compression Flow</text>
+</svg>
