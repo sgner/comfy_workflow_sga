@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 620" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#64748b"/>
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#059669"/>
+    </marker>
+    <marker id="arr-a" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#d97706"/>
+    </marker>
+    <filter id="sh" x="-4%" y="-4%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0001"/>
+    </filter>
+  </defs>
+
+  <rect width="880" height="620" fill="#f8fafc" rx="8"/>
+  <text x="440" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#1e293b">记忆系统架构</text>
+
+  <!-- 用户请求 -->
+  <rect x="340" y="50" width="200" height="40" rx="20" fill="#6366f1" filter="url(#sh)"/>
+  <text x="440" y="76" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">用户请求</text>
+
+  <line x1="440" y1="90" x2="440" y2="118" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Agent Runner -->
+  <rect x="320" y="118" width="240" height="44" rx="8" fill="#3b82f6" filter="url(#sh)"/>
+  <text x="440" y="138" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">Agent Runner</text>
+  <text x="440" y="154" text-anchor="middle" font-size="10" fill="#dbeafe">runAgent()</text>
+
+  <!-- 启动时分支 -->
+  <line x1="320" y1="140" x2="150" y2="140" stroke="#059669" stroke-width="1.5" marker-end="url(#arr-g)"/>
+  <rect x="20" y="112" width="260" height="56" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="150" y="133" text-anchor="middle" font-size="12" font-weight="600" fill="#065f46">启动时：注入记忆指令</text>
+  <text x="150" y="150" text-anchor="middle" font-size="10" fill="#059669">buildSystemPromptSection()</text>
+  <text x="150" y="163" text-anchor="middle" font-size="9" fill="#64748b">记忆类型说明 + MEMORY.md 索引</text>
+
+  <!-- 查询时分支 -->
+  <line x1="320" y1="150" x2="150" y2="210" stroke="#059669" stroke-width="1.5" marker-end="url(#arr-g)"/>
+  <rect x="20" y="186" width="260" height="80" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="150" y="207" text-anchor="middle" font-size="12" font-weight="600" fill="#065f46">查询时：检索相关记忆</text>
+  <text x="150" y="224" text-anchor="middle" font-size="10" fill="#059669">getMemoryContextForQuery()</text>
+  <line x1="40" y1="234" x2="260" y2="234" stroke="#a7f3d0" stroke-width="0.5"/>
+  <text x="150" y="249" text-anchor="middle" font-size="9" fill="#64748b">候选 ≤ maxRelevant → 直接返回</text>
+  <text x="150" y="261" text-anchor="middle" font-size="9" fill="#64748b">有 Provider → LLM 智能选择</text>
+
+  <!-- 完成后分支 -->
+  <line x1="440" y1="162" x2="440" y2="300" stroke="#d97706" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arr-a)"/>
+
+  <!-- MemoryExtractor -->
+  <rect x="310" y="300" width="260" height="56" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="440" y="321" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">完成后：后台记忆提取</text>
+  <text x="440" y="338" text-anchor="middle" font-size="10" fill="#d97706">MemoryExtractor.extractMemories()</text>
+  <text x="440" y="351" text-anchor="middle" font-size="9" fill="#64748b">异步执行，不阻塞响应</text>
+
+  <!-- Extraction sub-steps -->
+  <line x1="570" y1="328" x2="640" y2="328" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr-a)"/>
+
+  <rect x="640" y="290" width="210" height="36" rx="6" fill="#fff" stroke="#d97706" stroke-width="1"/>
+  <text x="745" y="313" text-anchor="middle" font-size="10" fill="#92400e">总结对话 → 构建提取提示词</text>
+
+  <line x1="745" y1="326" x2="745" y2="348" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr-a)"/>
+
+  <rect x="640" y="348" width="210" height="36" rx="6" fill="#fff" stroke="#d97706" stroke-width="1"/>
+  <text x="745" y="371" text-anchor="middle" font-size="10" fill="#92400e">LLM 提取 → 解析结果</text>
+
+  <line x1="745" y1="384" x2="745" y2="406" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr-a)"/>
+
+  <rect x="640" y="406" width="210" height="36" rx="6" fill="#fff" stroke="#d97706" stroke-width="1"/>
+  <text x="745" y="429" text-anchor="middle" font-size="10" fill="#92400e">写入 .md 文件 + 更新索引</text>
+
+  <!-- Memory retrieval detail -->
+  <rect x="20" y="290" width="260" height="100" rx="8" fill="#fff" stroke="#059669" stroke-width="1" filter="url(#sh)"/>
+  <text x="150" y="310" text-anchor="middle" font-size="11" font-weight="600" fill="#065f46">智能检索策略</text>
+  <line x1="40" y1="318" x2="260" y2="318" stroke="#a7f3d0" stroke-width="0.5"/>
+
+  <rect x="36" y="326" width="108" height="24" rx="4" fill="#dbeafe" stroke="#3b82f6" stroke-width="1"/>
+  <text x="90" y="343" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">LLM 智能选择</text>
+
+  <text x="150" y="343" text-anchor="middle" font-size="9" fill="#64748b">优先</text>
+
+  <rect x="170" y="326" width="96" height="24" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+  <text x="218" y="343" text-anchor="middle" font-size="9" font-weight="500" fill="#92400e">关键词匹配</text>
+
+  <text x="150" y="370" text-anchor="middle" font-size="9" fill="#64748b">描述匹配 +3 | 内容匹配 +1</text>
+  <text x="150" y="383" text-anchor="middle" font-size="9" fill="#64748b">整体匹配 +5 | 新鲜度 +1~2</text>
+
+  <!-- Memory types -->
+  <rect x="20" y="420" width="260" height="130" rx="8" fill="#fff" stroke="#8b5cf6" stroke-width="1" filter="url(#sh)"/>
+  <text x="150" y="442" text-anchor="middle" font-size="11" font-weight="600" fill="#6d28d9">四种记忆类型</text>
+  <line x1="40" y1="450" x2="260" y2="450" stroke="#e9d5ff" stroke-width="0.5"/>
+
+  <rect x="36" y="458" width="108" height="24" rx="4" fill="#ede9fe"/>
+  <text x="90" y="475" text-anchor="middle" font-size="9" font-weight="500" fill="#6d28d9">User 用户偏好</text>
+
+  <rect x="152" y="458" width="112" height="24" rx="4" fill="#fce7f3"/>
+  <text x="208" y="475" text-anchor="middle" font-size="9" font-weight="500" fill="#be185d">Feedback 行为反馈</text>
+
+  <rect x="36" y="490" width="108" height="24" rx="4" fill="#dbeafe"/>
+  <text x="90" y="507" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">Project 项目知识</text>
+
+  <rect x="152" y="490" width="112" height="24" rx="4" fill="#dcfce7"/>
+  <text x="208" y="507" text-anchor="middle" font-size="9" font-weight="500" fill="#166534">Reference 外部引用</text>
+
+  <text x="150" y="540" text-anchor="middle" font-size="9" fill="#64748b">存储：~/.sga/projects/{path}/memory/*.md</text>
+
+  <!-- Storage -->
+  <rect x="310" y="420" width="260" height="56" rx="8" fill="#fff" stroke="#64748b" stroke-width="1" filter="url(#sh)"/>
+  <text x="440" y="441" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">文件存储</text>
+  <text x="440" y="458" text-anchor="middle" font-size="9" fill="#64748b">Markdown + YAML Frontmatter</text>
+  <text x="440" y="470" text-anchor="middle" font-size="9" fill="#64748b">MEMORY.md 自动索引（200行/25KB 限制）</text>
+
+  <!-- Cache -->
+  <rect x="310" y="490" width="260" height="44" rx="8" fill="#fff" stroke="#64748b" stroke-width="1" filter="url(#sh)"/>
+  <text x="440" y="510" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">内存缓存</text>
+  <text x="440" y="526" text-anchor="middle" font-size="9" fill="#64748b">30 秒有效期 | 保存后立即刷新</text>
+
+  <!-- Freshness warning -->
+  <rect x="640" y="460" width="210" height="44" rx="6" fill="#fef2f2" stroke="#ef4444" stroke-width="1"/>
+  <text x="745" y="479" text-anchor="middle" font-size="10" font-weight="500" fill="#dc2626">⚠️ 新鲜度警告</text>
+  <text x="745" y="495" text-anchor="middle" font-size="9" fill="#64748b">超过阈值天数的记忆附带陈旧提醒</text>
+
+  <text x="440" y="590" text-anchor="middle" font-size="9" fill="#94a3b8">SGA-Template Memory System Architecture</text>
+</svg>

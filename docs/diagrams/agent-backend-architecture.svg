@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 380" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#64748b"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#3b82f6"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7z" fill="#059669"/>
+    </marker>
+    <filter id="s" x="-4%" y="-4%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0001"/>
+    </filter>
+  </defs>
+
+  <rect width="860" height="380" fill="#f8fafc" rx="8"/>
+  <text x="430" y="30" text-anchor="middle" font-size="16" font-weight="700" fill="#1e293b">Agent 后端架构模式</text>
+
+  <!-- 前端应用 -->
+  <rect x="30" y="80" width="200" height="200" rx="12" fill="#6366f1" filter="url(#s)"/>
+  <text x="130" y="110" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">前端应用</text>
+  <line x1="55" y1="120" x2="205" y2="120" stroke="#818cf8" stroke-width="0.5"/>
+  <rect x="55" y="132" width="150" height="26" rx="4" fill="#4f46e5"/>
+  <text x="130" y="150" text-anchor="middle" font-size="10" fill="#e0e7ff">React / Vue / Flutter</text>
+  <rect x="55" y="166" width="150" height="26" rx="4" fill="#4f46e5"/>
+  <text x="130" y="184" text-anchor="middle" font-size="10" fill="#e0e7ff">SSE EventSource</text>
+  <rect x="55" y="200" width="150" height="26" rx="4" fill="#4f46e5"/>
+  <text x="130" y="218" text-anchor="middle" font-size="10" fill="#e0e7ff">REST API Client</text>
+  <rect x="55" y="234" width="150" height="26" rx="4" fill="#4f46e5"/>
+  <text x="130" y="252" text-anchor="middle" font-size="10" fill="#e0e7ff">审批/输入 UI</text>
+
+  <!-- SGA-Template HTTP Server -->
+  <rect x="310" y="60" width="240" height="240" rx="12" fill="#3b82f6" filter="url(#s)"/>
+  <text x="430" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">SGA-Template</text>
+  <text x="430" y="104" text-anchor="middle" font-size="11" fill="#bfdbfe">HTTP Server (Express)</text>
+  <line x1="330" y1="112" x2="530" y2="112" stroke="#60a5fa" stroke-width="0.5"/>
+
+  <rect x="330" y="122" width="200" height="24" rx="4" fill="#1d4ed8"/>
+  <text x="430" y="139" text-anchor="middle" font-size="10" fill="#dbeafe">Session 管理</text>
+
+  <rect x="330" y="154" width="200" height="24" rx="4" fill="#1d4ed8"/>
+  <text x="430" y="171" text-anchor="middle" font-size="10" fill="#dbeafe">Agent Runner</text>
+
+  <rect x="330" y="186" width="200" height="24" rx="4" fill="#1d4ed8"/>
+  <text x="430" y="203" text-anchor="middle" font-size="10" fill="#dbeafe">Memory 系统</text>
+
+  <rect x="330" y="218" width="200" height="24" rx="4" fill="#1d4ed8"/>
+  <text x="430" y="235" text-anchor="middle" font-size="10" fill="#dbeafe">Tool / Skill / Hook</text>
+
+  <rect x="330" y="250" width="200" height="24" rx="4" fill="#1d4ed8"/>
+  <text x="430" y="267" text-anchor="middle" font-size="10" fill="#dbeafe">权限 / 人机交互</text>
+
+  <!-- LLM Provider -->
+  <rect x="630" y="80" width="200" height="200" rx="12" fill="#ef4444" filter="url(#s)"/>
+  <text x="730" y="110" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">LLM Provider</text>
+  <line x1="655" y1="120" x2="805" y2="120" stroke="#fca5a5" stroke-width="0.5"/>
+  <rect x="655" y="132" width="150" height="26" rx="4" fill="#dc2626"/>
+  <text x="730" y="150" text-anchor="middle" font-size="10" fill="#fef2f2">Anthropic</text>
+  <rect x="655" y="166" width="150" height="26" rx="4" fill="#dc2626"/>
+  <text x="730" y="184" text-anchor="middle" font-size="10" fill="#fef2f2">OpenAI</text>
+  <rect x="655" y="200" width="150" height="26" rx="4" fill="#dc2626"/>
+  <text x="730" y="218" text-anchor="middle" font-size="10" fill="#fef2f2">DeepSeek</text>
+  <rect x="655" y="234" width="150" height="26" rx="4" fill="#dc2626"/>
+  <text x="730" y="252" text-anchor="middle" font-size="10" fill="#fef2f2">自定义供应商</text>
+
+  <!-- Arrows: 前端 → SGA -->
+  <line x1="230" y1="160" x2="310" y2="160" stroke="#3b82f6" stroke-width="2" marker-end="url(#ab)"/>
+  <text x="270" y="153" text-anchor="middle" font-size="9" font-weight="500" fill="#3b82f6">HTTP</text>
+
+  <!-- Arrows: SGA → 前端 (SSE) -->
+  <line x1="310" y1="200" x2="230" y2="200" stroke="#059669" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="270" y="215" text-anchor="middle" font-size="9" font-weight="500" fill="#059669">SSE</text>
+
+  <!-- Arrows: SGA → LLM -->
+  <line x1="550" y1="160" x2="630" y2="160" stroke="#64748b" stroke-width="2" marker-end="url(#a)"/>
+  <text x="590" y="153" text-anchor="middle" font-size="9" font-weight="500" fill="#64748b">API</text>
+
+  <!-- Arrows: LLM → SGA -->
+  <line x1="630" y1="200" x2="550" y2="200" stroke="#64748b" stroke-width="2" marker-end="url(#a)"/>
+  <text x="590" y="215" text-anchor="middle" font-size="9" font-weight="500" fill="#64748b">Response</text>
+
+  <!-- Bottom: Tools/Skills/MCP/Memory -->
+  <line x1="430" y1="300" x2="430" y2="318" stroke="#64748b" stroke-width="1.5" marker-end="url(#a)"/>
+  <rect x="290" y="318" width="280" height="44" rx="8" fill="#fff" stroke="#64748b" stroke-width="1" filter="url(#s)"/>
+  <text x="430" y="338" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Tools · Skills · MCP · Memory</text>
+  <text x="430" y="354" text-anchor="middle" font-size="9" fill="#64748b">可扩展能力层</text>
+
+  <text x="430" y="375" text-anchor="middle" font-size="9" fill="#94a3b8">SGA-Template Agent Backend Architecture</text>
+</svg>
