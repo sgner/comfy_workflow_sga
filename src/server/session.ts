@@ -39,7 +39,7 @@ export interface CreateSessionRequest {
 
 export interface SendMessageRequest {
   content: string
-  stream?: boolean
+  stream?: boolean | string
   agentType?: string
   providerName?: string
   model?: string

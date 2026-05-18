@@ -168,7 +168,9 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     return
   }
 
-  logger.info(`Session ${sessionId}: received message, content length=${body.content.length}, stream=${body.stream ?? false}`)
+  const useStream = body.stream === true || body.stream === 'true'
+
+  logger.info(`Session ${sessionId}: received message, content length=${body.content.length}, stream=${useStream}`)
 
   const userMessage: Message = {
     id: `msg-${Date.now()}`,
@@ -178,7 +180,7 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
   }
   store.appendMessage(session.id, userMessage)
 
-  if (body.stream) {
+  if (useStream) {
     handleStreamResponse(req, res, session, body)
     return
   }
@@ -291,11 +293,15 @@ async function handleStreamResponse(
       provider,
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
+      stream: true,
       onProgress: async (event: unknown) => {
         const e = event as { type: string; text?: string; toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; toolCallId?: string; message?: string; suggestions?: string[]; reason?: unknown }
         switch (e.type) {
           case 'stream_delta':
             sendEvent({ type: 'text_delta', data: e.text ?? '' })
+            break
+          case 'thinking_delta':
+            sendEvent({ type: 'thinking_delta', data: e.text ?? '' })
             break
           case 'tool_use_start':
             sendEvent({ type: 'tool_use_start', data: { toolName: e.toolName, toolUseId: e.toolUseId } })

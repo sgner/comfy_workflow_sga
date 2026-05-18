@@ -2,7 +2,7 @@ import type { Message, ModelAlias, UsageMetrics, PermissionMode, ThinkingEffort 
 import type { AgentDefinition } from './definition.js'
 import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { SystemPrompt } from '../context/system-prompt.js'
-import type { LLMProvider, ProviderRequestOptions, ProviderResponse, ProviderStreamChunk } from '../providers/types.js'
+import type { LLMProvider, ProviderRequestOptions, ProviderResponse, ProviderStreamChunk, ProviderContentBlock } from '../providers/types.js'
 import type { ToolExecutionPipeline, ToolOrchestrationConfig } from '../tools/execution.js'
 import { filterToolsForAgent } from '../tools/base.js'
 import { ALL_AGENT_DISALLOWED_TOOLS } from './definition.js'
@@ -26,6 +26,7 @@ export interface AgentRunOptions {
   maxTurns?: number
   maxBudgetUsd?: number
   signal?: AbortSignal
+  stream?: boolean
   onProgress?: (event: unknown) => void
   parentContext?: ToolUseContext
   pipeline?: ToolExecutionPipeline
@@ -191,6 +192,8 @@ async function executeAgentLoop(
 
   logger.info(`Starting agent loop, model=${resolvedModel}, maxTurns=${maxTurns}, provider=${provider.name}`)
 
+  const useStream = options.stream ?? false
+
   while (turnCount < maxTurns) {
     turnCount++
     logger.debug(`Turn ${turnCount} starting`)
@@ -217,7 +220,7 @@ async function executeAgentLoop(
       })) : undefined,
       maxTokens,
       temperature: modelConfig?.defaultTemperature ?? provider.config.defaultTemperature,
-      stream: false,
+      stream: useStream,
       systemPrompt: systemPromptContent || undefined,
       signal: options.signal,
       thinkingBudget: thinkingStrategy?.nativeThinking ? thinkingStrategy.thinkingBudget : undefined,
@@ -226,8 +229,14 @@ async function executeAgentLoop(
 
     let response: ProviderResponse
     try {
-      logger.debug(`Calling provider ${provider.name} with model ${resolvedModel}`)
-      response = await provider.createMessage(requestOptions)
+      logger.debug(`Calling provider ${provider.name} with model ${resolvedModel}, stream=${useStream}`)
+
+      if (useStream) {
+        response = await consumeStream(provider, requestOptions, options.onProgress)
+      } else {
+        response = await provider.createMessage(requestOptions)
+      }
+
       logger.info(`Provider responded, stopReason=${response.stopReason}, usage={in:${response.usage.inputTokens}, out:${response.usage.outputTokens}}`)
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
@@ -238,8 +247,6 @@ async function executeAgentLoop(
         content: [{ type: 'text', text: `[Error] Failed to get response from provider: ${errMsg}` }],
         timestamp: Date.now(),
       })
-      usage.inputTokens += 0
-      usage.outputTokens += 0
       break
     }
 
@@ -248,6 +255,10 @@ async function executeAgentLoop(
     usage.cacheReadInputTokens += response.usage.cacheReadInputTokens ?? 0
     usage.cacheCreationInputTokens += response.usage.cacheCreationInputTokens ?? 0
     usage.totalTokens += response.usage.inputTokens + response.usage.outputTokens
+
+    if (response.content.length === 0) {
+      logger.warn(`Provider returned empty content (stopReason=${response.stopReason}, usage={in:${response.usage.inputTokens}, out:${response.usage.outputTokens}}). This may indicate a compatibility issue with the provider.`)
+    }
 
     if (inputPricePerMToken !== undefined && outputPricePerMToken !== undefined) {
       usage.totalCostUsd +=
@@ -376,5 +387,185 @@ function createDefaultToolUseContext(tools: Tool[]): ToolUseContext {
     abortController: new AbortController(),
     getAppState: () => ({}),
     setAppState: () => {},
+  }
+}
+
+async function consumeStream(
+  provider: LLMProvider,
+  options: ProviderRequestOptions,
+  onProgress?: (event: unknown) => void,
+): Promise<ProviderResponse> {
+  const contentBlocks: ProviderContentBlock[] = []
+  let currentTextBlock: { type: 'text'; text: string } | null = null
+  let currentToolUseBlock: { type: 'tool_use'; id: string; name: string; input: string } | null = null
+  let stopReason = 'end_turn'
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheCreationInputTokens: number | undefined
+  let cacheReadInputTokens: number | undefined
+
+  for await (const chunk of provider.createStreamingMessage(options)) {
+    switch (chunk.type) {
+      case 'stream_chunk': {
+        if (chunk.contentBlock) {
+          if (chunk.contentBlock.type === 'tool_use') {
+            currentToolUseBlock = {
+              type: 'tool_use',
+              id: chunk.contentBlock.id ?? '',
+              name: chunk.contentBlock.name ?? '',
+              input: '',
+            }
+            if (onProgress) {
+              onProgress({
+                type: 'tool_use_start',
+                toolName: chunk.contentBlock.name,
+                toolUseId: chunk.contentBlock.id,
+              })
+            }
+          }
+        }
+
+        if (chunk.delta) {
+          if (chunk.delta.type === 'text_delta') {
+            if (!currentTextBlock) {
+              currentTextBlock = { type: 'text', text: '' }
+            }
+            currentTextBlock.text += chunk.delta.text ?? ''
+            if (onProgress) {
+              onProgress({ type: 'stream_delta', text: chunk.delta.text ?? '' })
+            }
+          } else if (chunk.delta.type === 'thinking_delta') {
+            if (onProgress) {
+              onProgress({ type: 'thinking_delta', text: chunk.delta.thinking ?? '' })
+            }
+          } else if (chunk.delta.type === 'input_json_delta') {
+            if (currentToolUseBlock) {
+              currentToolUseBlock.input += chunk.delta.partialJson ?? ''
+            }
+          } else if (chunk.delta.type === 'message_delta') {
+            if (chunk.delta.stopReason) {
+              stopReason = chunk.delta.stopReason
+            }
+          }
+        }
+        break
+      }
+
+      case 'message_start':
+        if (chunk.usage) {
+          inputTokens = chunk.usage.inputTokens ?? 0
+        }
+        break
+
+      case 'content_block_start':
+        if (chunk.contentBlock) {
+          if (chunk.contentBlock.type === 'text') {
+            currentTextBlock = { type: 'text', text: chunk.contentBlock.text ?? '' }
+          } else if (chunk.contentBlock.type === 'tool_use') {
+            currentToolUseBlock = {
+              type: 'tool_use',
+              id: chunk.contentBlock.id ?? '',
+              name: chunk.contentBlock.name ?? '',
+              input: '',
+            }
+            if (onProgress) {
+              onProgress({
+                type: 'tool_use_start',
+                toolName: chunk.contentBlock.name,
+                toolUseId: chunk.contentBlock.id,
+              })
+            }
+          }
+        }
+        break
+
+      case 'content_block_delta':
+        if (chunk.delta) {
+          if (chunk.delta.type === 'text_delta' && chunk.delta.text) {
+            if (currentTextBlock) {
+              currentTextBlock.text += chunk.delta.text
+            }
+            if (onProgress) {
+              onProgress({ type: 'stream_delta', text: chunk.delta.text })
+            }
+          } else if (chunk.delta.type === 'thinking_delta' && chunk.delta.thinking) {
+            if (onProgress) {
+              onProgress({ type: 'thinking_delta', text: chunk.delta.thinking })
+            }
+          } else if (chunk.delta.type === 'input_json_delta' && chunk.delta.partialJson) {
+            if (currentToolUseBlock) {
+              currentToolUseBlock.input += chunk.delta.partialJson
+            }
+          }
+        }
+        break
+
+      case 'content_block_stop':
+        if (currentTextBlock) {
+          contentBlocks.push(currentTextBlock)
+          currentTextBlock = null
+        }
+        if (currentToolUseBlock) {
+          let parsedInput: Record<string, unknown> = {}
+          try {
+            parsedInput = JSON.parse(currentToolUseBlock.input) as Record<string, unknown>
+          } catch {
+            parsedInput = {}
+          }
+          contentBlocks.push({
+            type: 'tool_use',
+            id: currentToolUseBlock.id,
+            name: currentToolUseBlock.name,
+            input: parsedInput,
+          })
+          currentToolUseBlock = null
+        }
+        break
+
+      case 'message_delta':
+        if (chunk.delta?.stopReason) {
+          stopReason = chunk.delta.stopReason
+        }
+        if (chunk.usage) {
+          outputTokens = chunk.usage.outputTokens ?? outputTokens
+        }
+        break
+
+      case 'message_stop':
+        break
+    }
+  }
+
+  if (currentTextBlock) {
+    contentBlocks.push(currentTextBlock)
+    currentTextBlock = null
+  }
+  if (currentToolUseBlock) {
+    let parsedInput: Record<string, unknown> = {}
+    try {
+      parsedInput = JSON.parse(currentToolUseBlock.input) as Record<string, unknown>
+    } catch {
+      parsedInput = {}
+    }
+    contentBlocks.push({
+      type: 'tool_use',
+      id: currentToolUseBlock.id,
+      name: currentToolUseBlock.name,
+      input: parsedInput,
+    })
+    currentToolUseBlock = null
+  }
+
+  return {
+    id: `stream-${Date.now()}`,
+    model: options.model,
+    content: contentBlocks,
+    stopReason,
+    usage: {
+      inputTokens,
+      outputTokens,
+      cacheCreationInputTokens,
+      cacheReadInputTokens,
+    },
   }
 }

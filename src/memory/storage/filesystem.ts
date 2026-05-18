@@ -98,6 +98,11 @@ export class FileSystemBackend implements MemoryStorageBackend {
 
     const filename = memory.path.endsWith('.md') ? memory.path : `${memory.path}.md`
     const filePath = join(this.memoryDir, filename)
+    
+ const dir = join(filePath, '..')
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true })
+    }
 
     const fullContent = this.serializeWithFrontmatter(memory)
     await writeFile(filePath, fullContent, 'utf-8')

@@ -10,6 +10,9 @@ import type {
   ModelConfig,
 } from './types.js'
 import { ProviderRequestError } from './anthropic.js'
+import { createLogger } from '../utils/logger.js'
+
+const logger = createLogger('openai-provider')
 
 export const OPENAI_MODEL_ALIASES: Record<string, string> = {
   'gpt-4o': 'gpt-4o',
@@ -358,13 +361,19 @@ export class OpenAIProvider implements LLMProvider {
           signal: options.signal,
         })
 
+        logger.info(`Request: model=${body.model}, stream=${body.stream}, messages=${(body.messages as Array<unknown>)?.length ?? 0}, tools=${(body.tools as Array<unknown>)?.length ?? 0}, tool_choice=${body.tool_choice}`)
+
         if (!response.ok) {
           const errorBody = await response.text()
           throw new ProviderRequestError(response.status, errorBody, this.name)
         }
 
         const data = await response.json() as OpenAIChatResponse
-        return this.normalizeResponse(data)
+        const normalized = this.normalizeResponse(data)
+        if (normalized.content.length === 0) {
+          logger.warn(`Empty response from provider. Raw response: ${JSON.stringify(data).slice(0, 1000)}`)
+        }
+        return normalized
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error))
         if (attempt < retries && !(error instanceof ProviderRequestError && error.status < 500)) {
@@ -396,6 +405,8 @@ export class OpenAIProvider implements LLMProvider {
       signal: options.signal,
     })
 
+    logger.info(`Stream request: model=${body.model}, messages=${(body.messages as Array<unknown>)?.length ?? 0}, tools=${(body.tools as Array<unknown>)?.length ?? 0}, tool_choice=${body.tool_choice}`)
+
     if (!response.ok) {
       const errorBody = await response.text()
       throw new ProviderRequestError(response.status, errorBody, this.name)
@@ -406,6 +417,7 @@ export class OpenAIProvider implements LLMProvider {
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let chunkCount = 0
 
     while (true) {
       const { done, value } = await reader.read()
@@ -418,16 +430,26 @@ export class OpenAIProvider implements LLMProvider {
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6).trim()
-          if (data === '[DONE]') return
+          if (data === '[DONE]') {
+            logger.info(`Stream completed: ${chunkCount} chunks processed`)
+            return
+          }
           try {
             const raw = JSON.parse(data)
+            chunkCount++
+            if (chunkCount <= 3) {
+              logger.debug(`Stream chunk #${chunkCount}: ${JSON.stringify(raw).slice(0, 300)}`)
+            }
             yield this.normalizeStreamChunk(raw)
           } catch {
+            logger.warn(`Failed to parse stream chunk: ${data.slice(0, 200)}`)
             continue
           }
         }
       }
     }
+
+    logger.info(`Stream ended without [DONE]: ${chunkCount} chunks processed`)
   }
 
   private buildRequestBody(
@@ -452,6 +474,9 @@ export class OpenAIProvider implements LLMProvider {
     if (options.tools && options.tools.length > 0) {
       body.tools = this.convertTools(options.tools)
       body.tool_choice = 'auto'
+    } else {
+      body.tools = []
+      body.tool_choice = 'none'
     }
 
     if (options.reasoningEffort) {
@@ -556,9 +581,11 @@ export class OpenAIProvider implements LLMProvider {
     const choice = data.choices?.[0]
     const message = choice?.message
 
+    logger.debug(`Normalizing response: id=${data.id}, finish_reason=${choice?.finish_reason}, has_message=${!!message}, content_type=${typeof message?.content}, content_len=${message?.content?.length ?? 0}, tool_calls=${message?.tool_calls?.length ?? 0}`)
+
     const content: ProviderContentBlock[] = []
 
-    if (message?.content) {
+    if (message?.content != null && message.content !== '') {
       content.push({ type: 'text', text: message.content })
     }
 
@@ -573,6 +600,10 @@ export class OpenAIProvider implements LLMProvider {
       }
     }
 
+    if (content.length === 0) {
+      logger.warn(`Empty response content from provider. Raw data keys: ${Object.keys(data).join(',')}, choice keys: ${choice ? Object.keys(choice).join(',') : 'none'}`)
+    }
+
     const stopReason = choice?.finish_reason ?? 'stop'
     const stopReasonMap: Record<string, string> = {
       stop: 'end_turn',
@@ -581,14 +612,17 @@ export class OpenAIProvider implements LLMProvider {
       content_filter: 'end_turn',
     }
 
+    const inputTokens = data.usage?.prompt_tokens ?? (data.usage as Record<string, unknown> | undefined)?.input_tokens as number ?? 0
+    const outputTokens = data.usage?.completion_tokens ?? (data.usage as Record<string, unknown> | undefined)?.output_tokens as number ?? 0
+
     return {
-      id: data.id,
-      model: data.model,
+      id: data.id ?? `resp-${Date.now()}`,
+      model: data.model ?? '',
       content,
       stopReason: stopReasonMap[stopReason] ?? stopReason,
       usage: {
-        inputTokens: data.usage?.prompt_tokens ?? 0,
-        outputTokens: data.usage?.completion_tokens ?? 0,
+        inputTokens,
+        outputTokens,
       },
     }
   }
@@ -603,7 +637,7 @@ export class OpenAIProvider implements LLMProvider {
     const delta = choice.delta as Record<string, unknown> | undefined
 
     if (delta) {
-      if (delta.content) {
+      if (delta.content != null) {
         chunk.delta = { type: 'text_delta', text: delta.content as string }
       }
 
