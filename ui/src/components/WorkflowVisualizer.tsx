@@ -1,0 +1,905 @@
+
+
+import {
+  Activity,
+  AlertCircle,
+  AlertTriangle,
+  BookOpen,
+  Bot,
+  Box,
+  Check,
+  Copy,
+  Download,
+  Edit3,
+  FileJson,
+  History,
+  Maximize,
+  Move,
+  RotateCcw,
+  Save,
+  Settings,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+
+import {
+  ComfyNode,
+  ComfyWorkflow,
+  Language,
+  WorkflowCheckpoint,
+  WorkflowIssue,
+  VisualizerTab
+} from '../types'
+import { t } from '../utils/i18n'
+
+interface WorkflowVisualizerProps {
+  workflow: ComfyWorkflow
+  language: Language
+  onOpenSettings: () => void
+  isConfigured: boolean
+  onUpdateWorkflow: (workflow: ComfyWorkflow) => void
+  onAskAi: (prompt: string) => void
+  issues?: WorkflowIssue[]
+  resolveWidgetNames?: (node: ComfyNode) => string[]
+  activeTab: VisualizerTab
+  onTabChange: (tab: VisualizerTab) => void
+  onSendErrorsToAi?: (selectedIssues: WorkflowIssue[]) => void
+}
+
+// Constants for Node Rendering
+const NODE_HEADER_HEIGHT = 30
+const SLOT_HEIGHT = 20
+const WIDGET_HEIGHT = 24
+const NODE_WIDTH_DEFAULT = 210 
+const CANVAS_DOT_COLOR = '#1e293b'
+
+const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
+  workflow,
+  language,
+  onOpenSettings,
+  isConfigured,
+  onUpdateWorkflow,
+  onAskAi,
+  issues = [],
+  resolveWidgetNames,
+  activeTab,
+  onTabChange,
+  onSendErrorsToAi
+}) => {
+  const [copied, setCopied] = useState(false)
+  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set())
+
+  // Graph View State
+  const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
+  const [isDragging, setIsDragging] = useState(false)
+  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 })
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // JSON Edit State
+  const [isEditing, setIsEditing] = useState(false)
+  const [jsonString, setJsonString] = useState('')
+  const [showEditWarning, setShowEditWarning] = useState(false)
+  const [jsonError, setJsonError] = useState<string | null>(null)
+  const [checkpoints, setCheckpoints] = useState<WorkflowCheckpoint[]>([])
+
+  const handleCopyJson = () => {
+    navigator.clipboard.writeText(JSON.stringify(workflow, null, 2))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleExportJson = () => {
+    const blob = new Blob([JSON.stringify(workflow, null, 2)], {
+      type: 'application/json'
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `workflow_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  // --- Helper: Calculate Node Dimensions ---
+  const getNodeDimensions = (node: ComfyNode) => {
+    let w = NODE_WIDTH_DEFAULT;
+    // Handle ComfyUI size formats [w, h] or {0: w, 1: h}
+    if (Array.isArray(node.size) && node.size.length >= 1) {
+        w = Number(node.size[0]);
+    } else if (node.size && typeof node.size === 'object') {
+        // @ts-ignore
+        if ('0' in node.size) w = Number(node.size[0]);
+    }
+    if (w < NODE_WIDTH_DEFAULT) w = NODE_WIDTH_DEFAULT;
+
+    const inputs = node.inputs?.length || 0;
+    const outputs = node.outputs?.length || 0;
+    const widgets = node.widgets_values?.length || 0;
+    
+    const slotsHeight = Math.max(inputs, outputs) * SLOT_HEIGHT;
+    const widgetsHeight = widgets * (WIDGET_HEIGHT + 4);
+    const contentHeight = NODE_HEADER_HEIGHT + slotsHeight + widgetsHeight + 20; // + padding
+    
+    let h = contentHeight;
+    if (Array.isArray(node.size) && node.size.length >= 2) {
+        h = Math.max(h, Number(node.size[1]));
+    } else if (node.size && typeof node.size === 'object') {
+        // @ts-ignore
+        if ('1' in node.size) h = Math.max(h, Number(node.size[1]));
+    }
+    
+    return { w, h };
+  }
+
+  // --- Auto Layout / Fix Overlaps Logic ---
+  
+  const handleFixOverlaps = () => {
+    if (!workflow || !workflow.nodes || workflow.nodes.length === 0) return
+
+    // Deep copy to avoid mutating state directly during calculation
+    const newWorkflow = JSON.parse(JSON.stringify(workflow)) as ComfyWorkflow
+    const nodes = newWorkflow.nodes
+
+    if (nodes.length === 0) return;
+
+    // 1. Calculate Bounds
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    nodes.forEach(n => {
+        if (!n.pos) return;
+        minX = Math.min(minX, n.pos[0]);
+        maxX = Math.max(maxX, n.pos[0]);
+        minY = Math.min(minY, n.pos[1]);
+        maxY = Math.max(maxY, n.pos[1]);
+    });
+
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    // 2. Expansion: Move nodes away from center
+    const EXPANSION = 1.1; 
+    nodes.forEach(n => {
+        if (!n.pos) return;
+        n.pos[0] = centerX + (n.pos[0] - centerX) * EXPANSION;
+        n.pos[1] = centerY + (n.pos[1] - centerY) * EXPANSION;
+    });
+
+    // 3. Iterative Solver to fix overlaps
+    const ITERATIONS = 100;
+    const PADDING = 50; // Generous padding to ensure visual separation
+
+    // Cache dimensions to improve performance inside loop
+    const dimensions = new Map<number, { w: number, h: number }>();
+    nodes.forEach(n => {
+        dimensions.set(n.id, getNodeDimensions(n));
+    });
+
+    for (let iter = 0; iter < ITERATIONS; iter++) {
+        let moved = false;
+        
+        for (let i = 0; i < nodes.length; i++) {
+            const nA = nodes[i];
+            const dimA = dimensions.get(nA.id)!;
+            
+            // Calculate dynamic center A (position changes each iteration)
+            const cAx = nA.pos[0] + dimA.w / 2;
+            const cAy = nA.pos[1] + dimA.h / 2;
+
+            for (let j = i + 1; j < nodes.length; j++) {
+                const nB = nodes[j];
+                const dimB = dimensions.get(nB.id)!;
+
+                // Calculate dynamic center B
+                const cBx = nB.pos[0] + dimB.w / 2;
+                const cBy = nB.pos[1] + dimB.h / 2;
+
+                let dx = cAx - cBx;
+                let dy = cAy - cBy;
+
+                // Handle exact overlap (jitter)
+                if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
+                    dx = (Math.random() - 0.5);
+                    dy = (Math.random() - 0.5);
+                }
+
+                const minDistX = (dimA.w / 2) + (dimB.w / 2) + PADDING;
+                const minDistY = (dimA.h / 2) + (dimB.h / 2) + PADDING;
+
+                const absDx = Math.abs(dx);
+                const absDy = Math.abs(dy);
+
+                // Check Overlap
+                if (absDx < minDistX && absDy < minDistY) {
+                    moved = true;
+                    
+                    // Penetration depth
+                    const penX = minDistX - absDx;
+                    const penY = minDistY - absDy;
+
+                    // Resolve along shortest axis (Minimum Translation Vector)
+                    if (penX < penY) {
+                        const sign = dx > 0 ? 1 : -1;
+                        const shift = penX / 2;
+                        nA.pos[0] += sign * shift;
+                        nB.pos[0] -= sign * shift;
+                    } else {
+                        const sign = dy > 0 ? 1 : -1;
+                        const shift = penY / 2;
+                        nA.pos[1] += sign * shift;
+                        nB.pos[1] -= sign * shift;
+                    }
+                }
+            }
+        }
+        if (!moved) break; // Optimization: Stop if no overlaps found
+    }
+
+    // 4. Final Integer Rounding for cleaner JSON
+    nodes.forEach(n => {
+        if(n.pos) {
+            n.pos[0] = Math.round(n.pos[0]);
+            n.pos[1] = Math.round(n.pos[1]);
+        }
+    });
+
+    onUpdateWorkflow(newWorkflow)
+  }
+
+  // --- JSON Edit Logic ---
+
+  const handleStartEdit = () => {
+    setShowEditWarning(true)
+  }
+
+  const confirmEditMode = () => {
+    setShowEditWarning(false)
+    setJsonString(JSON.stringify(workflow, null, 2))
+    setIsEditing(true)
+  }
+
+  const handleSaveJson = () => {
+    try {
+      const parsed = JSON.parse(jsonString)
+
+      // Create Checkpoint before saving
+      const newCheckpoint: WorkflowCheckpoint = {
+        id: Date.now().toString(),
+        timestamp: Date.now(),
+        name: `${t(language, 'version')} ${checkpoints.length + 1}`,
+        data: workflow // Save the OLD workflow state
+      }
+      setCheckpoints((prev) => [newCheckpoint, ...prev])
+
+      // Update App Workflow
+      onUpdateWorkflow(parsed)
+      setIsEditing(false)
+      setJsonError(null)
+    } catch (e) {
+      setJsonError((e as Error).message)
+    }
+  }
+
+  const handleRestoreCheckpoint = (cp: WorkflowCheckpoint) => {
+    if (window.confirm(t(language, 'restoreConfirm'))) {
+      onUpdateWorkflow(cp.data)
+      setJsonString(JSON.stringify(cp.data, null, 2))
+    }
+  }
+
+  const handleAskAiFix = () => {
+    const prompt = `I am trying to edit the workflow JSON manually but I got this error: "${jsonError}". \n\nHere is the broken JSON I wrote:\n\`\`\`json\n${jsonString}\n\`\`\`\n\nPlease fix it and return the valid JSON.`
+    onAskAi(prompt)
+    setJsonError(null)
+  }
+
+  // --- Analysis Logic ---
+  const analysis = useMemo(() => {
+    const allIssues: WorkflowIssue[] = [...issues]
+
+    if (!workflow || !Array.isArray(workflow.nodes)) {
+        allIssues.push({
+            id: 'critical-structure',
+            nodeId: null,
+            severity: 'error',
+            message: t(language, 'invalidJsonText'),
+            fixSuggestion: t(language, 'askAiFix')
+        });
+        return { issues: allIssues, nodeCount: 0, linkCount: 0, nodeTypes: {} }
+    }
+
+    const nodeCount = workflow.nodes.length
+    const linkCount = Array.isArray(workflow.links) ? workflow.links.length : 0
+
+    const nodeTypes = workflow.nodes.reduce(
+      (acc, node) => {
+        if (node && node.type) {
+          acc[node.type] = (acc[node.type] || 0) + 1
+        }
+        return acc
+      },
+      {} as Record<string, number>
+    )
+
+    return { issues: allIssues, nodeCount, linkCount, nodeTypes }
+  }, [workflow, language, issues])
+
+  // --- Canvas Interaction ---
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (activeTab !== 'preview') return
+    const zoomSensitivity = 0.001
+    const newZoom = Math.min(
+      Math.max(0.1, transform.k - e.deltaY * zoomSensitivity),
+      5
+    )
+    setTransform((prev) => ({ ...prev, k: newZoom }))
+  }
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (activeTab !== 'preview') return
+    if (e.button === 0 || e.button === 1) {
+      setIsDragging(true)
+      setLastMousePos({ x: e.clientX, y: e.clientY })
+    }
+  }
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || activeTab !== 'preview') return
+    const dx = e.clientX - lastMousePos.x
+    const dy = e.clientY - lastMousePos.y
+    setTransform((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }))
+    setLastMousePos({ x: e.clientX, y: e.clientY })
+  }
+
+  const handleMouseUp = () => {
+    setIsDragging(false)
+  }
+
+  const handleFitToScreen = () => {
+    if (!workflow?.nodes?.length) return
+
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity
+    workflow.nodes.forEach((n) => {
+      if (!n.pos || !Array.isArray(n.pos)) return
+      const { w, h } = getNodeDimensions(n)
+      const x = n.pos[0]
+      const y = n.pos[1]
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x + w)
+      maxY = Math.max(maxY, y + h)
+    })
+
+    if (minX === Infinity) return 
+
+    const padding = 50
+    const width = maxX - minX + padding * 2
+    const height = maxY - minY + padding * 2
+
+    const containerW = containerRef.current?.clientWidth || 800
+    const containerH = containerRef.current?.clientHeight || 600
+
+    const scaleX = containerW / width
+    const scaleY = containerH / height
+    const scale = Math.min(scaleX, scaleY, 1)
+
+    setTransform({
+      x: -minX * scale + (containerW - width * scale) / 2 + padding * scale,
+      y: -minY * scale + (containerH - height * scale) / 2 + padding * scale,
+      k: scale
+    })
+  }
+
+  useEffect(() => {
+    if (workflow && activeTab === 'preview') {
+      setTimeout(handleFitToScreen, 100)
+    }
+  }, [workflow, activeTab])
+
+  // --- Helpers ---
+
+  // Calculates the EXACT center of the connection dot visually
+  const getSlotPosition = (
+    node: ComfyNode,
+    slotIndex: number,
+    isInput: boolean
+  ) => {
+    if (!node || !node.pos || !Array.isArray(node.pos)) return { x: 0, y: 0 }
+
+    const { w } = getNodeDimensions(node)
+    
+    const x = isInput ? node.pos[0] - 4 : node.pos[0] + w + 4
+
+    // Y Calculation Logic:
+    // Node Header = 30px.
+    // Slots start at 31px from top.
+    // Slot Height = 20px.
+    // Dot Center = 31px + (index * 20px) + 10px (half slot) = 41 + (index * 20).
+    
+    const y =
+      node.pos[1] +
+      41 + 
+      slotIndex * SLOT_HEIGHT
+      
+    return { x, y }
+  }
+
+  const nodeMap = useMemo(() => {
+    const map = new Map<number, ComfyNode>()
+    if (workflow && Array.isArray(workflow.nodes)) {
+      workflow.nodes.forEach((n) => map.set(Number(n.id), n))
+    }
+    return map
+  }, [workflow])
+
+  // --- Renderers ---
+
+  const renderGraph = () => {
+    if (
+      !workflow ||
+      !Array.isArray(workflow.nodes) ||
+      workflow.nodes.length === 0
+    ) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
+          <Activity size={32} className="opacity-20" />
+          <p>{t(language, 'emptyWorkflow')}</p>
+        </div>
+      )
+    }
+
+    return (
+      <div
+        ref={containerRef}
+        className="w-full h-full overflow-hidden relative bg-slate-950 cursor-grab active:cursor-grabbing select-none"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onWheel={handleWheel}
+        style={{
+          backgroundImage: `radial-gradient(${CANVAS_DOT_COLOR} 1px, transparent 1px)`,
+          backgroundSize: `${20 * transform.k}px ${20 * transform.k}px`,
+          backgroundPosition: `${transform.x}px ${transform.y}px`
+        }}
+      >
+        <div className="absolute bottom-4 right-4 flex flex-col gap-2 z-20">
+          <button onClick={handleFixOverlaps} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700" title="Fix Overlaps & Expand">
+            <Move size={16} />
+          </button>
+          <button onClick={handleFitToScreen} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700" title="Fit to Screen">
+            <Maximize size={16} />
+          </button>
+          <button onClick={() => setTransform((t) => ({ ...t, k: Math.min(t.k + 0.1, 5) }))} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700">
+            <ZoomIn size={16} />
+          </button>
+          <button onClick={() => setTransform((t) => ({ ...t, k: Math.max(t.k - 0.1, 0.1) }))} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700">
+            <ZoomOut size={16} />
+          </button>
+        </div>
+
+        <div
+          className="absolute top-0 left-0 origin-top-left"
+          style={{
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`
+          }}
+        >
+          {/* Links Layer */}
+          <svg className="overflow-visible pointer-events-none absolute top-0 left-0 z-0" style={{ width: '1px', height: '1px', maxWidth: 'none' }}>
+            {Array.isArray(workflow.links) && workflow.links.map((link) => {
+                const originNode = nodeMap.get(Number(link[1]))
+                const targetNode = nodeMap.get(Number(link[3]))
+                if (!originNode || !targetNode) return null
+
+                const startPos = getSlotPosition(originNode, link[2], false)
+                const endPos = getSlotPosition(targetNode, link[4], true)
+
+                if (isNaN(startPos.x) || isNaN(startPos.y) || isNaN(endPos.x) || isNaN(endPos.y)) return null
+
+                const dist = Math.abs(endPos.x - startPos.x) * 0.5
+                const cp1x = startPos.x + Math.max(dist, 30)
+                const cp1y = startPos.y
+                const cp2x = endPos.x - Math.max(dist, 30)
+                const cp2y = endPos.y
+                const qc = `M ${startPos.x} ${startPos.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endPos.x} ${endPos.y}`
+
+                const type = link[5]
+                const colors = ['#a8a29e', '#f87171', '#60a5fa', '#4ade80', '#facc15', '#c084fc']
+                let color = '#94a3b8'
+                if (typeof type === 'string' && type.length > 0) {
+                  color = colors[type.charCodeAt(0) % colors.length]
+                } else if (typeof type === 'number') {
+                  color = colors[type % colors.length]
+                }
+
+                return (
+                  <g key={link[0]}>
+                    <path d={qc} stroke={color} strokeWidth="2.5" fill="none" className="opacity-80" />
+                  </g>
+                )
+              })}
+          </svg>
+
+          {/* Nodes Layer */}
+          {workflow.nodes.map((node) => {
+            const inputs = Array.isArray(node.inputs) ? node.inputs : [];
+            const outputs = Array.isArray(node.outputs) ? node.outputs : [];
+            const widgets = Array.isArray(node.widgets_values) ? node.widgets_values : [];
+            
+            // Resolve Widget Names
+            const widgetNames = resolveWidgetNames ? resolveWidgetNames(node) : [];
+
+            const { w: width, h: renderHeight } = getNodeDimensions(node)
+            const slotsHeight = Math.max(inputs.length, outputs.length) * SLOT_HEIGHT;
+
+            const hasError = analysis.issues.some((i) => i.nodeId === node.id && i.severity === 'error')
+            
+            if (!node.pos || !Array.isArray(node.pos)) return null
+
+            return (
+              <div
+                key={node.id}
+                className={`absolute rounded-lg shadow-lg flex flex-col overflow-visible border transition-shadow
+                                    ${hasError ? 'border-red-500 shadow-red-900/20' : 'border-slate-600 shadow-black/40'}
+                                `}
+                style={{
+                  transform: `translate(${node.pos[0]}px, ${node.pos[1]}px)`,
+                  width: `${width}px`,
+                  height: `${renderHeight}px`,
+                  backgroundColor: node.bgcolor || '#222',
+                  zIndex: 10
+                }}
+              >
+                {/* Node Header */}
+                <div className="h-[30px] px-3 bg-[#333] border-b border-black/50 rounded-t-lg flex items-center justify-between flex-shrink-0">
+                  <span className="text-xs font-bold text-slate-200 truncate" title={node.type}>
+                    {node.properties?.['Node name for S&R'] || node.type}
+                  </span>
+                  <span className="text-[9px] text-slate-500 font-mono opacity-70">#{node.id}</span>
+                </div>
+
+                <div className="flex-1 relative">
+                  
+                  {/* Inputs/Outputs Area */}
+                  <div className="relative w-full" style={{ height: `${slotsHeight}px` }}>
+                    {/* Inputs - Left Column */}
+                    <div className="absolute left-0 top-0 w-full flex flex-col pointer-events-none">
+                        {inputs.map((input, i) => {
+                            const isConnected = input.link !== null && input.link !== undefined;
+                            return (
+                                <div key={i} className="h-[20px] relative flex items-center">
+                                    <div className={`absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[10px] h-[10px] rounded-full border border-slate-900 z-20 shrink-0
+                                            ${isConnected ? 'bg-[#b0fb5d]' : 'bg-[#2a2a2a] border-[#666]'}
+                                        `} 
+                                    />
+                                    <span className="ml-3 text-[10px] text-[#aaa] truncate font-medium leading-none">{input.name}</span>
+                                </div>
+                            )
+                        })}
+                    </div>
+
+                    {/* Outputs - Right Column */}
+                    <div className="absolute right-0 top-0 w-full flex flex-col pointer-events-none">
+                        {outputs.map((output, i) => {
+                            const hasLinks = output.links && output.links.length > 0;
+                            return (
+                                <div key={i} className="h-[20px] relative flex items-center justify-end">
+                                    <span className="mr-3 text-[10px] text-[#aaa] truncate font-medium leading-none">{output.name}</span>
+                                    <div className={`absolute right-0 top-1/2 translate-x-1/2 -translate-y-1/2 w-[10px] h-[10px] rounded-full border border-slate-900 z-20 shrink-0
+                                            ${hasLinks ? 'bg-[#a95dfb]' : 'bg-[#2a2a2a] border-[#666]'}
+                                        `} 
+                                    />
+                                </div>
+                            )
+                        })}
+                    </div>
+                  </div>
+
+                  {/* Widgets - Below Slots */}
+                  {widgets.length > 0 && (
+                      <div className="flex flex-col gap-1 mt-2 border-t border-slate-700/30 pt-2 px-2 pb-2">
+                          {widgets.map((val, i) => {
+                              const displayVal = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                              const widgetName = widgetNames[i];
+                              return (
+                                  <div key={i} className="flex items-center justify-between w-full h-[24px] px-2 bg-[#1a1a1a] rounded border border-[#333] overflow-hidden">
+                                      {widgetName ? (
+                                          <div className="flex items-center gap-1 overflow-hidden flex-1 mr-2 border-r border-slate-800/50 pr-1">
+                                            <span className="text-[9px] text-slate-400 whitespace-nowrap shrink-0 select-none">{widgetName}</span>
+                                          </div>
+                                      ) : null}
+                                      <div className={`flex items-center ${widgetName ? 'justify-end max-w-[60%]' : 'justify-start w-full'}`}>
+                                          <span className="text-[9px] text-slate-200 font-mono truncate" title={displayVal}>
+                                            {displayVal}
+                                          </span>
+                                      </div>
+                                  </div>
+                              )
+                          })}
+                      </div>
+                  )}
+                  
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  const toggleIssueSelection = (issueId: string) => {
+    setSelectedIssueIds(prev => {
+      const next = new Set(prev)
+      if (next.has(issueId)) {
+        next.delete(issueId)
+      } else {
+        next.add(issueId)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIssueIds.size === analysis.issues.length) {
+      setSelectedIssueIds(new Set())
+    } else {
+      setSelectedIssueIds(new Set(analysis.issues.map(i => i.id)))
+    }
+  }
+
+  const handleSendSelectedErrors = () => {
+    if (!onSendErrorsToAi || selectedIssueIds.size === 0) return
+    const selected = analysis.issues.filter(i => selectedIssueIds.has(i.id))
+    onSendErrorsToAi(selected)
+    setSelectedIssueIds(new Set())
+  }
+
+  const renderAnalysis = () => {
+    const runtimeErrors = analysis.issues.filter(i => i.isRuntimeError)
+    const hasSelected = selectedIssueIds.size > 0
+
+    return (
+    <div className="space-y-4 p-4 bg-slate-950 h-full overflow-y-auto custom-scrollbar">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 text-center">
+          <div className="text-lg font-bold text-white">{analysis.nodeCount}</div>
+          <div className="text-[10px] text-slate-500 uppercase">{t(language, 'statNodes')}</div>
+        </div>
+        <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 text-center">
+          <div className="text-lg font-bold text-white">{analysis.linkCount}</div>
+          <div className="text-[10px] text-slate-500 uppercase">{t(language, 'statLinks')}</div>
+        </div>
+        <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 text-center">
+          <div className={`text-lg font-bold ${analysis.issues.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {analysis.issues.length}
+          </div>
+          <div className="text-[10px] text-slate-500 uppercase">{t(language, 'statIssues')}</div>
+        </div>
+      </div>
+
+      {runtimeErrors.length > 0 && (
+        <div className="bg-red-950/30 border border-red-900/40 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={14} className="text-red-400" />
+              <span className="text-xs font-bold text-red-300 uppercase tracking-wider">
+                Runtime Errors ({runtimeErrors.length})
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-400 hover:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={selectedIssueIds.size === analysis.issues.length && analysis.issues.length > 0}
+                  onChange={toggleSelectAll}
+                  className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+                />
+                {t(language, 'selectAll') || 'Select All'}
+              </label>
+              <button
+                onClick={handleSendSelectedErrors}
+                disabled={!hasSelected}
+                className={`text-xs flex items-center gap-1.5 px-2.5 py-1 rounded font-medium transition-colors ${
+                  hasSelected
+                    ? 'bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/20'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                <Bot size={12} />
+                Send to AI
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {runtimeErrors.map((issue) => (
+              <div
+                key={issue.id}
+                className={`p-2.5 rounded-lg border flex gap-2.5 items-start transition-colors ${
+                  selectedIssueIds.has(issue.id)
+                    ? 'bg-red-950/40 border-red-500/50 ring-1 ring-red-500/30'
+                    : 'bg-red-950/20 border-red-900/30'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedIssueIds.has(issue.id)}
+                  onChange={() => toggleIssueSelection(issue.id)}
+                  className="mt-0.5 rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 focus:ring-offset-0"
+                />
+                <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-red-200">{issue.message}</p>
+                  {issue.nodeType && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Node: {issue.nodeType}{issue.nodeId != null ? ` (#${issue.nodeId})` : ''}
+                    </p>
+                  )}
+                  {issue.traceback && (
+                    <details className="mt-1.5">
+                      <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300">
+                        Traceback
+                      </summary>
+                      <pre className="mt-1 text-[10px] font-mono text-red-300/70 bg-slate-950/50 rounded p-2 overflow-x-auto max-h-32 overflow-y-auto">
+                        {issue.traceback}
+                      </pre>
+                    </details>
+                  )}
+                  {issue.fixSuggestion && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      <span className="font-semibold">{t(language, 'tip')}:</span> {issue.fixSuggestion}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium text-slate-300 flex items-center gap-2">
+            <Activity size={16} className="text-indigo-400" />
+            {t(language, 'workflowHealth')}
+            </h4>
+            <div className="flex gap-2">
+                <button onClick={() => onAskAi(t(language, 'explainPrompt'))} className="text-xs flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded transition-colors">
+                    <BookOpen size={12} />
+                    {t(language, 'explainWorkflow')}
+                </button>
+                <button onClick={() => onAskAi(t(language, 'diagnosePrompt'))} className="text-xs flex items-center gap-1.5 px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors">
+                    <Bot size={12} />
+                    {t(language, 'diagnoseWithAi')}
+                </button>
+            </div>
+        </div>
+        {analysis.issues.length === 0 ? (
+          <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-6 text-center">
+            <Check size={24} className="text-emerald-500 mx-auto mb-2" />
+            <p className="text-sm text-emerald-300">{t(language, 'noIssues')}</p>
+          </div>
+        ) : runtimeErrors.length === 0 ? (
+          <div className="space-y-2">
+            {analysis.issues.map((issue) => (
+              <div key={issue.id} className={`p-3 rounded-lg border flex gap-3 items-start ${issue.severity === 'warning' ? 'bg-amber-950/20 border-amber-900/30' : 'bg-red-950/20 border-red-900/30'}`}>
+                <AlertTriangle size={16} className={issue.severity === 'warning' ? 'text-amber-500' : 'text-red-500'} />
+                <div>
+                  <p className={`text-sm font-medium ${issue.severity === 'warning' ? 'text-amber-200' : 'text-red-200'}`}>{issue.message}</p>
+                  {issue.fixSuggestion && <p className="text-xs text-slate-400 mt-1"><span className="font-semibold">{t(language, 'tip')}:</span> {issue.fixSuggestion}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+    )
+  }
+
+  const renderJson = () => (
+    <div className="flex flex-col h-full bg-slate-950 min-w-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
+        <div className="flex items-center gap-2 text-slate-400">
+          <FileJson size={14} />
+          <span className="text-xs font-mono">{t(language, isEditing ? 'editMode' : 'readOnly')}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {!isEditing ? (
+            <button onClick={handleStartEdit} className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors">
+              <Edit3 size={14} />
+              {t(language, 'editJson')}
+            </button>
+          ) : (
+            <>
+              <button onClick={() => setIsEditing(false)} className="px-3 py-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-xs transition-colors">{t(language, 'cancelEdit')}</button>
+              <button onClick={handleSaveJson} className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-colors shadow-lg shadow-emerald-900/20">
+                <Save size={14} />
+                {t(language, 'saveChanges')}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 relative h-full border-r border-slate-800 min-w-0">
+          {isEditing ? (
+            <textarea value={jsonString} onChange={(e) => setJsonString(e.target.value)} className="w-full h-full bg-slate-950 p-4 text-xs font-mono text-amber-100 resize-none focus:outline-none leading-relaxed custom-scrollbar" spellCheck={false} />
+          ) : (
+            <pre className="w-full h-full text-xs font-mono text-slate-300 bg-slate-950 p-4 overflow-auto custom-scrollbar leading-relaxed">{JSON.stringify(workflow, null, 2)}</pre>
+          )}
+        </div>
+        <div className="w-64 bg-slate-900/20 flex flex-col border-l border-slate-800 flex-shrink-0">
+          <div className="p-3 border-b border-slate-800 bg-slate-900/50">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-300 uppercase tracking-wider"><History size={14} />{t(language, 'checkpoints')}</div>
+          </div>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+            {checkpoints.map((cp) => (
+              <div key={cp.id} className="group flex flex-col gap-2 p-3 rounded-lg border border-slate-800 bg-slate-900/50 hover:border-indigo-500/50 hover:bg-slate-800 transition-all">
+                <div className="flex items-center justify-between"><span className="text-xs font-bold text-indigo-300 font-mono">{cp.name}</span><span className="text-[9px] text-slate-500">{new Date(cp.timestamp).toLocaleTimeString()}</span></div>
+                <div className="flex items-center gap-2 mt-1"><button onClick={() => handleRestoreCheckpoint(cp)} className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded bg-slate-950 border border-slate-800 hover:bg-indigo-600/10 hover:border-indigo-500/30 text-slate-400 hover:text-indigo-300 text-[10px] transition-all"><RotateCcw size={12} />{t(language, 'restore')}</button></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  const WarningModal = () => !showEditWarning ? null : (
+      <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+        <div className="bg-slate-900 border border-amber-500/30 w-full max-w-sm rounded-xl p-6 shadow-2xl">
+          <h3 className="text-lg font-bold text-amber-100 mb-4">{t(language, 'editWarningTitle')}</h3>
+          <p className="text-sm text-slate-300 mb-6">{t(language, 'editWarningText')}</p>
+          <div className="flex justify-end gap-3"><button onClick={() => setShowEditWarning(false)} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white">{t(language, 'cancelEdit')}</button><button onClick={confirmEditMode} className="px-4 py-2 rounded-lg text-sm bg-amber-600 hover:bg-amber-500 text-white font-medium">{t(language, 'confirmEdit')}</button></div>
+        </div>
+      </div>
+  )
+
+  const ErrorModal = () => !jsonError ? null : (
+      <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+        <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-xl p-6 shadow-2xl">
+          <h3 className="text-lg font-bold text-red-100 mb-4">{t(language, 'invalidJsonTitle')}</h3>
+          <p className="text-sm text-slate-300 mb-2">{t(language, 'invalidJsonText')}</p>
+          <div className="bg-black/30 p-3 rounded text-[10px] font-mono text-red-300 mb-6 max-h-24 overflow-auto">{jsonError}</div>
+          <div className="flex justify-end gap-3"><button onClick={() => setJsonError(null)} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white">{t(language, 'cancelEdit')}</button><button onClick={handleAskAiFix} className="px-4 py-2 rounded-lg text-sm bg-indigo-600 hover:bg-indigo-500 text-white font-medium flex items-center gap-2"><Bot size={14} />{t(language, 'askAiFix')}</button></div>
+        </div>
+      </div>
+  )
+
+  return (
+    <div className="h-full flex flex-col bg-slate-950 overflow-hidden relative">
+      <div className="border-b border-slate-800 bg-slate-900/50 flex flex-col z-10 shadow-sm backdrop-blur-md flex-shrink-0">
+        <div className="h-14 flex items-center justify-between px-4 sm:px-6">
+          <div className="flex items-center gap-2.5"><div className="p-1.5 bg-indigo-500/10 rounded-md border border-indigo-500/20 flex-shrink-0"><Box className="text-indigo-400" size={14} /></div><h3 className="text-xs font-bold text-slate-100 tracking-widest uppercase font-mono truncate">{t(language, 'managerTitle')}</h3></div>
+          <div className="flex items-center gap-2">
+            {!isConfigured && <button onClick={onOpenSettings} className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 px-2 py-1 rounded text-[10px] font-medium hover:bg-red-500/20 transition-colors"><AlertCircle size={12} /><span className="hidden sm:inline">{t(language, 'setupRequired')}</span></button>}
+            <button onClick={handleCopyJson} className="p-2 text-slate-400 hover:text-indigo-100 hover:bg-slate-800 rounded border border-slate-700 hover:border-indigo-500 transition-all relative group" title={t(language, 'copyJson')}>{copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}</button>
+            <button onClick={handleExportJson} className="p-2 text-slate-400 hover:text-indigo-100 hover:bg-slate-800 rounded border border-slate-700 hover:border-indigo-500 transition-all" title={t(language, 'exportJson')}><Download size={14} /></button>
+            <div className="w-px h-4 bg-slate-700 mx-1"></div>
+            <button onClick={onOpenSettings} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded border border-slate-700 hover:border-indigo-500 transition-all" title={t(language, 'settingsTitle')}><Settings size={14} /></button>
+          </div>
+        </div>
+        <div className="flex px-4 gap-6">
+          <button onClick={() => onTabChange('preview')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'preview' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabOverview')}</button>
+          <button onClick={() => onTabChange('analysis')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'analysis' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabDiagnostics')}</button>
+          <button onClick={() => onTabChange('json')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'json' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabJson')}</button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-hidden relative">
+        {activeTab === 'preview' && renderGraph()}
+        {activeTab === 'analysis' && renderAnalysis()}
+        {activeTab === 'json' && renderJson()}
+      </div>
+      <WarningModal />
+      <ErrorModal />
+    </div>
+  )
+}
+
+export default WorkflowVisualizer
