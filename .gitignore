@@ -52,5 +52,8 @@ web/
 *.txt
 !requirements.txt
 
+# Migration backup
+_comfyui_custom_backup/
+
 # Runtime logs
 logs.md
