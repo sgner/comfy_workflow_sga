@@ -45,8 +45,7 @@ venv/
 ui/dist/
 web/
 
-# SGA template (independent repo)
-sga_template/
+# SGA template (managed as git submodule)
 
 # Temp files
 *.tmp
