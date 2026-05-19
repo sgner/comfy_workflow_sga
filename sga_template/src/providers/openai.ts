@@ -465,6 +465,7 @@ export class OpenAIProvider implements LLMProvider {
       max_tokens: maxTokens,
       messages,
       stream,
+      stream_options: stream ? { include_usage: true } : undefined,
     }
 
     if (options.temperature !== undefined) {
@@ -669,6 +670,14 @@ export class OpenAIProvider implements LLMProvider {
       chunk.delta = {
         type: 'message_delta',
         stopReason: stopReasonMap[finishReason] ?? finishReason,
+      }
+    }
+
+    if (raw.usage) {
+      const rawUsage = raw.usage as Record<string, unknown>
+      chunk.usage = {
+        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
+        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
       }
     }
 

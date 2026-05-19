@@ -35,12 +35,13 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
   async call(input: { command: string; timeout?: number }, _context: ToolUseContext): Promise<string> {
     const { execSync } = await import('child_process')
     const timeout = input.timeout ?? 120000
+    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
     try {
       const result = execSync(input.command, {
         timeout,
         maxBuffer: 10 * 1024 * 1024,
         encoding: 'utf-8',
-        shell: '/bin/bash',
+        shell,
       })
       return result
     } catch (error: unknown) {

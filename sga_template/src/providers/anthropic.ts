@@ -300,6 +300,16 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
+    if (type === 'message_start' && raw.message) {
+      const message = raw.message as Record<string, unknown>
+      if (message.usage) {
+        const msgUsage = message.usage as Record<string, unknown>
+        chunk.usage = {
+          inputTokens: msgUsage.input_tokens as number | undefined,
+        }
+      }
+    }
+
     if (type === 'message_delta') {
       const delta = raw.delta as Record<string, unknown> | undefined
       if (delta) {
