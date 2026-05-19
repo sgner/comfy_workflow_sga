@@ -54,10 +54,10 @@ function parseStructuredResponse(text: string): {
       const parsed = JSON.parse(issuesMatch[1])
       if (Array.isArray(parsed)) {
         issues = parsed.map((issue: Record<string, unknown>, idx: number) => ({
-          nodeId: (issue.nodeId as string) ?? null,
+          nodeId: (issue.nodeId as string) ?? (issue.node_id as string) ?? null,
           severity: (issue.severity as string) ?? 'warning',
-          message: (issue.message as string) ?? 'Unknown issue',
-          fixSuggestion: issue.fixSuggestion as string | undefined,
+          message: (issue.message as string) ?? (issue.issue as string) ?? (issue.details as string) ?? 'Unknown issue',
+          fixSuggestion: (issue.fixSuggestion as string) ?? (issue.fix_suggestion as string) ?? undefined,
         }))
       }
     } catch { /* ignore */ }
@@ -703,6 +703,7 @@ function toFrontendConfig(config: ComfyUIProviderConfig): Record<string, unknown
     extension: config.provider === 'custom' && config.custom_config
       ? { providerModule: undefined }
       : undefined,
+    has_api_key: !!config.api_key,
     created_at: new Date(config.created_at * 1000).toISOString(),
   }
 }
@@ -755,15 +756,33 @@ export function handleComfyUIGetConfig(req: Request, res: Response): void {
 }
 
 export function handleComfyUIUpdateConfig(req: Request, res: Response): void {
-  const configId = req.params.configId as string
-  const updates = req.body as Partial<ComfyUIProviderConfig>
+  try {
+    const configId = req.params.configId as string
+    const body = req.body as Record<string, unknown>
 
-  const config = configStore.updateConfig(configId, updates)
-  if (!config) {
-    res.status(404).json({ error: 'Config not found' })
-    return
+    const updates: Partial<ComfyUIProviderConfig> = {}
+    if (body.provider !== undefined) updates.provider = body.provider as string
+    if (body.name !== undefined) updates.name = body.name as string
+    if (body.api_key !== undefined) updates.api_key = body.api_key as string
+    if (body.default_model !== undefined) updates.default_model = body.default_model as string
+    if (body.base_url !== undefined) updates.base_url = body.base_url as string | undefined
+    if (body.is_default !== undefined) updates.is_default = body.is_default as boolean
+    if (body.default_max_tokens !== undefined) updates.default_max_tokens = body.default_max_tokens as number | undefined
+    if (body.default_temperature !== undefined) updates.default_temperature = body.default_temperature as number | undefined
+    if (body.retries !== undefined) updates.retries = body.retries as number | undefined
+    if (body.retry_delay !== undefined) updates.retry_delay = body.retry_delay as number | undefined
+    if (body.headers !== undefined) updates.headers = body.headers as Record<string, string> | undefined
+    if (body.custom_config !== undefined) updates.custom_config = body.custom_config as Record<string, unknown> | undefined
+
+    const config = configStore.updateConfig(configId, updates)
+    if (!config) {
+      res.status(404).json({ error: 'Config not found' })
+      return
+    }
+    res.json(toFrontendConfig(config))
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
   }
-  res.json(toFrontendConfig(config))
 }
 
 export function handleComfyUIDeleteConfig(req: Request, res: Response): void {

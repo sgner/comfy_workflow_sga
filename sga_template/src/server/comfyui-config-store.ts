@@ -41,6 +41,10 @@ export class ComfyUIConfigStore {
     this.configFile = join(this.configDir, 'providers.json')
     this.githubTokenFile = join(this.configDir, 'github_token.json')
 
+    // Ensure parent directories exist
+    if (!existsSync(baseDir)) {
+      mkdirSync(baseDir, { recursive: true })
+    }
     if (!existsSync(this.configDir)) {
       mkdirSync(this.configDir, { recursive: true })
     }
@@ -140,6 +144,7 @@ export class ComfyUIConfigStore {
 
     const config = configs[index]
 
+    if (updates.provider !== undefined) config.provider = updates.provider
     if (updates.name !== undefined) config.name = updates.name
     if (updates.api_key !== undefined) config.api_key = updates.api_key
     if (updates.default_model !== undefined) config.default_model = updates.default_model
@@ -149,8 +154,12 @@ export class ComfyUIConfigStore {
     if (updates.retries !== undefined) config.retries = updates.retries
     if (updates.retry_delay !== undefined) config.retry_delay = updates.retry_delay
     if (updates.headers !== undefined) config.headers = updates.headers
-    if (updates.custom_config !== undefined && config.provider === 'custom') {
-      config.custom_config = updates.custom_config
+    if (updates.custom_config !== undefined) {
+      if (config.provider === 'custom') {
+        config.custom_config = updates.custom_config
+      } else {
+        config.custom_config = undefined
+      }
     }
 
     if (updates.is_default !== undefined) {

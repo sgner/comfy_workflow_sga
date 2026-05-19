@@ -143,11 +143,11 @@ const handleSelectConfig = async (id: string) => {
           retry_delay: config.retry_delay,
           headers: config.headers,
           extension: config.extension,
-          custom_config: {
+          custom_config: config.provider === 'custom' ? {
               endpoint: config.custom_config?.endpoint || DEFAULT_CUSTOM_ENDPOINT,
               headers: config.custom_config?.headers || DEFAULT_CUSTOM_HEADERS,
               body: config.custom_config?.body || DEFAULT_CUSTOM_BODY
-          }
+          } : undefined
       });
       setEditingConfigId(config.id);
       setShowAddForm(true);
@@ -175,6 +175,12 @@ const handleSelectConfig = async (id: string) => {
       
       if (!editingConfigId && !newConfig.api_key?.trim()) {
         errors.api_key = true;
+      }
+      if (editingConfigId && !newConfig.api_key?.trim()) {
+        const editingConfig = configs.find(c => c.id === editingConfigId);
+        if (!editingConfig?.has_api_key) {
+          errors.api_key = true;
+        }
       }
       
       setFormErrors(errors);

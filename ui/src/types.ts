@@ -145,20 +145,21 @@ export interface ProviderExtension {
 // Backend Configuration Types
 
 export interface BackendConfig {
-    id: string;
-    provider: ProviderType;
-    name: string;
-    default_model?: string;
-    base_url?: string;
-    is_default: boolean;
-    created_at: string;
-    default_max_tokens?: number;
-    default_temperature?: number;
-    retries?: number;
-    retry_delay?: number;
-    headers?: Record<string, string>;
-    extension?: ProviderExtension;
-    custom_config?: CustomConfig;
+  id: string;
+  provider: ProviderType;
+  name: string;
+  default_model?: string;
+  base_url?: string;
+  is_default: boolean;
+  created_at: string;
+  default_max_tokens?: number;
+  default_temperature?: number;
+  retries?: number;
+  retry_delay?: number;
+  headers?: Record<string, string>;
+  extension?: ProviderExtension;
+  custom_config?: CustomConfig;
+  has_api_key?: boolean;
 }
 
 export interface BackendConfigCreate {

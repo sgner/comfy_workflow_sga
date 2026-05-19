@@ -419,7 +419,7 @@ export const analyzeWorkflowWithBackend = async (
                 id: `backend-${Date.now()}-${Math.random()}`,
                 nodeId: issue.node_id || issue.nodeId || null,
                 severity: (issue.severity || 'warning') as any,
-                message: issue.message || 'Issue detected',
+                message: issue.message || issue.issue || issue.details || 'Issue detected',
                 fixSuggestion: issue.fix_suggestion || issue.fixSuggestion
             }));
         }

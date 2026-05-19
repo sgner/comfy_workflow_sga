@@ -26,10 +26,14 @@ export const createBackendConfig = async (backendUrl: string, config: BackendCon
 };
 
 export const updateBackendConfig = async (backendUrl: string, id: string, config: Partial<BackendConfigCreate>): Promise<BackendConfig> => {
+    const payload = { ...config };
+    if (payload.provider && payload.provider !== 'custom') {
+        delete payload.custom_config;
+    }
     const res = await fetch(`${getBaseUrl(backendUrl)}/api/configs/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
+        body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error('Failed to update config');
     return res.json();
