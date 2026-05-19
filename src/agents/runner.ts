@@ -553,6 +553,11 @@ async function consumeStream(
             }
           }
         }
+
+        if (chunk.usage) {
+          if (chunk.usage.inputTokens) inputTokens = chunk.usage.inputTokens
+          if (chunk.usage.outputTokens) outputTokens = chunk.usage.outputTokens
+        }
         break
       }
 

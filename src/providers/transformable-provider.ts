@@ -137,6 +137,7 @@ export class TransformableProvider implements LLMProvider {
 
     let body = this.buildRawBody(options, model, maxTokens)
     body.stream = true
+    body.stream_options = { include_usage: true }
     let headers = this.resolveRequestConfig(options.model, true).headers
 
     if (this.requestTransformer) {
@@ -368,6 +369,14 @@ export class TransformableProvider implements LLMProvider {
       chunk.delta = {
         type: 'message_delta',
         stopReason: stopReasonMap[finishReason] ?? finishReason,
+      }
+    }
+
+    if (raw.usage) {
+      const rawUsage = raw.usage as Record<string, unknown>
+      chunk.usage = {
+        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
+        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
       }
     }
 
