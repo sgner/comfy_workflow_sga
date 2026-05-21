@@ -73,6 +73,7 @@ export interface ChatMessage {
         groundingSources?: Array<{ uri: string; title: string }>;
         provider?: string;
         relatedQuestions?: string[];
+        agentIssues?: WorkflowIssue[];
     };
 }
 
@@ -118,20 +119,26 @@ export interface AppSettings {
 
 export type IssueSeverity = 'error' | 'warning' | 'info';
 
+export type IssueSource = 'native' | 'agent';
+
 export interface WorkflowIssue {
     id: string;
     nodeId: number | null;
+    nodeIds?: number[];
     severity: IssueSeverity;
+    category?: string;
     message: string;
+    impact?: string;
     fixSuggestion?: string;
     nodeType?: string;
     exceptionType?: string;
     traceback?: string;
     currentInputs?: Record<string, unknown>;
     isRuntimeError?: boolean;
+    source?: IssueSource;
 }
 
-export type VisualizerTab = 'preview' | 'analysis' | 'json';
+export type VisualizerTab = 'preview' | 'analysis' | 'json' | 'context';
 
 export type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'zhipu' | 'moonshot' | 'qwen' | 'google' | 'custom';
 
@@ -217,4 +224,169 @@ export interface ToolCallInfo {
     toolName: string;
     toolUseId?: string;
     status: 'running' | 'completed' | 'error';
+}
+
+// Workflow Context Data (from ComfyUI frontend, mirroring RightSidePanel data sources)
+
+export interface ExecutionErrorInfo {
+    nodeId: string | null;
+    nodeType: string | null;
+    exceptionType: string | null;
+    exceptionMessage: string | null;
+    traceback: string[] | null;
+}
+
+export interface NodeValidationErrorInfo {
+    nodeId: string;
+    classType: string;
+    errors: Array<{
+        type: string;
+        message: string;
+        inputName?: string;
+    }>;
+}
+
+export interface PromptErrorInfo {
+    type: string;
+    message: string;
+    details?: string;
+}
+
+export interface MissingNodeTypeInfo {
+    type: string;
+    nodeId: number | null;
+    isReplaceable: boolean;
+    replacement?: { new_node_id: string };
+}
+
+export interface MissingModelInfo {
+    nodeName: string;
+    widgetName: string;
+    directory: string;
+    modelPaths: string[];
+    nodeType?: string;
+    isAssetSupported?: boolean;
+    isMissing?: boolean;
+}
+
+export interface MissingMediaInfo {
+    name: string;
+    mediaType: 'image' | 'video' | 'audio';
+    nodeId: string;
+    nodeType: string;
+    widgetName: string;
+    isMissing?: boolean;
+}
+
+export interface ErrorContextData {
+    executionErrors: ExecutionErrorInfo[];
+    nodeValidationErrors: NodeValidationErrorInfo[];
+    promptError: PromptErrorInfo | null;
+    missingNodeTypes: MissingNodeTypeInfo[];
+    missingModels: MissingModelInfo[];
+    missingMedia: MissingMediaInfo[];
+}
+
+export interface NodeWidgetInfo {
+    name: string;
+    type: string;
+    value: unknown;
+    label?: string;
+    options?: unknown;
+    advanced?: boolean;
+}
+
+export interface NodeParameterData {
+    nodeId: number;
+    nodeType: string;
+    nodeTitle: string;
+    widgets: NodeWidgetInfo[];
+    inputLinks: Array<{
+        inputName: string;
+        inputType: string;
+        sourceNodeId: number;
+        sourceNodeType: string;
+        sourceOutputName: string;
+    }>;
+    outputLinks: Array<{
+        outputName: string;
+        outputType: string;
+        targetNodeId: number;
+        targetNodeType: string;
+        targetInputName: string;
+    }>;
+}
+
+export interface NodeListData {
+    nodeId: number;
+    nodeType: string;
+    nodeTitle: string;
+    mode: number;
+    widgetCount: number;
+    inputCount: number;
+    outputCount: number;
+}
+
+export interface GlobalSettingInfo {
+    key: string;
+    value: unknown;
+    type: 'boolean' | 'number' | 'string';
+    category: string;
+}
+
+export interface SettingsContextData {
+    settings: GlobalSettingInfo[];
+    showAdvancedWidgets: boolean;
+    snapToGrid: boolean;
+    gridSize: number;
+    linkRenderMode: number;
+    linkMarkers: string;
+}
+
+export interface ExecutionStatusInfo {
+    isIdle: boolean;
+    activeJobId: string | null;
+    executingNodeIds: string[];
+    executionProgress: number;
+    totalNodesToExecute: number;
+    nodesExecuted: number;
+}
+
+export interface SystemInfo {
+    os?: string;
+    pythonVersion?: string;
+    pytorchVersion?: string;
+    devices?: Array<{
+        name: string;
+        type: string;
+        vram?: number;
+    }>;
+}
+
+export interface NodeDefInfo {
+    name: string;
+    category: string;
+    description?: string;
+    inputs?: Array<{
+        name: string;
+        type: string;
+        required?: boolean;
+    }>;
+    outputs?: Array<{
+        name: string;
+        type: string;
+    }>;
+    deprecated?: boolean;
+    experimental?: boolean;
+}
+
+export interface WorkflowContextData {
+    errors: ErrorContextData;
+    parameters: NodeParameterData[];
+    nodes: NodeListData[];
+    settings: SettingsContextData;
+    selectedNodeIds: number[];
+    executionStatus: ExecutionStatusInfo;
+    systemInfo: SystemInfo;
+    nodeDefs: NodeDefInfo[];
 }

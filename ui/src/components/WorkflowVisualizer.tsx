@@ -8,13 +8,17 @@ import {
   Bot,
   Box,
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
+  Database,
   Download,
   Edit3,
   FileJson,
   History,
   Maximize,
   Move,
+  RefreshCw,
   RotateCcw,
   Save,
   Settings,
@@ -29,9 +33,11 @@ import {
   Language,
   WorkflowCheckpoint,
   WorkflowIssue,
-  VisualizerTab
+  VisualizerTab,
+  WorkflowContextData
 } from '../types'
 import { t } from '../utils/i18n'
+import { collectWorkflowContext, collectWorkflowContextAsync, formatWorkflowContextForPrompt } from '../services/workflowContextCollector'
 
 interface WorkflowVisualizerProps {
   workflow: ComfyWorkflow
@@ -296,7 +302,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
 
   // --- Analysis Logic ---
   const analysis = useMemo(() => {
-    const allIssues: WorkflowIssue[] = [...issues]
+    const allIssues: WorkflowIssue[] = [...issues.filter(i => i.source !== 'agent')]
 
     if (!workflow || !Array.isArray(workflow.nodes)) {
         allIssues.push({
@@ -802,6 +808,269 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
     )
   }
 
+  const [contextData, setContextData] = useState<WorkflowContextData | null>(null)
+  const [contextFormatted, setContextFormatted] = useState<string>('')
+  const [contextExpandedSections, setContextExpandedSections] = useState<Set<string>>(new Set(['errors', 'parameters', 'nodes', 'executionStatus', 'systemInfo', 'nodeDefs']))
+  const [contextLoading, setContextLoading] = useState(false)
+
+  const handleRefreshContext = async () => {
+    setContextLoading(true)
+    try {
+      const ctx = await collectWorkflowContextAsync()
+      setContextData(ctx)
+      setContextFormatted(formatWorkflowContextForPrompt(ctx))
+    } catch {
+      const ctx = collectWorkflowContext()
+      setContextData(ctx)
+      setContextFormatted(formatWorkflowContextForPrompt(ctx))
+    } finally {
+      setContextLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'context' && !contextData) {
+      handleRefreshContext()
+    }
+  }, [activeTab])
+
+  const toggleContextSection = (section: string) => {
+    setContextExpandedSections(prev => {
+      const next = new Set(prev)
+      if (next.has(section)) next.delete(section)
+      else next.add(section)
+      return next
+    })
+  }
+
+  const renderContextSection = (title: string, sectionKey: string, count: number | undefined, content: React.ReactNode) => (
+    <div className="border border-slate-700/50 rounded-lg overflow-hidden">
+      <button
+        onClick={() => toggleContextSection(sectionKey)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-slate-800/50 hover:bg-slate-700/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">{title}</span>
+          {count !== undefined && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-400">{count}</span>
+          )}
+        </div>
+        {contextExpandedSections.has(sectionKey) ? (
+          <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+        )}
+      </button>
+      {contextExpandedSections.has(sectionKey) && (
+        <div className="px-3 py-2 bg-slate-900/30">{content}</div>
+      )}
+    </div>
+  )
+
+  const renderContext = () => (
+    <div className="flex flex-col h-full bg-slate-950 min-w-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
+        <div className="flex items-center gap-2 text-slate-400">
+          <Database size={14} />
+          <span className="text-xs font-mono">{t(language, 'contextPanelTitle') || 'Workflow Context'}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefreshContext}
+            disabled={contextLoading}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw size={12} className={contextLoading ? 'animate-spin' : ''} />
+            {contextLoading ? (t(language, 'loading') || 'Loading...') : (t(language, 'refresh') || 'Refresh')}
+          </button>
+          <button
+            onClick={() => {
+              if (contextFormatted) {
+                navigator.clipboard.writeText(contextFormatted)
+              }
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors"
+          >
+            <Copy size={12} />
+            {t(language, 'copyPrompt') || 'Copy Prompt'}
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
+        {!contextData ? (
+          <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
+            <Database size={32} className="opacity-20" />
+            <p className="text-xs">{t(language, 'clickRefreshToCollect') || 'Click Refresh to collect context'}</p>
+          </div>
+        ) : (
+          <>
+            {renderContextSection('Errors', 'errors',
+              (contextData.errors.executionErrors.length + contextData.errors.nodeValidationErrors.length + contextData.errors.missingNodeTypes.length + contextData.errors.missingModels.length + contextData.errors.missingMedia.length) || undefined,
+              contextData.errors.executionErrors.length === 0 &&
+              contextData.errors.nodeValidationErrors.length === 0 &&
+              contextData.errors.missingNodeTypes.length === 0 &&
+              contextData.errors.missingModels.length === 0 &&
+              contextData.errors.missingMedia.length === 0 &&
+              contextData.errors.promptError === null ? (
+                <p className="text-xs text-emerald-400">{t(language, 'noErrors') || 'No errors detected'}</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {contextData.errors.executionErrors.map((e, i) => (
+                    <div key={`exec-${i}`} className="text-[11px] text-red-300 bg-red-950/20 rounded px-2 py-1">
+                      <span className="font-mono text-red-400">Node #{e.nodeId}</span> ({e.nodeType}): {e.exceptionType}: {e.exceptionMessage}
+                    </div>
+                  ))}
+                  {contextData.errors.nodeValidationErrors.map((ne, i) => (
+                    <div key={`valid-${i}`} className="space-y-0.5">
+                      {ne.errors.map((e, j) => (
+                        <div key={`valid-${i}-${j}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
+                          <span className="font-mono text-amber-400">Node #{ne.nodeId}</span> ({ne.classType}): [{e.type}] {e.message}{e.inputName ? ` (input: ${e.inputName})` : ''}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                  {contextData.errors.promptError && (
+                    <div className="text-[11px] text-red-300 bg-red-950/20 rounded px-2 py-1">
+                      Prompt Error: [{contextData.errors.promptError.type}] {contextData.errors.promptError.message}
+                    </div>
+                  )}
+                  {contextData.errors.missingNodeTypes.map((mn, i) => (
+                    <div key={`mn-${i}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
+                      Missing Node: {mn.type}{mn.nodeId ? ` (node ${mn.nodeId})` : ''}{mn.isReplaceable ? ' [replaceable]' : ''}
+                    </div>
+                  ))}
+                  {contextData.errors.missingModels.map((mm, i) => (
+                    <div key={`mm-${i}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
+                      Missing Model: {mm.nodeName}/{mm.widgetName} in {mm.directory}
+                    </div>
+                  ))}
+                  {contextData.errors.missingMedia.map((mm, i) => (
+                    <div key={`media-${i}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
+                      Missing Media: [{mm.mediaType}] {mm.name} (node {mm.nodeId}, widget: {mm.widgetName})
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
+            {renderContextSection('Parameters', 'parameters', contextData.parameters.length,
+              contextData.parameters.length === 0 ? (
+                <p className="text-xs text-slate-500">{t(language, 'noParameters') || 'No parameters collected'}</p>
+              ) : (
+                <div className="space-y-1 max-h-64 overflow-y-auto">
+                  {contextData.parameters.slice(0, 20).map((p, i) => (
+                    <div key={i} className="text-[11px] bg-slate-800/50 rounded px-2 py-1">
+                      <span className="font-mono text-indigo-400">Node #{p.nodeId}</span> <span className="text-slate-300">({p.nodeType})</span> <span className="text-slate-400">"{p.nodeTitle}"</span>
+                      {p.widgets.length > 0 && (
+                        <div className="ml-3 text-slate-400">
+                          Widgets: {p.widgets.map(w => `${w.name}=${JSON.stringify(w.value)}`).join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {contextData.parameters.length > 20 && (
+                    <p className="text-[10px] text-slate-500">... and {contextData.parameters.length - 20} more</p>
+                  )}
+                </div>
+              )
+            )}
+
+            {renderContextSection('Nodes', 'nodes', contextData.nodes.length,
+              <div className="text-[11px] text-slate-300 flex flex-wrap gap-1">
+                {contextData.nodes.map((n, i) => (
+                  <span key={i} className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400 font-mono">{n.nodeType}#{n.nodeId}</span>
+                ))}
+              </div>
+            )}
+
+            {renderContextSection('Execution Status', 'executionStatus', undefined,
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="bg-slate-800/50 rounded px-2 py-1">
+                  <span className="text-slate-500">Status:</span> <span className={contextData.executionStatus.isIdle ? 'text-emerald-400' : 'text-amber-400'}>{contextData.executionStatus.isIdle ? 'Idle' : 'Running'}</span>
+                </div>
+                <div className="bg-slate-800/50 rounded px-2 py-1">
+                  <span className="text-slate-500">Job:</span> <span className="text-slate-300 font-mono">{contextData.executionStatus.activeJobId ?? 'None'}</span>
+                </div>
+                <div className="bg-slate-800/50 rounded px-2 py-1">
+                  <span className="text-slate-500">Progress:</span> <span className="text-slate-300">{contextData.executionStatus.nodesExecuted}/{contextData.executionStatus.totalNodesToExecute} ({Math.round(contextData.executionStatus.executionProgress * 100)}%)</span>
+                </div>
+                <div className="bg-slate-800/50 rounded px-2 py-1">
+                  <span className="text-slate-500">Executing:</span> <span className="text-slate-300 font-mono">{contextData.executionStatus.executingNodeIds.join(', ') || 'None'}</span>
+                </div>
+              </div>
+            )}
+
+            {renderContextSection('System Info', 'systemInfo', undefined,
+              <div className="space-y-1 text-[11px]">
+                {contextData.systemInfo.os && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">OS:</span> <span className="text-slate-300">{contextData.systemInfo.os}</span></div>}
+                {contextData.systemInfo.pythonVersion && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">Python:</span> <span className="text-slate-300">{contextData.systemInfo.pythonVersion}</span></div>}
+                {contextData.systemInfo.pytorchVersion && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">PyTorch:</span> <span className="text-slate-300">{contextData.systemInfo.pytorchVersion}</span></div>}
+                {contextData.systemInfo.devices?.map((d, i) => (
+                  <div key={i} className="bg-slate-800/50 rounded px-2 py-1">
+                    <span className="text-slate-500">Device:</span> <span className="text-slate-300">{d.name} ({d.type})</span>
+                    {d.vram && <span className="text-slate-400 ml-1">{Math.round(d.vram / 1024 / 1024)}MB VRAM</span>}
+                  </div>
+                ))}
+                {!contextData.systemInfo.os && !contextData.systemInfo.devices?.length && (
+                  <p className="text-slate-500">{t(language, 'noSystemInfo') || 'No system info available'}</p>
+                )}
+              </div>
+            )}
+
+            {renderContextSection('Node Definitions', 'nodeDefs', contextData.nodeDefs.length,
+              contextData.nodeDefs.length === 0 ? (
+                <p className="text-xs text-slate-500">{t(language, 'noNodeDefs') || 'No node definitions collected'}</p>
+              ) : (
+                <div className="space-y-1 max-h-64 overflow-y-auto">
+                  {contextData.nodeDefs.slice(0, 15).map((d, i) => (
+                    <div key={i} className="text-[11px] bg-slate-800/50 rounded px-2 py-1">
+                      <span className="text-indigo-400">{d.name}</span> <span className="text-slate-500">[{d.category}]</span>
+                      {d.deprecated && <span className="text-red-400 ml-1">[DEPRECATED]</span>}
+                      {d.experimental && <span className="text-amber-400 ml-1">[EXPERIMENTAL]</span>}
+                      {d.inputs && d.inputs.length > 0 && (
+                        <div className="ml-3 text-slate-400">Inputs: {d.inputs.map(inp => `${inp.name}${inp.required ? '*' : '?'}`).join(', ')}</div>
+                      )}
+                      {d.outputs && d.outputs.length > 0 && (
+                        <div className="ml-3 text-slate-400">Outputs: {d.outputs.map(o => o.name).join(', ')}</div>
+                      )}
+                    </div>
+                  ))}
+                  {contextData.nodeDefs.length > 15 && (
+                    <p className="text-[10px] text-slate-500">... and {contextData.nodeDefs.length - 15} more</p>
+                  )}
+                </div>
+              )
+            )}
+
+            {contextData.selectedNodeIds.length > 0 && (
+              <div className="border border-slate-700/50 rounded-lg px-3 py-2 bg-slate-800/30">
+                <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">Selected Nodes: </span>
+                <span className="text-[11px] text-indigo-400 font-mono">{contextData.selectedNodeIds.join(', ')}</span>
+              </div>
+            )}
+
+            {contextData.settings.settings.length > 0 && (
+              <div className="border border-slate-700/50 rounded-lg px-3 py-2 bg-slate-800/30">
+                <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">Settings: </span>
+                <span className="text-[11px] text-slate-400">{contextData.settings.settings.map(s => `${s.key}=${JSON.stringify(s.value)}`).join(', ')}</span>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      {contextFormatted && (
+        <div className="border-t border-slate-800 px-3 py-2 bg-slate-900/30">
+          <details>
+            <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-300 uppercase tracking-wider font-semibold">
+              {t(language, 'formattedPromptPreview') || 'Formatted Prompt Preview'}
+            </summary>
+            <pre className="mt-2 text-[10px] font-mono text-slate-400 bg-slate-950/50 rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap">{contextFormatted}</pre>
+          </details>
+        </div>
+      )}
+    </div>
+  )
+
   const renderJson = () => (
     <div className="flex flex-col h-full bg-slate-950 min-w-0">
       <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
@@ -889,12 +1158,14 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
           <button onClick={() => onTabChange('preview')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'preview' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabOverview')}</button>
           <button onClick={() => onTabChange('analysis')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'analysis' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabDiagnostics')}</button>
           <button onClick={() => onTabChange('json')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'json' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabJson')}</button>
+          <button onClick={() => onTabChange('context')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'context' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabContext') || 'Context'}</button>
         </div>
       </div>
       <div className="flex-1 overflow-hidden relative">
         {activeTab === 'preview' && renderGraph()}
         {activeTab === 'analysis' && renderAnalysis()}
         {activeTab === 'json' && renderJson()}
+        {activeTab === 'context' && renderContext()}
       </div>
       <WarningModal />
       <ErrorModal />

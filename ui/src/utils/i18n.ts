@@ -135,7 +135,21 @@ export const translations: Translations = {
         readOnly: "READ-ONLY",
         version: "Version",
         updateMessage: "(Workflow updated below...)",
-        errorPrefix: "Error: "
+        errorPrefix: "Error: ",
+        analysisResults: "Analysis Results",
+        errors: "errors",
+        warnings: "warnings",
+        info: "info",
+        tabContext: "Context",
+        contextPanelTitle: "Workflow Context",
+        refresh: "Refresh",
+        copyPrompt: "Copy Prompt",
+        clickRefreshToCollect: "Click Refresh to collect context",
+        noErrors: "No errors detected",
+        noParameters: "No parameters collected",
+        noSystemInfo: "No system info available",
+        noNodeDefs: "No node definitions collected",
+        formattedPromptPreview: "Formatted Prompt Preview"
     },
     zh: {
         appName: "Comfy 工作流智能体",
@@ -261,7 +275,21 @@ export const translations: Translations = {
         readOnly: "只读模式",
         version: "版本",
         updateMessage: "（工作流已在下方更新...）",
-        errorPrefix: "错误："
+        errorPrefix: "错误：",
+        analysisResults: "分析结果",
+        errors: "个错误",
+        warnings: "个警告",
+        info: "个提示",
+        tabContext: "上下文",
+        contextPanelTitle: "工作流上下文",
+        refresh: "刷新",
+        copyPrompt: "复制提示词",
+        clickRefreshToCollect: "点击刷新采集上下文",
+        noErrors: "未检测到错误",
+        noParameters: "未采集到参数",
+        noSystemInfo: "无系统信息",
+        noNodeDefs: "未采集到节点定义",
+        formattedPromptPreview: "格式化提示词预览"
     },
     ja: {
         appName: "Comfy ワークフローエージェント",
@@ -386,7 +414,21 @@ export const translations: Translations = {
         readOnly: "読み取り専用",
         version: "バージョン",
         updateMessage: "（以下でワークフローが更新されました...）",
-        errorPrefix: "エラー："
+        errorPrefix: "エラー：",
+        analysisResults: "分析結果",
+        errors: "件のエラー",
+        warnings: "件の警告",
+        info: "件の情報",
+        tabContext: "コンテキスト",
+        contextPanelTitle: "ワークフローコンテキスト",
+        refresh: "更新",
+        copyPrompt: "プロンプトをコピー",
+        clickRefreshToCollect: "更新をクリックしてコンテキストを収集",
+        noErrors: "エラーは検出されませんでした",
+        noParameters: "パラメータは収集されていません",
+        noSystemInfo: "システム情報なし",
+        noNodeDefs: "ノード定義は収集されていません",
+        formattedPromptPreview: "フォーマット済みプロンプトプレビュー"
     },
     ko: {
         appName: "Comfy 워크플로우 에이전트",
@@ -512,7 +554,21 @@ export const translations: Translations = {
         readOnly: "읽기 전용",
         version: "버전",
         updateMessage: "(워크플로우가 아래에서 업데이트됨...)",
-        errorPrefix: "오류: "
+        errorPrefix: "오류: ",
+        analysisResults: "분석 결과",
+        errors: "개 오류",
+        warnings: "개 경고",
+        info: "개 정보",
+        tabContext: "컨텍스트",
+        contextPanelTitle: "워크플로우 컨텍스트",
+        refresh: "새로고침",
+        copyPrompt: "프롬프트 복사",
+        clickRefreshToCollect: "새로고침을 클릭하여 컨텍스트 수집",
+        noErrors: "오류가 감지되지 않았습니다",
+        noParameters: "수집된 매개변수 없음",
+        noSystemInfo: "시스템 정보 없음",
+        noNodeDefs: "수집된 노드 정의 없음",
+        formattedPromptPreview: "포맷된 프롬프트 미리보기"
     }
 };
 

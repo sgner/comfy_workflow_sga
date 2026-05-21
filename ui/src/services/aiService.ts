@@ -3,6 +3,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { ComfyWorkflow, GeminiResponseSchema, AppSettings, WorkflowIssue, AgentStatus, ChatMessage, Sender, ApprovalRequest, HumanInputRequest, ToolCallInfo } from '../types';
 import { t } from '../utils/i18n';
+import { collectWorkflowContext, collectWorkflowContextAsync, formatWorkflowContextForPrompt } from './workflowContextCollector';
 
 const BASE_SYSTEM_INSTRUCTION = `
 You are "Comfy Workflow Agent", an expert AI assistant and Workflow Architect specialized in ComfyUI.
@@ -255,13 +256,16 @@ async function callPythonBackendStream(
     
     if (!settings.pythonBackendUrl) throw new Error("Python Backend URL is missing.");
 
+   const workflowContext = await collectWorkflowContextAsync().catch(() => collectWorkflowContext());
    const payload = {
         message: prompt,
         workflow: workflow,
         session_id: sessionId,
         error_log: errorLog,
         language: settings.language,
-        config_id: settings.activeBackendConfigId || undefined
+        config_id: settings.activeBackendConfigId || undefined,
+        workflow_context: workflowContext,
+        workflow_context_text: formatWorkflowContextForPrompt(workflowContext),
     };
     
     const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/chat/stream`, {
@@ -376,15 +380,28 @@ export const fetchChatHistory = async (
         const rawHistory = await response.json();
         if (!Array.isArray(rawHistory)) return [];
 
-        return rawHistory.map((msg: any, idx: number) => ({
-            id: `hist-${idx}-${Date.now()}`,
-            sender: msg.sender === 'user' ? Sender.USER : Sender.AI,
-            text: msg.text || '',
-            timestamp: new Date(msg.timestamp || Date.now()),
-            metadata: msg.sender === 'ai' ? {
-                provider: 'History'
-            } : undefined
-        }));
+        return rawHistory.map((msg: any, idx: number) => {
+            const isAi = msg.sender === 'ai' || msg.sender === 'assistant';
+            let text = msg.text || '';
+            const agentIssues = isAi ? parseIssuesFromText(text) : undefined;
+
+            if (isAi) {
+                text = text
+                    .replace(/ISSUES_JSON:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/, '')
+                    .trim();
+            }
+
+            return {
+                id: `hist-${idx}-${Date.now()}`,
+                sender: isAi ? Sender.AI : Sender.USER,
+                text,
+                timestamp: new Date(msg.timestamp || Date.now()),
+                metadata: isAi ? {
+                    provider: 'History',
+                    agentIssues: agentIssues && agentIssues.length > 0 ? agentIssues : undefined,
+                } : undefined
+            };
+        });
     } catch (e) {
         console.error("Failed to fetch chat history:", e);
         return [];
@@ -435,6 +452,37 @@ function cleanJsonString(jsonStr: string): string {
     clean = clean.replace(/\/\*[\s\S]*?\*\//g, "");
     clean = clean.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
     return clean;
+}
+
+function parseIssuesFromText(text: string): WorkflowIssue[] {
+    const issuesMatch = text.match(/ISSUES_JSON:\s*(?:```(?:json)?\s*)?(\[[\s\S]*?\])(?:\s*```)?/);
+    if (!issuesMatch || !issuesMatch[1]) return [];
+
+    try {
+        const parsedIssues = JSON.parse(cleanJsonString(issuesMatch[1]));
+        if (!Array.isArray(parsedIssues)) return [];
+
+        return parsedIssues.map((issue: any, idx: number) => {
+            const nodeIds = issue.node_ids ?? issue.nodeIds ?? null;
+            const primaryNodeId = issue.nodeId ?? issue.node_id ?? (Array.isArray(nodeIds) && nodeIds.length > 0 ? nodeIds[0] : null);
+
+            return {
+                id: `ai-issue-${Date.now()}-${idx}`,
+                nodeId: typeof primaryNodeId === 'number' ? primaryNodeId : (typeof primaryNodeId === 'string' ? parseInt(primaryNodeId, 10) || null : null),
+                nodeIds: Array.isArray(nodeIds) ? nodeIds.map((id: any) => typeof id === 'number' ? id : parseInt(String(id), 10) || null).filter((n: number | null): n is number => n !== null) : undefined,
+                severity: issue.severity || 'warning',
+                category: issue.category ?? undefined,
+                message: issue.message ?? issue.issue ?? issue.details ?? 'Unknown issue',
+                impact: issue.impact ?? undefined,
+                fixSuggestion: issue.fixSuggestion ?? issue.fix_suggestion ?? issue.recommendation ?? (issue.details && issue.issue ? issue.details : undefined),
+                nodeType: issue.nodeType ?? issue.node_type ?? undefined,
+                source: 'agent' as const,
+            };
+        });
+    } catch (e) {
+        console.error('Failed to parse ISSUES_JSON from text:', e);
+        return [];
+    }
 }
 
 export const sendMessageToComfyAgent = async (
@@ -514,12 +562,14 @@ export const sendMessageToComfyAgent = async (
                 chatResponse: structuredFromBackend.chatResponse || textResponse,
                 updatedWorkflow: structuredFromBackend.updatedWorkflow as ComfyWorkflow | null,
                 missingNodes: structuredFromBackend.missingNodes ?? [],
-                issues: (structuredFromBackend.issues ?? []).map((issue: { nodeId: string | null; severity: string; message: string; fixSuggestion?: string }, idx: number) => ({
+                issues: (structuredFromBackend.issues ?? []).map((issue: any, idx: number) => ({
                     id: `ai-issue-${Date.now()}-${idx}`,
-                    nodeId: issue.nodeId ? Number(issue.nodeId) || null : null,
-                    severity: issue.severity as 'error' | 'warning' | 'info',
-                    message: issue.message,
-                    fixSuggestion: issue.fixSuggestion,
+                    nodeId: issue.nodeId ? Number(issue.nodeId) || null : (issue.node_id ? Number(issue.node_id) || null : null),
+                    severity: (issue.severity || 'warning') as 'error' | 'warning' | 'info',
+                    message: issue.message ?? issue.issue ?? issue.details ?? 'Unknown issue',
+                    fixSuggestion: issue.fixSuggestion ?? issue.fix_suggestion ?? (issue.details && issue.issue ? issue.details : undefined),
+                    nodeType: issue.nodeType ?? issue.node_type ?? undefined,
+                    source: 'agent' as const,
                 })),
                 relatedQuestions: structuredFromBackend.relatedQuestions ?? [],
                 groundingSources: structuredFromBackend.groundingSources ?? sources,
@@ -539,25 +589,7 @@ export const sendMessageToComfyAgent = async (
             }
         }
 
-        let issues: WorkflowIssue[] = [];
-        const issuesMatch = textResponse.match(/ISSUES_JSON:\s*(?:```(?:json)?\s*)?(\[[\s\S]*?\])(?:\s*```)?/);
-        if (issuesMatch && issuesMatch[1]) {
-            try {
-                const rawIssues = issuesMatch[1];
-                const parsedIssues = JSON.parse(cleanJsonString(rawIssues));
-                if (Array.isArray(parsedIssues)) {
-                    issues = parsedIssues.map((issue: any, idx: number) => ({
-                        id: `ai-issue-${Date.now()}-${idx}`,
-                        nodeId: issue.nodeId || null,
-                        severity: issue.severity || 'warning',
-                        message: issue.message || 'Unknown issue',
-                        fixSuggestion: issue.fixSuggestion
-                    }));
-                }
-            } catch (e) {
-                console.error('Failed to parse issues JSON:', e);
-            }
-        }
+        let issues: WorkflowIssue[] = parseIssuesFromText(textResponse);
 
         let relatedQuestions: string[] = [];
         const relatedMatch = textResponse.match(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?(\[[\s\S]*?\])(?:\s*```)?/);

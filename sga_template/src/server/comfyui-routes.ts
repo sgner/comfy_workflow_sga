@@ -187,12 +187,13 @@ async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProv
 }
 
 export async function handleComfyUIChatStream(req: Request, res: Response): Promise<void> {
-  const { message, workflow, session_id, error_log, language, config_id } = req.body as Record<string, unknown>
+  const { message, workflow, session_id, error_log, language, config_id, workflow_context, workflow_context_text } = req.body as Record<string, unknown>
   const sessionId = session_id as string
   const userMessage = message as string
   const errorLog = error_log as string | undefined
   const lang = (language as string) ?? 'en'
   const configId = config_id as string | undefined
+  const workflowContextText = workflow_context_text as string | undefined
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -276,7 +277,11 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
       workflowContext += `\n[RUNTIME ERRORS]\nThe user encountered the following errors during execution:\n${errorLog}\n`
     }
 
-    const fullPrompt = `${workflowContext}\n[USER REQUEST]\n"${userMessage}"\n\n[INSTRUCTIONS]\n- If the user wants to change the workflow, output the NEW JSON in a \`\`\`json block.\n- If the user asks to DIAGNOSE, ANALYZE, or CHECK the workflow, output the issues in \`ISSUES_JSON: [...] \`.\n- If the user asks to EXPLAIN, provide a detailed summary of the logic and data flow.\n- Provide 3 Related Questions in the format \`RELATED_QUESTIONS: ["Q1", "Q2"]\`.\n${languageInstruction}`
+    if (workflowContextText) {
+      workflowContext += `\n[WORKFLOW PANEL CONTEXT (from ComfyUI RightSidePanel data sources)]\n${workflowContextText}\n`
+    }
+
+    const fullPrompt = `${workflowContext}\n[USER REQUEST]\n"${userMessage}"\n\n[INSTRUCTIONS]\n- If the user wants to change the workflow, output the NEW JSON in a \`\`\`json block.\n- If the user asks to DIAGNOSE, ANALYZE, or CHECK the workflow, output the issues in \`ISSUES_JSON: [...] \`.\n- If the user asks to EXPLAIN, provide a detailed summary of the logic and data flow.\n- Use the WORKFLOW PANEL CONTEXT to understand current errors, node parameters, and settings when diagnosing issues.\n- Provide 3 Related Questions in the format \`RELATED_QUESTIONS: ["Q1", "Q2"]\`.\n${languageInstruction}`
 
     if (shouldPinFullWorkflow && workflow) {
       const workflowStr = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)

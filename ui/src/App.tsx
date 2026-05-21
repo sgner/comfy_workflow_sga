@@ -11,6 +11,7 @@ import { sendMessageToComfyAgent, fetchChatHistory } from './services/aiService'
 import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs } from './services/configService'
 import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, ApprovalRequest, HumanInputRequest, ToolCallInfo } from './types'
 import { t } from './utils/i18n'
+import { collectWorkflowContext, collectWorkflowContextAsync, contextErrorsToIssues } from './services/workflowContextCollector'
 
 interface AppProps {
   displayMode?: 'floating' | 'sidebar'
@@ -94,6 +95,7 @@ const App: React.FC<AppProps> = () => {
   })
 
   const [workflow, setWorkflow] = useState<ComfyWorkflow>(DEFAULT_WORKFLOW)
+  const [_workflowContext, setWorkflowContext] = useState<any>(null)
   const [issues, setIssues] = useState<WorkflowIssue[]>([]) // Stores AI and System detected issues
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -137,11 +139,39 @@ const App: React.FC<AppProps> = () => {
     if (app && app.graph) {
       const graphData = app.graph.serialize()
       setWorkflow(graphData as unknown as ComfyWorkflow)
+      const ctx = collectWorkflowContext()
+      setWorkflowContext(ctx)
+
+      const ctxIssues = contextErrorsToIssues(ctx).map(i => ({ ...i, source: 'native' as const }))
+      if (ctxIssues.length > 0) {
+        setIssues(prev => {
+          const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
+          const newIssues = ctxIssues.filter(i => !nativeIds.has(i.id))
+          const agentIssues = prev.filter(i => i.source === 'agent')
+          return [...newIssues, ...agentIssues]
+        })
+        setVisualizerTab('analysis')
+      } else {
+        setIssues(prev => prev.filter(i => i.source !== 'native'))
+      }
       
       const persistentId = getWorkflowId(graphData);
       if (persistentId) {
           sessionIdRef.current = persistentId;
       }
+
+      collectWorkflowContextAsync().then(asyncCtx => {
+        setWorkflowContext(asyncCtx)
+        const asyncIssues = contextErrorsToIssues(asyncCtx).map(i => ({ ...i, source: 'native' as const }))
+        if (asyncIssues.length > 0) {
+          setIssues(prev => {
+            const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
+            const newIssues = asyncIssues.filter(i => !nativeIds.has(i.id))
+            const agentIssues = prev.filter(i => i.source === 'agent')
+            return [...newIssues, ...agentIssues]
+          })
+        }
+      }).catch(() => {})
     }
   }, [app, getWorkflowId])
 
@@ -219,11 +249,11 @@ const App: React.FC<AppProps> = () => {
           severity: issue.severity as 'error' | 'warning' | 'info',
           message: issue.message,
           fixSuggestion: issue.fixSuggestion,
+          source: 'agent' as const,
         }))
-        setIssues(mappedIssues)
-        setVisualizerTab('analysis')
+        setIssues(prev => [...prev.filter(i => i.source !== 'agent'), ...mappedIssues])
       } else {
-        setIssues([])
+        setIssues(prev => prev.filter(i => i.source !== 'agent'))
         setMessages(prev => [...prev, {
           id: `analyze-${Date.now()}`,
           sender: 'ai' as Sender,
@@ -350,6 +380,7 @@ const App: React.FC<AppProps> = () => {
                 traceback: traceback ? (Array.isArray(traceback) ? traceback.join('') : String(traceback)) : undefined,
                 currentInputs: current_inputs,
                 isRuntimeError: true,
+                source: 'native',
             };
             setIssues(prev => [newIssue, ...prev]);
             
@@ -519,6 +550,23 @@ const App: React.FC<AppProps> = () => {
         const currentGraph = app.graph.serialize()
         currentWorkflow = currentGraph as unknown as ComfyWorkflow
         setWorkflow(currentWorkflow)
+        let ctx = collectWorkflowContext()
+        try {
+          ctx = await collectWorkflowContextAsync()
+        } catch { /* use sync fallback */ }
+        setWorkflowContext(ctx)
+
+        const ctxIssues = contextErrorsToIssues(ctx).map(i => ({ ...i, source: 'native' as const }))
+        if (ctxIssues.length > 0) {
+          setIssues(prev => {
+            const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
+            const newIssues = ctxIssues.filter(i => !nativeIds.has(i.id))
+            const agentIssues = prev.filter(i => i.source === 'agent')
+            return [...newIssues, ...agentIssues]
+          })
+        } else {
+          setIssues(prev => prev.filter(i => i.source !== 'native'))
+        }
       }
 
       const userMsg: ChatMessage = {
@@ -611,9 +659,14 @@ const App: React.FC<AppProps> = () => {
           applyToCanvas(response.updatedWorkflow)
         }
 
-        if (response.issues && response.issues.length > 0) {
-            setIssues(response.issues);
-            setVisualizerTab('analysis');
+        const currentAgentIssues = (response.issues && response.issues.length > 0)
+            ? response.issues.map(i => ({ ...i, source: 'agent' as const }))
+            : [];
+
+        if (currentAgentIssues.length > 0) {
+            setIssues(prev => [...prev.filter(i => i.source !== 'agent'), ...currentAgentIssues]);
+        } else {
+            setIssues(prev => prev.filter(i => i.source !== 'agent'));
         }
 
         setMessages((prev) => prev.map((m) => 
@@ -626,7 +679,8 @@ const App: React.FC<AppProps> = () => {
                     missingNodes: response.missingNodes,
                     relatedQuestions: response.relatedQuestions,
                     groundingSources: response.groundingSources,
-                    provider: appSettings.usePythonBackend ? 'Python Backend' : appSettings.provider
+                    provider: appSettings.usePythonBackend ? 'Python Backend' : appSettings.provider,
+                    agentIssues: currentAgentIssues.length > 0 ? currentAgentIssues : undefined
                 }
             }
             : m

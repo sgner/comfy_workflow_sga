@@ -9,13 +9,19 @@ import {
   Send,
   Sparkles,
   User,
-  HelpCircle
+  HelpCircle,
+  Bug,
+  Info,
+  AlertCircle,
+  Lightbulb,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react'
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { ChatMessage, Language, Sender, AgentStatus } from '../types'
+import { ChatMessage, Language, Sender, AgentStatus, WorkflowIssue } from '../types'
 import { t } from '../utils/i18n'
 
 interface ChatPanelProps {
@@ -108,6 +114,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             <div
               className={`flex flex-col max-w-[85%] min-w-0 ${msg.sender === Sender.USER ? 'items-end' : 'items-start'}`}
             >
+              {(msg.sender === Sender.AI && msg.metadata?.thinking && !msg.text) || (msg.text && msg.text.trim()) ? (
               <div
                 className={`
                                 p-2.5 rounded-2xl text-sm leading-normal shadow-sm break-words max-w-full
@@ -131,10 +138,16 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                     </div>
                 )}
               </div>
+              ) : null}
 
               {/* AI Metadata */}
               {msg.sender === Sender.AI && (
                 <div className="mt-2 space-y-2 w-full">
+                  {/* Agent Analysis Issues */}
+                  {msg.metadata?.agentIssues && msg.metadata.agentIssues.length > 0 && (
+                    <AgentIssuesCard issues={msg.metadata.agentIssues} language={language} />
+                  )}
+
                   {/* Grounding / Search Sources */}
                   {msg.metadata?.groundingSources &&
                     msg.metadata.groundingSources.length > 0 && (
@@ -270,6 +283,121 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           {t(language, 'aiDisclaimer')}
         </p>
       </div>
+    </div>
+  )
+}
+
+function SeverityIcon({ severity }: { severity: string }) {
+  switch (severity) {
+    case 'error':
+      return <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+    case 'warning':
+      return <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+    default:
+      return <Info className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+  }
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const colors: Record<string, string> = {
+    error: 'bg-red-500/20 text-red-300 border-red-500/30',
+    warning: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+    info: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+  }
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border ${colors[severity] || colors.info}`}>
+      {severity}
+    </span>
+  )
+}
+
+function AgentIssuesCard({ issues, language }: { issues: WorkflowIssue[]; language: Language }) {
+  const [expanded, setExpanded] = useState(true)
+
+  const errorCount = issues.filter(i => i.severity === 'error').length
+  const warningCount = issues.filter(i => i.severity === 'warning').length
+  const infoCount = issues.filter(i => i.severity === 'info').length
+
+  const summaryParts: string[] = []
+  if (errorCount > 0) summaryParts.push(`${errorCount} ${t(language, 'errors') || 'errors'}`)
+  if (warningCount > 0) summaryParts.push(`${warningCount} ${t(language, 'warnings') || 'warnings'}`)
+  if (infoCount > 0) summaryParts.push(`${infoCount} ${t(language, 'info') || 'info'}`)
+
+  return (
+    <div className="bg-slate-800/70 border border-slate-600/50 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-700/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Bug className="w-3.5 h-3.5 text-indigo-400" />
+          <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">
+            {t(language, 'analysisResults') || 'Analysis Results'}
+          </span>
+          <span className="text-[10px] text-slate-500">
+            {summaryParts.join(' · ')}
+          </span>
+        </div>
+        {expanded ? (
+          <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+        )}
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-2 space-y-1.5">
+          {issues.map((issue, idx) => (
+            <div
+              key={issue.id || idx}
+              className="flex items-start gap-2 p-2 rounded-md bg-slate-900/50 border border-slate-700/30"
+            >
+              <SeverityIcon severity={issue.severity} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <SeverityBadge severity={issue.severity} />
+                  {issue.category && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-400 font-mono">
+                      {issue.category}
+                    </span>
+                  )}
+                  {(issue.nodeId != null || (issue.nodeIds && issue.nodeIds.length > 0)) && (
+                    <span className="text-[9px] text-slate-500 font-mono">
+                      Node #{issue.nodeIds && issue.nodeIds.length > 1
+                        ? issue.nodeIds.join(', #')
+                        : (issue.nodeId ?? issue.nodeIds?.[0])}
+                    </span>
+                  )}
+                  {issue.nodeType && (
+                    <span className="text-[9px] text-slate-500">
+                      {issue.nodeType}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-200 mt-1 break-words">
+                  {issue.message}
+                </p>
+                {issue.impact && (
+                  <div className="flex items-start gap-1.5 mt-1.5">
+                    <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-amber-300/70 break-words">
+                      {issue.impact}
+                    </p>
+                  </div>
+                )}
+                {issue.fixSuggestion && (
+                  <div className="flex items-start gap-1.5 mt-1.5">
+                    <Lightbulb className="w-3 h-3 text-emerald-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-emerald-300/80 break-words">
+                      {issue.fixSuggestion}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
