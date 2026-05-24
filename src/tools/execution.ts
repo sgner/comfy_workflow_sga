@@ -3,6 +3,7 @@ import type { ToolProgressData } from '../core/types.js'
 import { createLogger } from '../utils/logger.js'
 import { HookRegistry, HookExecutor, loadHookConfig } from '../hooks/index.js'
 import type { HookDefinition, HookExecutionContext } from '../hooks/index.js'
+import { classifyError } from '../permissions/index.js'
 
 const logger = createLogger('tool-execution')
 
@@ -180,22 +181,53 @@ export function createExecutionPipeline(
       }
 
       let result: unknown
+      let executionError: ToolExecutionError | null = null
       try {
         result = await tool.call(currentInput as Record<string, unknown>, context, onProgress)
       } catch (callError) {
-        const error = new ToolExecutionError(
+        const errorCategory = classifyError(callError instanceof Error ? callError.message : String(callError))
+        const stderr = (callError as { stderr?: string })?.stderr
+        const stdout = (callError as { stdout?: string })?.stdout
+        const exitCode = (callError as { code?: number })?.code
+
+        executionError = new ToolExecutionError(
           callError instanceof Error ? callError.message : String(callError),
           'EXECUTION',
+          { stderr, stdout, exitCode, errorCategory },
         )
         if (logExecution) {
-          logger.error(`[Pipeline] Tool ${tool.name} execution failed: ${error.message}`)
+          logger.error(`[Pipeline] Tool ${tool.name} execution failed: ${executionError.message}`)
         }
+
+        const failureContext: HookExecutionContext = {
+          toolName: tool.name,
+          toolInput: currentInput as Record<string, unknown>,
+          toolError: executionError.message,
+          cwd: process.cwd(),
+          sessionId: context.agentId,
+        }
+        const failureHookResults = await hookExecutor.execute('PostToolUseFailure', failureContext)
+
+        const additionalContexts: string[] = []
+        for (const hr of failureHookResults) {
+          if (hr.stdout) additionalContexts.push(hr.stdout)
+          if (hr.stderr) additionalContexts.push(hr.stderr)
+          if (hr.modifiedData && typeof hr.modifiedData === 'object') {
+            const md = hr.modifiedData as { additionalContext?: string; suggestion?: string }
+            if (md.additionalContext) additionalContexts.push(md.additionalContext)
+            if (md.suggestion) additionalContexts.push(`Suggestion: ${md.suggestion}`)
+          }
+        }
+        if (additionalContexts.length > 0) {
+          executionError.additionalContext = additionalContexts.join('\n')
+        }
+
         return {
           toolName: tool.name,
           input: currentInput,
           output: null,
           durationMs: measureTiming ? Date.now() - startTime : 0,
-          error,
+          error: executionError,
         }
       }
 
@@ -243,11 +275,52 @@ export function createExecutionPipeline(
 
 export class ToolExecutionError extends Error {
   code: string
+  stderr?: string
+  stdout?: string
+  exitCode?: number
+  additionalContext?: string
+  errorCategory?: string
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, details?: { stderr?: string; stdout?: string; exitCode?: number; additionalContext?: string; errorCategory?: string }) {
     super(message)
     this.name = 'ToolExecutionError'
     this.code = code
+    if (details) {
+      this.stderr = details.stderr
+      this.stdout = details.stdout
+      this.exitCode = details.exitCode
+      this.additionalContext = details.additionalContext
+      this.errorCategory = details.errorCategory
+    }
+  }
+
+  toFormattedString(): string {
+    const parts: string[] = [`<tool_use_error>`]
+    parts.push(`Error Code: ${this.code}`)
+    if (this.errorCategory) {
+      parts.push(`Category: ${this.errorCategory}`)
+    }
+    parts.push(`Message: ${this.message}`)
+    if (this.exitCode !== undefined) {
+      parts.push(`Exit Code: ${this.exitCode}`)
+    }
+    if (this.stderr) {
+      const truncated = this.stderr.length > 3000
+        ? this.stderr.slice(0, 1500) + `\n... [${this.stderr.length - 3000} chars truncated] ...\n` + this.stderr.slice(-1500)
+        : this.stderr
+      parts.push(`Stderr:\n${truncated}`)
+    }
+    if (this.stdout) {
+      const truncated = this.stdout.length > 3000
+        ? this.stdout.slice(0, 1500) + `\n... [${this.stdout.length - 3000} chars truncated] ...\n` + this.stdout.slice(-1500)
+        : this.stdout
+      parts.push(`Stdout:\n${truncated}`)
+    }
+    if (this.additionalContext) {
+      parts.push(`Additional Context:\n${this.additionalContext}`)
+    }
+    parts.push(`</tool_use_error>`)
+    return parts.join('\n')
   }
 }
 

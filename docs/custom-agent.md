@@ -55,9 +55,84 @@ export interface AgentDefinition {
 | Agent | 说明 | 工具权限 | 特点 |
 |-------|------|----------|------|
 | `general-purpose` | 通用 Agent，支持所有工具 | 全部工具 | 默认 Agent |
-| `Explore` | 只读探索 Agent | Glob, Grep, Read, Bash | 快速搜索代码 |
-| `Plan` | 规划 Agent | Glob, Grep, Read, Bash | 设计实现方案 |
-| `verification` | 验证 Agent | Glob, Grep, Read, Bash | 后台运行，独立验证 |
+| `Explore` | 只读探索 Agent | Glob, Grep, Read, Bash | 并行搜索策略，广度优先 → 深度追踪 |
+| `Plan` | 规划 Agent | Glob, Grep, Read, Bash | 结构化计划格式，PLAN_COMPLETE 退出信号 |
+| `verification` | 验证 Agent | Glob, Grep, Read, Bash, WebFetch | 10 种验证策略，对抗性验证，PASS/FAIL 判定 |
+| `advisor` | 顾问 Agent | Glob, Grep, Read | 批判性审查，反思与改进建议 |
+
+### Verification Agent — 对抗性验证
+
+Verification Agent 采用对抗性验证策略，其核心原则是"尝试破坏实现"而非"确认实现正确"。
+
+#### 10 种验证策略
+
+| 策略 | 适用场景 | 关键动作 |
+|------|---------|---------|
+| 前端验证 | UI 变更 | 启动 dev server → 浏览器自动化 → curl 子资源 → 前端测试 |
+| 后端/API 验证 | API 变更 | 启动 server → curl 端点 → 验证响应结构 → 测试错误处理 |
+| CLI/脚本验证 | 命令行工具 | 运行代表性输入 → 验证 stdout/stderr/exit code → 边界输入 |
+| 基础设施验证 | 配置变更 | 语法验证 → dry-run → 检查环境变量引用 |
+| 库/包验证 | 库变更 | 构建 → 完整测试 → 从新上下文导入并测试公共 API |
+| 移动端验证 | iOS/Android | 清理构建 → 安装模拟器 → dump UI tree → 截图验证 |
+| 数据/ML 验证 | 数据管道 | 样本输入运行 → 验证输出 schema → 空输入/NaN 处理 |
+| 数据库迁移验证 | Schema 变更 | 运行 migration up → 验证 schema → 运行 migration down |
+| 重构验证 | 无行为变更 | 现有测试必须通过 → diff 公共 API → 行为一致性检查 |
+| 通用验证 | 其他 | 运行/调用 → 检查输出 → 尝试破坏 |
+
+#### PASS/FAIL 前置检查
+
+**PASS 前置检查**：报告必须包含至少一个对抗性探测（并发/边界值/幂等性/孤儿操作），否则报告被拒绝。
+
+**FAIL 前置检查**：在报告 FAIL 前，检查是否已有防御代码、是否为故意设计、是否为不可修复的限制。
+
+#### 输出格式
+
+每个检查必须遵循以下格式：
+
+```
+### Check: [验证内容]
+**Command run:**
+  [执行的命令]
+**Output observed:**
+  [实际终端输出]
+**Result: PASS** (或 FAIL — 含 Expected vs Actual)
+```
+
+最终输出必须以以下行结尾（被调用方解析）：
+
+```
+VERDICT: PASS
+VERDICT: FAIL
+VERDICT: PARTIAL
+```
+
+### Explore Agent — 并行搜索
+
+Explore Agent 使用并行搜索策略，提高代码探索效率：
+
+1. **Broad scan** — 广度扫描，快速定位相关文件
+2. **Targeted deep dive** — 深度追踪，详细阅读关键文件
+3. **Follow the graph** — 跟踪依赖关系，发现关联模块
+
+### Plan Agent — 结构化规划
+
+Plan Agent 使用结构化计划格式：
+
+1. 分析任务需求
+2. 读取 CLAUDE.md / SGA.md 获取项目约定
+3. 生成结构化计划（含步骤、依赖、预期结果）
+4. 通过 `PLAN_COMPLETE` 信号退出规划模式
+
+### Advisor Agent — 顾问反思
+
+Advisor Agent 在任务执行过程中提供批判性审查：
+
+- 对当前方案进行独立评估
+- 指出潜在问题和风险
+- 建议改进方向和替代方案
+- 防止 Agent 陷入局部最优
+
+> Advisor Agent 通过 Feature Gate `advisor_agent` 控制启用/禁用，详见 [Feature Gate 特性开关](feature-gate.md)。
 
 ## 通过代码创建自定义 Agent
 

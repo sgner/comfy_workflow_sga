@@ -120,3 +120,32 @@ export class Logger {
 export function createLogger(name: string, level: LogLevel = 'info'): Logger {
   return new Logger(name, level)
 }
+
+type I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS = { readonly __brand: unique symbol }
+
+export type SafeLogData = string | number | boolean | null | undefined | SafeLogData[] | {
+  [key: string]: SafeLogData | I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+}
+
+export function sanitizeForLog(data: unknown): SafeLogData {
+  if (data === null || data === undefined) return data
+  if (typeof data === 'string') {
+    return data.replace(/[\n\r]/g, ' ').slice(0, 500)
+  }
+  if (typeof data === 'number' || typeof data === 'boolean') return data
+  if (Array.isArray(data)) return data.map(sanitizeForLog)
+  if (typeof data === 'object') {
+    const sanitized: Record<string, SafeLogData> = {}
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (typeof value === 'string') {
+        sanitized[key] = value.replace(/[\n\r]/g, ' ').slice(0, 500)
+      } else if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+        sanitized[key] = value
+      } else {
+        sanitized[key] = '[REDACTED: potentially contains user code]'
+      }
+    }
+    return sanitized
+  }
+  return '[REDACTED: unknown type]'
+}

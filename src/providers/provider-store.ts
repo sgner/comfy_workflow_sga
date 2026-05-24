@@ -325,12 +325,14 @@ export async function loadProvidersFromEnv(): Promise<void> {
 
 export async function loadProvidersFromConfig(configs: Array<StoredProviderConfig | Record<string, unknown>>, defaultName?: string): Promise<void> {
   for (const raw of configs) {
+    let configName = 'unknown'
     try {
       const config = isStoredProviderConfig(raw) ? raw : normalizeProviderConfig(raw)
+      configName = config.name
       const setAsDefault = defaultName ? config.name === defaultName : false
       await addProvider(config, setAsDefault)
     } catch (error) {
-      logger.error(`Failed to load provider "${config.name}" from config file: ${error instanceof Error ? error.message : String(error)}`)
+      logger.error(`Failed to load provider "${configName}" from config file: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   if (defaultName) {

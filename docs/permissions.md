@@ -195,6 +195,117 @@ interface ClassificationResult {
 }
 ```
 
+## Bash 命令细粒度分类
+
+> 📄 相关源文件：`src/permissions/classifier.ts` → `classifyBashCommand()`
+
+`classifyBashCommand()` 对 Bash 工具的命令进行细粒度分类，为权限决策提供更精确的依据。
+
+### 命令分类
+
+| 类别 | 说明 | 示例 | 默认决策 |
+|------|------|------|---------|
+| `safe_read` | 只读系统命令 | `ls`, `cat`, `head`, `grep`, `find`, `pwd`, `which` | allow |
+| `git_read` | Git 只读命令 | `git status`, `git log`, `git diff`, `git branch` | allow |
+| `git_write` | Git 写操作 | `git add`, `git commit`, `git push`, `git merge` | ask |
+| `build` | 构建命令 | `npm run build`, `make`, `cargo build` | allow |
+| `test` | 测试命令 | `npm test`, `pytest`, `cargo test` | allow |
+| `install` | 包安装 | `npm install`, `pip install`, `cargo add` | ask |
+| `network` | 网络命令 | `curl`, `wget`, `ssh`, `scp` | ask |
+| `system` | 系统管理 | `systemctl`, `docker`, `kill`, `sudo` | deny |
+| `dangerous` | 危险命令 | `rm -rf /`, `dd`, `mkfs`, `format` | deny |
+| `safe_write` | 安全写操作 | `mkdir`, `touch`, `cp`, `mv`（项目内） | allow |
+| `unknown` | 未分类命令 | 其他 | ask |
+
+### 使用方式
+
+```typescript
+import { classifyBashCommand } from 'SGA-Template'
+
+const result = classifyBashCommand('git push origin main')
+// result: { category: 'git_write', confidence: 0.9, reason: 'Git write operation' }
+
+const result2 = classifyBashCommand('rm -rf /')
+// result2: { category: 'dangerous', confidence: 0.95, reason: 'Dangerous destructive command' }
+```
+
+### 与权限检查的集成
+
+Bash 工具在权限检查时，会先调用 `classifyBashCommand()` 进行分类，然后根据分类结果决策：
+
+```
+Bash 工具调用
+    │
+    ▼
+classifyBashCommand(command)
+    │
+    ├─ safe_read / git_read / build / test / safe_write → allow
+    ├─ git_write / install / network → ask
+    ├─ system / dangerous → deny
+    └─ unknown → 按默认 PermissionMode 处理
+```
+
+## 错误分类
+
+> 📄 相关源文件：`src/permissions/classifier.ts` → `classifyError()`
+
+`classifyError()` 对工具执行错误进行分类，用于重试决策和遥测统计。
+
+### 错误分类
+
+| 类别 | 说明 | 示例 | 可重试 |
+|------|------|------|--------|
+| `network` | 网络错误 | ECONNREFUSED, ETIMEDOUT, ENOTFOUND, DNS 解析失败 | 是 |
+| `filesystem` | 文件系统错误 | ENOENT, EACCES, EISDIR, EMFILE | 否 |
+| `permission` | 权限错误 | EPERM, 权限被拒绝 | 否 |
+| `validation` | 验证错误 | 参数无效、格式错误 | 否 |
+| `timeout` | 超时错误 | 命令超时、请求超时 | 是 |
+| `resource` | 资源错误 | 内存不足、磁盘满 | 否 |
+| `unknown` | 未分类错误 | 其他 | 视情况 |
+
+### 使用方式
+
+```typescript
+import { classifyError } from 'SGA-Template'
+
+const category = classifyError('Error: ECONNREFUSED connection refused')
+// category: 'network'
+
+const category2 = classifyError('Error: ENOENT no such file')
+// category2: 'filesystem'
+```
+
+### 与重试机制的集成
+
+错误分类直接影响工具重试决策：
+
+```typescript
+// runner.ts 中的重试逻辑
+if (isFeatureEnabled('tool_retry') && isRetryableError(errMsg, retryConfig.retryableErrors)) {
+  // network 和 timeout 类错误自动重试
+  await sleep(retryDelay * Math.pow(2, attempt))
+  continue
+}
+```
+
+## Hook 权限决策注入
+
+PreToolUse Hook 可以通过返回特定的 `modifiedData` 来影响权限决策：
+
+```typescript
+// Hook 返回权限决策
+{
+  "exitCode": 0,
+  "proceed": true,
+  "modifiedData": {
+    "permissionDecision": "allow",
+    "reason": "通过安全审查"
+  }
+}
+```
+
+当 Hook 返回 `permissionDecision` 时，权限检查器会优先使用 Hook 的决策，跳过后续的分类器检查。
+
 ## 敏感路径检测
 
 敏感路径检测保护关键文件和目录不被意外修改。

@@ -348,3 +348,86 @@ SGA_COMPACT_FULL_ENABLED=false
 - [记忆系统](memory.md) — 记忆管理、上下文预算和工作集
 - [自定义系统提示词](custom-prompt.md)
 - [多供应商 LLM 接入](multi-provider.md)
+
+## 上下文预算管理
+
+上下文预算（Context Budget）是压缩机制的补充，在压缩触发前主动管理 token 分配，确保各分区不会超支。
+
+### 预算分区
+
+| 分区 | 配置项 | 默认值 | 说明 |
+|------|--------|--------|------|
+| 系统指令 | `reservedForSystem` | 4000 | 系统提示词预留 token |
+| 对话历史 | `reservedForConversation` | 50000 | 对话消息预留 token |
+| 工具输出 | `reservedForTools` | 10000 | 工具结果预留 token |
+| 记忆注入 | `memoryBudgetRatio` | 0.25 | 记忆上下文占比（25%） |
+| 工作集 | `workingSetBudgetRatio` | 0.15 | 工作集锚点占比（15%） |
+
+### 自动分配计算
+
+```typescript
+import { computeBudgetAllocation, getBudgetConfig } from 'SGA-Template'
+
+const config = getBudgetConfig()
+const allocation = computeBudgetAllocation(config)
+
+// allocation = {
+//   total: 200000,
+//   systemInstruction: 4000,
+//   workingSet: 20250,    // (200000 - 4000 - 50000 - 10000) * 0.15
+//   memory: 33750,        // (200000 - 4000 - 50000 - 10000) * 0.25
+//   conversation: 50000,
+//   tools: 10000,
+// }
+```
+
+### 压缩阈值
+
+当对话历史 token 数超过 `compressionThreshold`（默认 0.85）比例时，自动触发压缩：
+
+```
+对话 token > (conversation 预算 × compressionThreshold)
+→ 触发三级压缩策略
+```
+
+### API 查询
+
+```
+GET /api/v1/context-budget
+```
+
+返回当前预算配置和计算后的分配：
+
+```json
+{
+  "config": {
+    "maxContextTokens": 200000,
+    "reservedForSystem": 4000,
+    "reservedForConversation": 50000,
+    "reservedForTools": 10000,
+    "memoryBudgetRatio": 0.25,
+    "workingSetBudgetRatio": 0.15,
+    "compressionThreshold": 0.85
+  },
+  "allocation": {
+    "total": 200000,
+    "systemInstruction": 4000,
+    "workingSet": 20250,
+    "memory": 33750,
+    "conversation": 50000,
+    "tools": 10000
+  }
+}
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SGA_BUDGET_MAX_CONTEXT_TOKENS` | `200000` | 上下文窗口总 token 数 |
+| `SGA_BUDGET_RESERVED_SYSTEM_TOKENS` | `4000` | 系统指令预留 token |
+| `SGA_BUDGET_RESERVED_CONVERSATION_TOKENS` | `50000` | 对话历史预留 token |
+| `SGA_BUDGET_RESERVED_TOOLS_TOKENS` | `10000` | 工具输出预留 token |
+| `SGA_BUDGET_MEMORY_RATIO` | `0.25` | 记忆注入占比 |
+| `SGA_BUDGET_WORKING_SET_RATIO` | `0.15` | 工作集占比 |
+| `SGA_BUDGET_COMPRESSION_THRESHOLD` | `0.85` | 压缩触发阈值 |

@@ -48,3 +48,7 @@ export { type TeamFile, type TeamMember, type TeamMessage, TEAM_COLORS, loadTeam
 export { truncateWithEllipsis, formatTimestamp, formatDuration, formatTokenCount, generateId, deepClone, debounce, throttle, escapeXml, escapeShellArg, isAbsolutePath, normalizePath, relativePath, hashString, chunkArray, uniqueBy } from './utils/helpers.js'
 export { createLogger, Logger, type LogLevel } from './utils/logger.js'
 export { CostTracker, type CostTrackerConfig } from './utils/cost-tracker.js'
+
+export { TelemetryManager, initTelemetry, type TelemetryEvent, type TelemetryExporter, ConsoleExporter, NoOpExporter } from './telemetry/index.js'
+export { FeatureGateManager, isFeatureEnabled, type FeatureGateConfig } from './feature-gate/index.js'
+export { classifyBashCommand, classifyError, type BashCommandCategory, type ErrorCategory } from './permissions/classifier.js'

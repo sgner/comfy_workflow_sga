@@ -7,6 +7,7 @@ import type {
   ProviderContentBlock,
   ProviderUsage,
   ModelConfig,
+  ProviderSystemPromptBlock,
 } from './types.js'
 
 export const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
@@ -65,6 +66,7 @@ export const ANTHROPIC_MODEL_CONFIGS: Record<string, ModelConfig> = {
 export class AnthropicProvider implements LLMProvider {
   readonly name = 'anthropic'
   readonly config: ProviderConfig
+  private promptHashCache: Map<string, string> = new Map()
 
   constructor(config: Omit<ProviderConfig, 'name'> & { name?: string }) {
     this.config = {
@@ -148,7 +150,7 @@ export class AnthropicProvider implements LLMProvider {
       body.temperature = options.temperature
     }
     if (options.systemPrompt) {
-      body.system = options.systemPrompt
+      body.system = this.applyCacheBreakpoints(options.systemPrompt)
     }
     if (options.thinkingBudget) {
       body.thinking = { type: 'enabled', budget_tokens: options.thinkingBudget }
@@ -209,7 +211,7 @@ export class AnthropicProvider implements LLMProvider {
       body.tools = options.tools
     }
     if (options.systemPrompt) {
-      body.system = options.systemPrompt
+      body.system = this.applyCacheBreakpoints(options.systemPrompt)
     }
     if (options.thinkingBudget) {
       body.thinking = { type: 'enabled', budget_tokens: options.thinkingBudget }
@@ -338,6 +340,57 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     return chunk
+  }
+
+  private applyCacheBreakpoints(systemPrompt: string | ProviderSystemPromptBlock[] | Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    if (Array.isArray(systemPrompt)) return systemPrompt as Array<Record<string, unknown>>
+
+    const DYNAMIC_BOUNDARY = '---DYNAMIC_BOUNDARY---'
+    const parts = systemPrompt.split(DYNAMIC_BOUNDARY)
+
+    const blocks: Array<Record<string, unknown>> = []
+
+    if (parts[0]?.trim()) {
+      blocks.push({
+        type: 'text',
+        text: parts[0].trim(),
+        cache_control: { type: 'ephemeral' },
+      })
+    }
+
+    if (parts.length > 1 && parts[1]?.trim()) {
+      blocks.push({
+        type: 'text',
+        text: parts[1].trim(),
+      })
+    }
+
+    if (blocks.length === 0) {
+      blocks.push({
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      })
+    }
+
+    return blocks
+  }
+
+  private computePromptHash(content: string): string {
+    let hash = 0
+    for (let i = 0; i < content.length; i++) {
+      const char = content.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash = hash & hash
+    }
+    return hash.toString(36)
+  }
+
+  detectPromptChange(promptKey: string, content: string): boolean {
+    const newHash = this.computePromptHash(content)
+    const oldHash = this.promptHashCache.get(promptKey)
+    this.promptHashCache.set(promptKey, newHash)
+    return oldHash !== undefined && oldHash !== newHash
   }
 }
 

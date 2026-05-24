@@ -950,6 +950,613 @@ curl -X POST http://localhost:3000/api/v1/hooks/execute \
 
 ---
 
+## Feature Gate 管理
+
+### GET /feature-gates
+
+列出所有特性开关。
+
+```bash
+curl http://localhost:3000/api/v1/feature-gates
+```
+
+**响应**：
+
+```json
+{
+  "gates": [
+    {
+      "name": "tool_retry",
+      "description": "Enable tool execution retry with exponential backoff",
+      "defaultEnabled": true,
+      "currentEnabled": true,
+      "source": "default",
+      "envVar": "SGA_FEATURE_TOOL_RETRY"
+    }
+  ]
+}
+```
+
+### GET /feature-gates/:name
+
+获取指定特性开关详情。
+
+```bash
+curl http://localhost:3000/api/v1/feature-gates/tool_retry
+```
+
+### POST /feature-gates/override
+
+运行时覆盖特性开关。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/feature-gates/override \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "telemetry",
+    "enabled": true
+  }'
+```
+
+### POST /feature-gates/reset
+
+重置指定特性开关为默认值。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/feature-gates/reset \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "telemetry"
+  }'
+```
+
+### POST /feature-gates/reset-all
+
+重置所有特性开关为默认值。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/feature-gates/reset-all
+```
+
+### POST /feature-gates
+
+注册自定义特性开关。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/feature-gates \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my_feature",
+    "description": "My custom feature",
+    "defaultEnabled": false,
+    "envVar": "SGA_FEATURE_MY_FEATURE"
+  }'
+```
+
+详见 [Feature Gate 特性开关](feature-gate.md)。
+
+---
+
+## 遥测管理
+
+### GET /telemetry/status
+
+获取遥测状态。
+
+```bash
+curl http://localhost:3000/api/v1/telemetry/status
+```
+
+### POST /telemetry/toggle
+
+启用或禁用遥测。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/telemetry/toggle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": true
+  }'
+```
+
+### POST /telemetry/flush
+
+手动刷新遥测数据。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/telemetry/flush
+```
+
+### GET /telemetry/events
+
+获取最近的遥测事件。
+
+```bash
+curl http://localhost:3000/api/v1/telemetry/events
+```
+
+详见 [遥测框架](telemetry.md)。
+
+---
+
+## 分类器
+
+### POST /classify/bash
+
+分类 Bash 命令。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/classify/bash \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "npm test"
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "classification": {
+    "category": "test",
+    "riskLevel": "low",
+    "isDestructive": false,
+    "isReadOnly": true
+  }
+}
+```
+
+### POST /classify/error
+
+分类错误信息。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/classify/error \
+  -H "Content-Type: application/json" \
+  -d '{
+    "error": "EACCES: permission denied"
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "category": "permission"
+}
+```
+
+---
+
+## 系统提示词预览
+
+### POST /system-prompt/preview
+
+预览组装后的系统提示词。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/system-prompt/preview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sonnet",
+    "enabledTools": ["Read", "Write", "Bash", "Glob", "Grep"],
+    "languagePreference": "zh-CN"
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "fullPrompt": "...",
+  "totalLength": 8192,
+  "staticPart": "...",
+  "dynamicPart": "...",
+  "hasDynamicBoundary": true
+}
+```
+
+---
+
+## 运行时配置
+
+### GET /config
+
+获取完整运行时配置。
+
+```bash
+curl http://localhost:3000/api/v1/config
+```
+
+**响应**：
+
+```json
+{
+  "config": {
+    "compact": {
+      "microEnabled": true,
+      "microGapThresholdMinutes": 10,
+      "modelMaxTokens": 200000
+    },
+    "budget": {
+      "maxContextTokens": 200000,
+      "reservedForSystem": 4000,
+      "reservedForConversation": 50000
+    },
+    "circuitBreaker": {
+      "compactMaxFailures": 3,
+      "compactCooldownMs": 300000
+    },
+    "toolSummary": {
+      "enabled": true,
+      "model": "haiku"
+    },
+    "thinkingEffort": {
+      "defaultEffort": "medium",
+      "budgetMedium": 10000
+    }
+  }
+}
+```
+
+### GET /config/:section
+
+获取指定配置分区。
+
+```bash
+curl http://localhost:3000/api/v1/config/compact
+curl http://localhost:3000/api/v1/config/budget
+curl http://localhost:3000/api/v1/config/circuitBreaker
+curl http://localhost:3000/api/v1/config/toolSummary
+curl http://localhost:3000/api/v1/config/thinkingEffort
+curl http://localhost:3000/api/v1/config/workingSet
+curl http://localhost:3000/api/v1/config/consolidation
+curl http://localhost:3000/api/v1/config/teamSync
+curl http://localhost:3000/api/v1/config/postCompact
+```
+
+**响应**：
+
+```json
+{
+  "section": "budget",
+  "config": {
+    "maxContextTokens": 200000,
+    "reservedForSystem": 4000,
+    "reservedForConversation": 50000,
+    "reservedForTools": 10000,
+    "memoryBudgetRatio": 0.25,
+    "workingSetBudgetRatio": 0.15,
+    "compressionThreshold": 0.85
+  }
+}
+```
+
+---
+
+## 成本追踪
+
+### GET /sessions/:id/cost
+
+查询会话成本详情。
+
+```bash
+curl http://localhost:3000/api/v1/sessions/sess-xxx/cost
+```
+
+**响应**：
+
+```json
+{
+  "sessionId": "sess-xxx",
+  "totalCostUsd": 0.0523,
+  "totalInputTokens": 15000,
+  "totalOutputTokens": 3000,
+  "isOverBudget": false,
+  "isNearBudget": false,
+  "remainingBudget": 0.9477,
+  "report": "Input tokens: 15,000\nOutput tokens: 3,000\n...\nTotal cost: $0.0523\nBudget: $1.00\nRemaining: $0.9477"
+}
+```
+
+### PUT /sessions/:id/budget
+
+设置或更新会话预算。
+
+```bash
+curl -X PUT http://localhost:3000/api/v1/sessions/sess-xxx/budget \
+  -H "Content-Type: application/json" \
+  -d '{
+    "maxBudgetUsd": 2.0
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `maxBudgetUsd` | `number` | 是 | 最大预算（美元，非负数） |
+
+**响应**：
+
+```json
+{
+  "sessionId": "sess-xxx",
+  "maxBudgetUsd": 2.0,
+  "totalCostUsd": 0.0523,
+  "remainingBudget": 1.9477
+}
+```
+
+---
+
+## 记忆管理
+
+### GET /memories
+
+列出所有记忆文件。
+
+```bash
+curl http://localhost:3000/api/v1/memories
+```
+
+**响应**：
+
+```json
+{
+  "count": 12,
+  "global": 3,
+  "project": 7,
+  "session": 2,
+  "memories": [
+    {
+      "path": "/path/to/memory.md",
+      "type": "preference",
+      "scope": "global",
+      "description": "User prefers TypeScript",
+      "mtimeMs": 1700000000000,
+      "sizeBytes": 256
+    }
+  ]
+}
+```
+
+### GET /memories/:name
+
+获取指定记忆详情（含完整内容）。
+
+```bash
+curl http://localhost:3000/api/v1/memories/user-preferences
+```
+
+**响应**：
+
+```json
+{
+  "path": "/path/to/user-preferences.md",
+  "type": "preference",
+  "scope": "global",
+  "description": "User prefers TypeScript",
+  "content": "---\ntype: preference\nscope: global\n---\n# User Preferences\n...",
+  "frontmatter": {
+    "type": "preference",
+    "scope": "global"
+  },
+  "mtimeMs": 1700000000000,
+  "sizeBytes": 256
+}
+```
+
+### POST /memories/search
+
+语义搜索记忆。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "项目使用的技术栈"
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `query` | `string` | 是 | 搜索查询 |
+
+**响应**：
+
+```json
+{
+  "query": "项目使用的技术栈",
+  "count": 3,
+  "memories": [
+    {
+      "path": "/path/to/tech-stack.md",
+      "type": "project",
+      "scope": "project",
+      "description": "Project tech stack",
+      "content": "...",
+      "freshnessWarning": null
+    }
+  ]
+}
+```
+
+### DELETE /memories/:scope
+
+删除指定范围的记忆。
+
+```bash
+curl -X DELETE http://localhost:3000/api/v1/memories/session
+```
+
+目前仅支持删除 `session` 范围的记忆。
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "deleted": 3,
+  "scope": "session"
+}
+```
+
+### POST /memories/extract
+
+手动触发记忆提取。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/memories/extract \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "sess-xxx"
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `sessionId` | `string` | 否 | 从指定会话提取记忆（不指定则不提取对话） |
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "messageCount": 15
+}
+```
+
+---
+
+## 熔断器管理
+
+### GET /circuit-breaker
+
+查询熔断器状态。
+
+```bash
+curl http://localhost:3000/api/v1/circuit-breaker
+```
+
+**响应**：
+
+```json
+{
+  "compact": {
+    "state": "closed",
+    "consecutiveFailures": 0,
+    "lastFailureTime": 0,
+    "timeUntilCooldown": 0
+  },
+  "consolidation": {
+    "state": "closed",
+    "consecutiveFailures": 0,
+    "lastFailureTime": 0,
+    "timeUntilCooldown": 0
+  }
+}
+```
+
+**state 值说明**：
+
+| 值 | 说明 |
+|------|------|
+| `closed` | 正常状态，允许执行 |
+| `open` | 熔断状态，拒绝执行 |
+| `half_open` | 半开状态，允许有限尝试 |
+
+### POST /circuit-breaker/reset
+
+重置熔断器。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/circuit-breaker/reset \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "all"
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | `string` | 否 | 重置类型：`compact` / `consolidation` / `all`（默认 `all`） |
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "compact": {
+    "state": "closed",
+    "consecutiveFailures": 0,
+    "lastFailureTime": 0,
+    "timeUntilCooldown": 0
+  },
+  "consolidation": {
+    "state": "closed",
+    "consecutiveFailures": 0,
+    "lastFailureTime": 0,
+    "timeUntilCooldown": 0
+  }
+}
+```
+
+---
+
+## 上下文预算
+
+### GET /context-budget
+
+查询上下文预算配置与分配。
+
+```bash
+curl http://localhost:3000/api/v1/context-budget
+```
+
+**响应**：
+
+```json
+{
+  "config": {
+    "maxContextTokens": 200000,
+    "reservedForSystem": 4000,
+    "reservedForConversation": 50000,
+    "reservedForTools": 10000,
+    "memoryBudgetRatio": 0.25,
+    "workingSetBudgetRatio": 0.15,
+    "compressionThreshold": 0.85
+  },
+  "allocation": {
+    "total": 200000,
+    "systemInstruction": 4000,
+    "workingSet": 20250,
+    "memory": 33750,
+    "conversation": 50000,
+    "tools": 10000
+  }
+}
+```
+
+**allocation 字段说明**：
+
+| 字段 | 说明 |
+|------|------|
+| `total` | 上下文窗口总 token 数 |
+| `systemInstruction` | 系统指令预留 token 数 |
+| `workingSet` | 工作集可用 token 数 |
+| `memory` | 记忆注入可用 token 数 |
+| `conversation` | 对话历史预留 token 数 |
+| `tools` | 工具输出预留 token 数 |
+
+---
+
 ## 相关文档
 
 - [多供应商 LLM 接入](multi-provider.md)

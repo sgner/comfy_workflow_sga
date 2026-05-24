@@ -294,6 +294,42 @@ SGA_PROVIDERS=[{"name":"my-relay","apiKey":"sk-relay-xxx","baseUrl":"https://rel
 | `SGA_THINKING_EFFORT_PROMPT_INJECTION` | 否 | `true` | 是否对不支持原生思考的模型启用提示词注入模拟 |
 | `SGA_THINKING_EFFORT_COT` | 否 | `true` | 是否在提示词注入中使用 Chain-of-Thought 格式（仅 `high`/`max` 生效） |
 
+### Feature Gate 特性开关
+
+> 📄 相关源文件：`src/feature-gate/index.ts`
+
+Feature Gate 控制各项高级能力的启用/禁用。所有环境变量以 `SGA_FEATURE_` 为前缀。
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `SGA_FEATURE_ADVERSARIAL_VERIFICATION` | 否 | `true` | 对抗性验证 Agent |
+| `SGA_FEATURE_ADVISOR_AGENT` | 否 | `true` | Advisor 顾问反思 Agent |
+| `SGA_FEATURE_TOOL_RETRY` | 否 | `true` | 工具执行重试（指数退避） |
+| `SGA_FEATURE_CONSECUTIVE_FAILURE_PIVOT` | 否 | `true` | 连续失败自动转向 |
+| `SGA_FEATURE_PARALLEL_SEARCH` | 否 | `true` | 并行搜索策略 |
+| `SGA_FEATURE_CACHE_OPTIMIZATION` | 否 | `true` | API 层缓存优化 |
+| `SGA_FEATURE_TELEMETRY` | 否 | `false` | 遥测数据收集 |
+| `SGA_FEATURE_HOOK_FAILURE_HANDLING` | 否 | `true` | Hook 失败处理 |
+| `SGA_FEATURE_BASH_COMMAND_CLASSIFICATION` | 否 | `true` | Bash 命令细粒度分类 |
+| `SGA_FEATURE_DYNAMIC_PROMPT_ASSEMBLY` | 否 | `true` | 动态系统提示词拼装 |
+| `SGA_FEATURE_BEHAVIOR_RULES_INJECTION` | 否 | `true` | 行为规则注入 |
+| `SGA_FEATURE_MCP_INSTRUCTIONS_IN_PROMPT` | 否 | `true` | MCP 指令注入提示词 |
+| `SGA_FEATURE_SKILL_LIST_IN_PROMPT` | 否 | `true` | Skill 列表注入提示词 |
+
+> 详见 [Feature Gate 特性开关](feature-gate.md)。
+
+### 遥测配置
+
+> 📄 相关源文件：`src/telemetry/index.ts`
+
+遥测默认关闭，需通过 `SGA_FEATURE_TELEMETRY=true` 启用。
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `SGA_TELEMETRY_FLUSH_INTERVAL_MS` | 否 | `30000` | 事件队列自动刷新间隔（毫秒） |
+
+> 详见 [遥测框架](telemetry.md)。
+
 ## 配置示例
 
 ### 使用 Anthropic
