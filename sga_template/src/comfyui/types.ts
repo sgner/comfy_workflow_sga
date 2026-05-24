@@ -1,5 +1,5 @@
 import type { Message, UsageMetrics } from '../core/types.js'
-import type { AgentRunOptions, AgentRunResult } from '../agents/runner.js'
+import type { AgentRunOptions, AgentRunResult, ToolRetryConfig } from '../agents/runner.js'
 import type { LLMProvider } from '../providers/types.js'
 import type { Tool } from '../tools/base.js'
 import type { AgentDefinition } from '../agents/definition.js'
@@ -11,6 +11,10 @@ export interface ComfyUIAdapterConfig {
   enableAutoDream: boolean
   autoInjectWorkflowContext: boolean
   autoInitWorkingSet: boolean
+  enableRetry: boolean
+  retryConfig?: Partial<ToolRetryConfig>
+  enableAdvisorOnFailure: boolean
+  advisorModel?: string
 }
 
 export const DEFAULT_COMFYUI_ADAPTER_CONFIG: ComfyUIAdapterConfig = {
@@ -19,6 +23,8 @@ export const DEFAULT_COMFYUI_ADAPTER_CONFIG: ComfyUIAdapterConfig = {
   enableAutoDream: true,
   autoInjectWorkflowContext: true,
   autoInitWorkingSet: true,
+  enableRetry: true,
+  enableAdvisorOnFailure: true,
 }
 
 export interface ComfyUIRunOptions {

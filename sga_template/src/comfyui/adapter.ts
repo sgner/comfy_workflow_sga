@@ -40,6 +40,10 @@ export async function runComfyUIAgent(options: ComfyUIRunOptions): Promise<Agent
     enableAutoDream: partialAdapterConfig?.enableAutoDream ?? extensions?.enableAutoDream ?? false,
     autoInjectWorkflowContext: partialAdapterConfig?.autoInjectWorkflowContext ?? extensions?.autoInjectWorkflowContext ?? false,
     autoInitWorkingSet: partialAdapterConfig?.autoInitWorkingSet ?? extensions?.autoInitWorkingSet ?? false,
+    enableRetry: partialAdapterConfig?.enableRetry ?? true,
+    retryConfig: partialAdapterConfig?.retryConfig,
+    enableAdvisorOnFailure: partialAdapterConfig?.enableAdvisorOnFailure ?? true,
+    advisorModel: partialAdapterConfig?.advisorModel,
   }
 
   const contextInjector = new ComfyUIContextInjector()
@@ -86,6 +90,10 @@ export async function runComfyUIAgent(options: ComfyUIRunOptions): Promise<Agent
     permissionMode: options.permissionMode,
     requestApproval: options.requestApproval,
     requestHumanInput: options.requestHumanInput,
+    enableRetry: adapterConfig.enableRetry,
+    retryConfig: adapterConfig.retryConfig,
+    enableAdvisorOnFailure: adapterConfig.enableAdvisorOnFailure,
+    advisorModel: adapterConfig.advisorModel,
   }
 
   try {

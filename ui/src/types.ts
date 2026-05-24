@@ -298,6 +298,46 @@ export interface SkillInfo {
     argumentHint?: string;
 }
 
+export interface FeatureGateInfo {
+    name: string;
+    description: string;
+    enabled: boolean;
+    source: string;
+}
+
+export interface TelemetryStatus {
+    enabled: boolean;
+    sessionId: string;
+}
+
+export interface CircuitBreakerStats {
+    state: string;
+    consecutiveFailures: number;
+    consecutiveSuccesses: number;
+    totalFailures: number;
+    totalSuccesses: number;
+    timeUntilCooldown: number;
+}
+
+export interface CostTrackerInfo {
+    sessionId: string;
+    totalCostUsd: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    isOverBudget: boolean;
+    isNearBudget: boolean;
+    remainingBudget: number | undefined;
+}
+
+export interface MemoryInfo {
+    path: string;
+    type: string;
+    scope: string;
+    description: string;
+    mtimeMs: number;
+    sizeBytes: number;
+}
+
 // Workflow Context Data (from ComfyUI frontend, mirroring RightSidePanel data sources)
 
 export interface ExecutionErrorInfo {

@@ -7,6 +7,8 @@ export const COMFYUI_AGENT_EXTENSIONS: ComfyUIAdapterConfig = {
   enableAutoDream: true,
   autoInjectWorkflowContext: true,
   autoInitWorkingSet: true,
+  enableRetry: true,
+  enableAdvisorOnFailure: true,
 }
 
 const agentExtensionMap: Map<string, ComfyUIAdapterConfig> = new Map([

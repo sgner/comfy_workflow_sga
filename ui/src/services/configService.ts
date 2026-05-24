@@ -1,5 +1,5 @@
 
-import { BackendConfig, BackendConfigCreate, GitHubTokenStatus, MCPServerInfo, SkillInfo } from '../types';
+import { BackendConfig, BackendConfigCreate, GitHubTokenStatus, MCPServerInfo, SkillInfo, FeatureGateInfo, TelemetryStatus, CircuitBreakerStats, CostTrackerInfo, MemoryInfo } from '../types';
 
 const getBaseUrl = (url: string) => url.replace(/\/$/, '');
 
@@ -231,4 +231,157 @@ export const addSkill = async (backendUrl: string, config: { name: string; descr
 export const deleteSkill = async (backendUrl: string, name: string): Promise<void> => {
     const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete skill');
+};
+
+// --- Feature Gate Endpoints ---
+
+export const fetchFeatureGates = async (backendUrl: string): Promise<FeatureGateInfo[]> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/feature-gates`);
+    if (!res.ok) throw new Error('Failed to fetch feature gates');
+    const data = await res.json();
+    return data.gates || [];
+};
+
+export const fetchFeatureGate = async (backendUrl: string, name: string): Promise<FeatureGateInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/feature-gates/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error('Failed to fetch feature gate');
+    const data = await res.json();
+    return data.gate;
+};
+
+export const overrideFeatureGate = async (backendUrl: string, name: string, enabled: boolean): Promise<FeatureGateInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/feature-gates/override`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, enabled })
+    });
+    if (!res.ok) throw new Error('Failed to override feature gate');
+    const data = await res.json();
+    return data.gate;
+};
+
+export const resetFeatureGate = async (backendUrl: string, name: string): Promise<FeatureGateInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/feature-gates/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+    });
+    if (!res.ok) throw new Error('Failed to reset feature gate');
+    const data = await res.json();
+    return data.gate;
+};
+
+export const resetAllFeatureGates = async (backendUrl: string): Promise<FeatureGateInfo[]> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/feature-gates/reset-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) throw new Error('Failed to reset all feature gates');
+    const data = await res.json();
+    return data.gates || [];
+};
+
+// --- Telemetry Endpoints ---
+
+export const fetchTelemetryStatus = async (backendUrl: string): Promise<TelemetryStatus> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/telemetry/status`);
+    if (!res.ok) throw new Error('Failed to fetch telemetry status');
+    return res.json();
+};
+
+export const toggleTelemetry = async (backendUrl: string, enabled: boolean): Promise<{ enabled: boolean }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/telemetry/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+    });
+    if (!res.ok) throw new Error('Failed to toggle telemetry');
+    return res.json();
+};
+
+export const flushTelemetry = async (backendUrl: string): Promise<{ success: boolean }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/telemetry/flush`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) throw new Error('Failed to flush telemetry');
+    return res.json();
+};
+
+// --- Circuit Breaker Endpoints ---
+
+export const fetchCircuitBreakerStatus = async (backendUrl: string): Promise<{ compact: CircuitBreakerStats; consolidation: CircuitBreakerStats }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/circuit-breaker`);
+    if (!res.ok) throw new Error('Failed to fetch circuit breaker status');
+    return res.json();
+};
+
+export const resetCircuitBreaker = async (backendUrl: string, type?: 'compact' | 'consolidation' | 'all'): Promise<{ success: boolean }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/circuit-breaker/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: type || 'all' })
+    });
+    if (!res.ok) throw new Error('Failed to reset circuit breaker');
+    return res.json();
+};
+
+// --- Cost Tracker Endpoints ---
+
+export const fetchCostTracker = async (backendUrl: string, sessionId: string): Promise<CostTrackerInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/cost`);
+    if (!res.ok) throw new Error('Failed to fetch cost tracker');
+    return res.json();
+};
+
+export const setBudget = async (backendUrl: string, sessionId: string, maxBudgetUsd: number): Promise<CostTrackerInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/budget`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxBudgetUsd })
+    });
+    if (!res.ok) throw new Error('Failed to set budget');
+    return res.json();
+};
+
+// --- Memory Endpoints ---
+
+export const fetchMemories = async (backendUrl: string): Promise<{ count: number; global: number; project: number; session: number; memories: MemoryInfo[] }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/memories`);
+    if (!res.ok) throw new Error('Failed to fetch memories');
+    return res.json();
+};
+
+export const searchMemories = async (backendUrl: string, query: string): Promise<{ query: string; count: number; memories: MemoryInfo[] }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/memories/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+    });
+    if (!res.ok) throw new Error('Failed to search memories');
+    return res.json();
+};
+
+export const deleteSessionMemories = async (backendUrl: string): Promise<{ success: boolean; deleted: number }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/memories/session`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete session memories');
+    return res.json();
+};
+
+export const extractMemories = async (backendUrl: string, sessionId?: string): Promise<{ success: boolean; messageCount: number }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/memories/extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sessionId ? { sessionId } : {})
+    });
+    if (!res.ok) throw new Error('Failed to extract memories');
+    return res.json();
+};
+
+// --- Context Budget Endpoint ---
+
+export const fetchContextBudget = async (backendUrl: string): Promise<{ config: Record<string, unknown>; allocation: Record<string, unknown> }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/context-budget`);
+    if (!res.ok) throw new Error('Failed to fetch context budget');
+    return res.json();
 };
