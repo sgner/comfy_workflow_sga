@@ -13,5 +13,5 @@ export {
   removeRuleFromConfig,
   listRulesFromConfig,
 } from './rules.js'
-export type { ClassificationResult, PermissionClassifier } from './classifier.js'
-export { DefaultPermissionClassifier, CompositePermissionClassifier, createDefaultClassifier, createCompositeClassifier } from './classifier.js'
+export type { ClassificationResult, PermissionClassifier, ErrorCategory, BashCommandCategory } from './classifier.js'
+export { DefaultPermissionClassifier, CompositePermissionClassifier, createDefaultClassifier, createCompositeClassifier, classifyBashCommand, classifyError } from './classifier.js'

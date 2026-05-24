@@ -55,6 +55,31 @@ import {
   handleComfyUICoordinator,
   handleComfyUIAutoDream,
   handleComfyUICost,
+  handleListFeatureGates,
+  handleGetFeatureGate,
+  handleOverrideFeatureGate,
+  handleResetFeatureGate,
+  handleResetAllFeatureGates,
+  handleRegisterFeatureGate,
+  handleGetTelemetryStatus,
+  handleToggleTelemetry,
+  handleFlushTelemetry,
+  handleGetTelemetryEvents,
+  handleClassifyBashCommand,
+  handleClassifyError,
+  handlePreviewSystemPrompt,
+  handleGetConfig,
+  handleGetConfigSection,
+  handleGetCostTracker,
+  handleSetBudget,
+  handleListMemories,
+  handleGetMemory,
+  handleSearchMemories,
+  handleDeleteMemory,
+  handleExtractMemories,
+  handleGetCircuitBreakerStatus,
+  handleResetCircuitBreaker,
+  handleGetContextBudget,
 } from './routes.js'
 import {
   handleListSkills,
@@ -147,6 +172,40 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/hooks/test`, handleTestHook)
 
   app.post(`${base}/permissions/classify`, handleClassifyPermission)
+
+  app.get(`${base}/feature-gates`, handleListFeatureGates)
+  app.get(`${base}/feature-gates/:name`, handleGetFeatureGate)
+  app.post(`${base}/feature-gates/override`, handleOverrideFeatureGate)
+  app.post(`${base}/feature-gates/reset`, handleResetFeatureGate)
+  app.post(`${base}/feature-gates/reset-all`, handleResetAllFeatureGates)
+  app.post(`${base}/feature-gates`, handleRegisterFeatureGate)
+
+  app.get(`${base}/telemetry/status`, handleGetTelemetryStatus)
+  app.post(`${base}/telemetry/toggle`, handleToggleTelemetry)
+  app.post(`${base}/telemetry/flush`, handleFlushTelemetry)
+  app.get(`${base}/telemetry/events`, handleGetTelemetryEvents)
+
+  app.post(`${base}/classify/bash`, handleClassifyBashCommand)
+  app.post(`${base}/classify/error`, handleClassifyError)
+
+  app.post(`${base}/system-prompt/preview`, handlePreviewSystemPrompt)
+
+  app.get(`${base}/config`, handleGetConfig)
+  app.get(`${base}/config/:section`, handleGetConfigSection)
+
+  app.get(`${base}/sessions/:sessionId/cost`, handleGetCostTracker)
+  app.put(`${base}/sessions/:sessionId/budget`, handleSetBudget)
+
+  app.get(`${base}/memories`, handleListMemories)
+  app.get(`${base}/memories/:name`, handleGetMemory)
+  app.post(`${base}/memories/search`, handleSearchMemories)
+  app.delete(`${base}/memories/:scope`, handleDeleteMemory)
+  app.post(`${base}/memories/extract`, handleExtractMemories)
+
+  app.get(`${base}/circuit-breaker`, handleGetCircuitBreakerStatus)
+  app.post(`${base}/circuit-breaker/reset`, handleResetCircuitBreaker)
+
+  app.get(`${base}/context-budget`, handleGetContextBudget)
 
   app.get(`${base}/providers`, handleListConfiguredProviders)
   app.post(`${base}/providers`, handleAddProvider)

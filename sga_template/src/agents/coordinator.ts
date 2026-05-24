@@ -3,6 +3,7 @@ import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { Message, UsageMetrics } from '../core/types.js'
 import type { LLMProvider, ProviderRequestOptions } from '../providers/types.js'
 import { runAgent, type AgentRunResult } from '../agents/runner.js'
+import { isForkRecursion } from './fork.js'
 import { filterToolsForAgent } from '../tools/base.js'
 import { ALL_AGENT_DISALLOWED_TOOLS, CUSTOM_AGENT_DISALLOWED_TOOLS } from '../agents/definition.js'
 import { createLogger } from '../utils/logger.js'
@@ -66,6 +67,7 @@ export interface CoordinatorConfig {
   tools: Tool[]
   agentDefinitions: AgentDefinition[]
   maxTurnsPerAgent?: number
+  maxRetriesPerTask?: number
   snapshotDir?: string
   onTaskStart?: (task: CoordinatorTask) => void
   onTaskComplete?: (task: CoordinatorTask) => void
@@ -338,12 +340,17 @@ export class Coordinator {
     phase: CoordinatorPhase,
     agentType: string,
     prompt: string,
+    parentMessages?: Message[],
   ): Promise<CoordinatorTaskResult> {
     const agentDef = this.config.agentDefinitions.find(
       a => a.name === agentType || a.subagentType === agentType,
     )
     if (!agentDef) {
       throw new Error(`Unknown agent type: ${agentType}`)
+    }
+
+    if (parentMessages && isForkRecursion(parentMessages)) {
+      throw new Error('Cannot run coordinator task from within a forked agent — fork and coordinator are mutually exclusive')
     }
 
     const tools = this.resolveAgentTools(agentDef)
@@ -358,6 +365,7 @@ export class Coordinator {
       model,
       provider: this.config.provider,
       maxTurns: this.config.maxTurnsPerAgent,
+      agentDefinitions: this.config.agentDefinitions,
     })
 
     return {
@@ -458,33 +466,49 @@ export class Coordinator {
     task.status = 'running'
     this.config.onTaskStart?.(task)
 
-    try {
-      const enrichedPrompt = this.injectContextFromDependencies(task)
+    const maxRetries = this.config.maxRetriesPerTask ?? 1
+    let lastError: string | undefined
 
-      const result = await this.executeSingleTask(
-        task.description,
-        task.phase,
-        task.agentType,
-        enrichedPrompt,
-      )
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const enrichedPrompt = this.injectContextFromDependencies(task)
 
-      task.status = 'completed'
-      task.result = result
+        const promptWithContext = attempt > 1
+          ? `${enrichedPrompt}\n\n---\n**RETRY ATTEMPT ${attempt}/${maxRetries}**: This task failed previously with error: ${lastError}. Try a different approach. Do not repeat the same steps that led to the previous failure.`
+          : enrichedPrompt
 
-      totalUsage.inputTokens += result.usage.inputTokens
-      totalUsage.outputTokens += result.usage.outputTokens
-      totalUsage.cacheReadInputTokens += result.usage.cacheReadInputTokens
-      totalUsage.cacheCreationInputTokens += result.usage.cacheCreationInputTokens
-      totalUsage.totalTokens += result.usage.totalTokens
-      totalUsage.totalCostUsd += result.usage.totalCostUsd
+        const result = await this.executeSingleTask(
+          task.description,
+          task.phase,
+          task.agentType,
+          promptWithContext,
+        )
 
-      this.config.onTaskComplete?.(task)
-    } catch (error) {
-      task.status = 'failed'
-      task.error = error instanceof Error ? error.message : String(error)
-      this.config.onTaskFailed?.(task)
-      logger.error(`Task ${task.id} failed: ${task.error}`)
+        task.status = 'completed'
+        task.result = result
+
+        totalUsage.inputTokens += result.usage.inputTokens
+        totalUsage.outputTokens += result.usage.outputTokens
+        totalUsage.cacheReadInputTokens += result.usage.cacheReadInputTokens
+        totalUsage.cacheCreationInputTokens += result.usage.cacheCreationInputTokens
+        totalUsage.totalTokens += result.usage.totalTokens
+        totalUsage.totalCostUsd += result.usage.totalCostUsd
+
+        this.config.onTaskComplete?.(task)
+        return
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+        if (attempt < maxRetries) {
+          logger.warn(`Task ${task.id} attempt ${attempt}/${maxRetries} failed: ${lastError}. Retrying...`)
+          task.status = 'running'
+        }
+      }
     }
+
+    task.status = 'failed'
+    task.error = lastError
+    this.config.onTaskFailed?.(task)
+    logger.error(`Task ${task.id} failed after ${maxRetries} attempt(s): ${task.error}`)
   }
 
   private synthesizeResults(tasks: CoordinatorTask[]): string {

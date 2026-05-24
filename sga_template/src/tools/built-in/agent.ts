@@ -5,7 +5,7 @@ import { BaseTool } from '../base.js'
 import { filterToolsForAgent, findToolByName } from '../base.js'
 import { ALL_AGENT_DISALLOWED_TOOLS, CUSTOM_AGENT_DISALLOWED_TOOLS } from '../../agents/definition.js'
 import { runAgent, type AgentRunResult } from '../../agents/runner.js'
-import { createSubagentContext, FORK_BOILERPLATE } from '../../agents/fork.js'
+import { createSubagentContext, FORK_BOILERPLATE, isForkRecursion } from '../../agents/fork.js'
 import { createLogger } from '../../utils/logger.js'
 
 const logger = createLogger('agent-tool')
@@ -133,6 +133,15 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
         agentType: subagent_type ?? 'unknown',
         content: '',
         error: `Unknown agent type: "${subagent_type}". Available agents: ${this.agentDefinitions.map(a => a.name).join(', ')}`,
+      }
+    }
+
+    if (context.messages && isForkRecursion(context.messages)) {
+      return {
+        status: 'failed',
+        agentType: agentDef.name,
+        content: '',
+        error: 'Cannot spawn sub-agent from within a forked agent — recursive forking is not allowed',
       }
     }
 

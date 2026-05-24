@@ -109,6 +109,126 @@ const prompt = buildEffectiveSystemPrompt({
 
 这个边界标记用于缓存优化——静态部分可以缓存，动态部分每次重新生成。
 
+## 动态系统提示词拼装
+
+> 📄 相关源文件：`src/context/system-prompt.ts` → `buildFullSystemPrompt()`
+
+`buildFullSystemPrompt()` 提供了统一的系统提示词拼装入口，将基础提示词与多个 section 组合为完整的系统提示词。
+
+### 拼装流程
+
+```
+基础提示词 (basePrompt)
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ 静态部分 (staticSections)               │
+│ ├─ BEHAVIOR_RULES_SECTION  行为规则     │
+│ ├─ getActionsSection()     操作谨慎性   │
+│ ├─ getUsingToolsSection()  工具使用偏好 │
+│ ├─ getToneAndStyleSection() 语气风格    │
+│ ├─ getOutputEfficiencySection() 输出效率│
+│ ├─ getSystemRemindersSection() 系统提醒 │
+│ ├─ getHooksSection()       Hook 反馈    │
+│ ├─ getEnvInfoSection()     环境信息     │
+│ └─ getLanguageSection()    语言偏好     │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+         ---DYNAMIC_BOUNDARY---
+                   │
+                   ▼
+┌─────────────────────────────────────────┐
+│ 动态部分 (dynamicSections)              │
+│ ├─ getMcpInstructionsSection() MCP 指令 │
+│ └─ getSkillListSection()    Skill 列表  │
+└─────────────────────────────────────────┘
+```
+
+### 使用方式
+
+```typescript
+import { buildFullSystemPrompt, type SystemPromptBuildOptions } from 'SGA-Template'
+
+const options: SystemPromptBuildOptions = {
+  model: 'sonnet',
+  enabledTools: new Set(['Read', 'Write', 'Bash', 'Grep']),
+  mcpInstructions: true,
+  skillList: true,
+  languagePreference: 'zh-CN',
+  additionalWorkingDirectories: ['/shared/lib'],
+}
+
+const fullPrompt = await buildFullSystemPrompt(basePrompt, options)
+```
+
+### Section 说明
+
+| Section | 类型 | 说明 |
+|---------|------|------|
+| `BEHAVIOR_RULES_SECTION` | 静态 | "不准乱来"行为规则（14 条硬性约束） |
+| `getActionsSection()` | 静态 | 操作谨慎性指南（危险操作需确认） |
+| `getUsingToolsSection()` | 静态 | 工具使用偏好（优先专用工具而非 Bash） |
+| `getToneAndStyleSection()` | 静态 | 语气风格（简洁、无 emoji、文件路径引用） |
+| `getOutputEfficiencySection()` | 静态 | 输出效率（直奔主题、不过度解释） |
+| `getSystemRemindersSection()` | 静态 | 系统提醒处理规则 |
+| `getHooksSection()` | 静态 | Hook 反馈处理规则 |
+| `getEnvInfoSection()` | 静态 | 环境信息（CWD/OS/Date/Model） |
+| `getLanguageSection()` | 静态 | 语言偏好（可选） |
+| `getMcpInstructionsSection()` | 动态 | 已连接 MCP 服务器的 instructions |
+| `getSkillListSection()` | 动态 | 已发现的用户可调用 Skill 列表 |
+
+### MCP 指令注入
+
+`getMcpInstructionsSection()` 从已连接的 MCP 服务器中提取 instructions，注入到系统提示词的动态部分：
+
+```typescript
+// 自动从已连接的 MCP 服务器提取 instructions
+const mcpSection = await getMcpInstructionsSection()
+// 输出示例：
+// # MCP Server Instructions
+//
+// ## comfyui-api
+// You have access to ComfyUI workflow management tools...
+```
+
+### Skill 列表注入
+
+`getSkillListSection()` 从已发现的 Skill 中提取用户可调用的列表，注入到系统提示词的动态部分：
+
+```typescript
+// 自动从已发现的 Skill 中提取列表
+const skillSection = await getSkillListSection()
+// 输出示例：
+// # Available Skills
+//
+// - **code-review**: Code review specialist
+// - **security-scan**: Security vulnerability scanner
+```
+
+## 行为规则（"不准乱来"规则）
+
+> 📄 相关源文件：`src/context/system-prompt.ts` → `BEHAVIOR_RULES_SECTION`
+
+行为规则是注入到系统提示词中的硬性约束，确保 Agent 遵循严格的行为准则：
+
+| 规则 | 说明 |
+|------|------|
+| 不扩大范围 | 严格按用户要求执行，不自行添加额外功能 |
+| 不过度工程 | 选择最简单的实现方式，不引入不必要的复杂性 |
+| 不做不必要的重构 | 除非用户明确要求，否则不重构现有代码 |
+| 不做虚假验证 | 验证必须实际运行命令，不能仅凭阅读代码判定 |
+| 不忽略错误 | 遇到错误必须报告，不能静默跳过 |
+| 不猜测用户意图 | 不确定时主动询问，而非自行假设 |
+| 不修改无关文件 | 只修改与任务直接相关的文件 |
+| 不创建不必要的文件 | 优先编辑现有文件，而非创建新文件 |
+| 默认不加注释 | 除非用户要求，否则不添加代码注释 |
+| 安全意识 | 不暴露密钥和敏感信息，遵循安全最佳实践 |
+| 失败后先诊断再转向 | 遇到连续失败时先诊断原因，而非盲目切换方案 |
+| 如实报告 | 如实报告结果，不夸大成功或隐瞒失败 |
+
+> 行为规则通过 Feature Gate `behavior_rules_injection` 控制启用/禁用，详见 [Feature Gate 特性开关](feature-gate.md)。
+
 ## 在 Agent 中使用
 
 ```typescript

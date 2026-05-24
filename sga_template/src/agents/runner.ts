@@ -15,16 +15,52 @@ import { getMemoryManager } from '../memory/manager.js'
 import { getWorkingSet } from '../memory/working-set-registry.js'
 import { buildContext, detectFocusMode } from '../memory/context-builder.js'
 import { microCompactMessages, estimateMessageTokens } from '../memory/compact/micro-compact.js'
-import { CircuitBreaker } from '../utils/circuit-breaker.js'
+import { CircuitBreaker, DEFAULT_CIRCUIT_BREAKER_CONFIG } from '../utils/circuit-breaker.js'
 import { resolveThinkingStrategy } from './thinking-prompts.js'
+import { BEHAVIOR_RULES_SECTION, buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context/system-prompt.js'
+import { isFeatureEnabled } from '../feature-gate/index.js'
+import { TelemetryManager } from '../telemetry/index.js'
+import { classifyError } from '../permissions/index.js'
+import { AutoCompactor, getAutoCompactConfig } from '../memory/compact/index.js'
+import { CostTracker } from '../utils/cost-tracker.js'
+import { MemoryExtractor } from '../memory/extractor.js'
+import { computeBudgetAllocation, buildContextFromSlots, type ContextSlot, type ContextBudgetConfig, getBudgetConfig } from '../memory/context-budget.js'
+import { generateToolUseSummary, type ToolUseInfo } from '../tools/built-in/tool-use-summary.js'
 
 const logger = createLogger('agent-runner')
 
-const providerCircuitBreaker = new CircuitBreaker({
-  maxConsecutiveFailures: 3,
-  cooldownMs: 60_000,
-  halfOpenMaxAttempts: 1,
-})
+export interface ToolRetryConfig {
+  maxRetries: number
+  baseDelayMs: number
+  maxDelayMs: number
+  retryableErrors: string[]
+}
+
+const DEFAULT_RETRY_CONFIG: ToolRetryConfig = {
+  maxRetries: 2,
+  baseDelayMs: 500,
+  maxDelayMs: 3000,
+  retryableErrors: [
+    'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET',
+    'TIMEOUT', 'RATE_LIMIT', 'rate_limit', '429', '503',
+  ],
+}
+
+interface ToolFailureContext {
+  toolName: string
+  error: string
+  attemptNumber: number
+  previousAttempts: Array<{ error: string; timestamp: number }>
+}
+
+interface AdvisorSuggestion {
+  observation: string
+  concern: string
+  suggestion: string
+  verdict: 'PROCEED' | 'RETHINK' | 'PIVOT'
+}
+
+const providerCircuitBreaker = new CircuitBreaker(DEFAULT_CIRCUIT_BREAKER_CONFIG)
 
 export interface ApprovalEvent {
   type: 'approval_required'
@@ -73,6 +109,11 @@ export interface AgentRunOptions {
   permissionMode?: PermissionMode
   requestApproval?: (event: ApprovalEvent) => Promise<ApprovalResponse>
   requestHumanInput?: (event: HumanInputEvent) => Promise<string>
+  enableRetry?: boolean
+  retryConfig?: Partial<ToolRetryConfig>
+  enableAdvisorOnFailure?: boolean
+  advisorModel?: string
+  agentDefinitions?: AgentDefinition[]
 }
 
 export interface AgentRunResult {
@@ -104,6 +145,24 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   if (thinkingStrategy.promptInjection) {
     systemPromptContent = systemPromptContent + '\n\n' + thinkingStrategy.promptSuffix
+  }
+
+  const enabledTools = new Set(tools.filter(t => t.isEnabled()).map(t => t.name))
+
+  const buildOptions: SystemPromptBuildOptions = {
+    model: resolvedModel,
+    enabledTools,
+    mcpInstructions: true,
+    skillList: true,
+  }
+
+  systemPromptContent = await buildFullSystemPrompt(systemPromptContent, buildOptions)
+
+  if (options.agentDefinitions && options.agentDefinitions.length > 0) {
+    const agentList = options.agentDefinitions.map(a =>
+      `- **${a.name}** (${a.subagentType}): ${a.description}${a.isBuiltIn() ? ' [built-in]' : ''}${a.isBackground() ? ' [background]' : ''}`
+    ).join('\n')
+    systemPromptContent = systemPromptContent + `\n\n---DYNAMIC_BOUNDARY---\n\n=== AVAILABLE SUB-AGENTS ===\n${agentList}\n\nWhen delegating work, choose the most appropriate agent type for the task.`
   }
 
   const memoryManager = getMemoryManager()
@@ -187,6 +246,27 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     }
   }
 
+  if (isFeatureEnabled('context_budget')) {
+    try {
+      const budgetConfig = getBudgetConfig()
+      const systemTokenEstimate = Math.ceil(systemPromptContent.length / 4)
+      if (systemTokenEstimate > budgetConfig.reservedForSystem) {
+        logger.warn(
+          `System prompt exceeds budget: ${systemTokenEstimate} tokens > ${budgetConfig.reservedForSystem} reserved. ` +
+          `Consider reducing context injection.`,
+        )
+      }
+      const allocation = computeBudgetAllocation(budgetConfig)
+      logger.info(
+        `Context budget: system=${allocation.systemInstruction}, ` +
+        `workingSet=${allocation.workingSet}, memory=${allocation.memory}, ` +
+        `conversation=${allocation.conversation}, tools=${allocation.tools}`,
+      )
+    } catch (budgetError) {
+      logger.debug(`Context budget check skipped: ${budgetError instanceof Error ? budgetError.message : String(budgetError)}`)
+    }
+  }
+
   const initialMessages: Message[] = options.messages ?? []
   if (prompt) {
     initialMessages.push({
@@ -195,6 +275,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       content: [{ type: 'text', text: prompt }],
       timestamp: Date.now(),
     })
+  }
+
+  if (isFeatureEnabled('task_planning') && prompt && isComplexTask(prompt)) {
+    const planningHint = generatePlanningHint(prompt)
+    initialMessages.push({
+      id: `planning-hint-${Date.now()}`,
+      role: 'user',
+      content: [{ type: 'text', text: planningHint }],
+      timestamp: Date.now(),
+    })
+    logger.info('Complex task detected, injected planning hint')
   }
 
   const result = await executeAgentLoop(
@@ -269,6 +360,25 @@ async function executeAgentLoop(
   const inputPricePerMToken = modelConfig?.inputPricePerMToken
   const outputPricePerMToken = modelConfig?.outputPricePerMToken
 
+  const costTracker = new CostTracker({
+    maxBudgetUsd: options.maxBudgetUsd,
+    costPerInputToken: inputPricePerMToken ? inputPricePerMToken / 1_000_000 : undefined,
+    costPerOutputToken: outputPricePerMToken ? outputPricePerMToken / 1_000_000 : undefined,
+  })
+
+  const providerCircuitBreaker = new CircuitBreaker({
+    maxConsecutiveFailures: 3,
+    cooldownMs: 10_000,
+    halfOpenMaxAttempts: 1,
+  })
+
+  let memoryExtractor: MemoryExtractor | undefined
+  const loopMemoryManager = getMemoryManager()
+  if (loopMemoryManager && isFeatureEnabled('memory_extraction')) {
+    memoryExtractor = new MemoryExtractor(loopMemoryManager)
+    memoryExtractor.setProvider(provider, resolvedModel)
+  }
+
   logger.info(`Starting agent loop, model=${resolvedModel}, maxTurns=${maxTurns}, provider=${provider.name}`)
 
   const useStream = options.stream ?? false
@@ -291,6 +401,9 @@ async function executeAgentLoop(
   } catch (error) {
     logger.debug(`Hook system initialization skipped: ${error instanceof Error ? error.message : String(error)}`)
   }
+
+  const consecutiveFailures: Array<{ turn: number; toolName: string; error: string }> = []
+  const MAX_CONSECUTIVE_FAILURES = 3
 
   while (turnCount < maxTurns) {
     turnCount++
@@ -379,7 +492,13 @@ async function executeAgentLoop(
     try {
       if (!providerCircuitBreaker.canExecute()) {
         const stats = providerCircuitBreaker.getStats()
-        throw new Error(`Provider circuit breaker is open (failures: ${stats.consecutiveFailures}, cooldown: ${Math.ceil(stats.timeUntilCooldown / 1000)}s)`)
+        logger.warn(`Provider circuit breaker is ${stats.state}, waiting ${stats.timeUntilCooldown}ms`)
+        if (stats.timeUntilCooldown > 0) {
+          await sleep(stats.timeUntilCooldown)
+        }
+        if (!providerCircuitBreaker.canExecute()) {
+          throw new Error(`Provider circuit breaker is open. Consecutive failures: ${stats.consecutiveFailures}. Please retry later.`)
+        }
       }
 
       logger.debug(`Calling provider ${provider.name} with model ${resolvedModel}, stream=${useStream}`)
@@ -401,6 +520,7 @@ async function executeAgentLoop(
       const errMsg = error instanceof Error ? error.message : String(error)
       providerCircuitBreaker.recordFailure(error instanceof Error ? error : undefined)
       logger.error(`Provider call failed: ${errMsg}`)
+      providerCircuitBreaker.recordFailure(error instanceof Error ? error : new Error(errMsg))
       allMessages.push({
         id: `msg-${Date.now()}`,
         role: 'assistant',
@@ -415,6 +535,24 @@ async function executeAgentLoop(
     usage.cacheReadInputTokens += response.usage.cacheReadInputTokens ?? 0
     usage.cacheCreationInputTokens += response.usage.cacheCreationInputTokens ?? 0
     usage.totalTokens += response.usage.inputTokens + response.usage.outputTokens
+
+    costTracker.addUsage(response.usage)
+
+    if (costTracker.isOverBudget()) {
+      logger.warn(`Budget exceeded: $${costTracker.getTotalCostUsd().toFixed(4)} / $${options.maxBudgetUsd?.toFixed(2) ?? '∞'}`)
+      allMessages.push({
+        id: `budget-warning-${Date.now()}`,
+        role: 'user',
+        content: [{ type: 'text', text: `=== BUDGET EXCEEDED ===\nTotal cost: $${costTracker.getTotalCostUsd().toFixed(4)}\nBudget: $${options.maxBudgetUsd?.toFixed(2) ?? '∞'}\nYou must stop here. The budget has been exceeded.` }],
+        timestamp: Date.now(),
+      })
+      break
+    }
+
+    if (costTracker.isNearBudget()) {
+      const remaining = costTracker.getRemainingBudget()
+      logger.info(`Approaching budget limit: $${costTracker.getTotalCostUsd().toFixed(4)} used, $${remaining?.toFixed(4) ?? '∞'} remaining`)
+    }
 
     if (response.content.length === 0) {
       logger.warn(`Provider returned empty content (stopReason=${response.stopReason}, usage={in:${response.usage.inputTokens}, out:${response.usage.outputTokens}}). This may indicate a compatibility issue with the provider.`)
@@ -583,23 +721,120 @@ async function executeAgentLoop(
 
       if (execResult.error) {
         const errMsg = execResult.error.message
+        const formattedError = execResult.error.toFormattedString()
         logger.error(`Tool ${name} failed (${execResult.error.code}): ${errMsg}`)
 
-        allMessages.push({
-          id: `result-${id}`,
-          role: 'user',
-          content: [{
-            type: 'tool_result',
-            tool_use_id: id,
-            content: errMsg,
-            is_error: true,
-          }],
-          timestamp: Date.now(),
-        })
+        consecutiveFailures.push({ turn: turnCount, toolName: name, error: errMsg })
+
+        const retryConfig: ToolRetryConfig = {
+          ...DEFAULT_RETRY_CONFIG,
+          ...options.retryConfig,
+        }
+        const enableRetry = options.enableRetry ?? true
+        const enableAdvisor = options.enableAdvisorOnFailure ?? true
+
+        let finalErrorMsg = formattedError
+        let retryCount = 0
+        let didRetry = false
+        const previousErrors: Array<{ error: string; timestamp: number }> = []
+
+        if (enableRetry && isFeatureEnabled('tool_retry') && isRetryableError(errMsg, retryConfig.retryableErrors)) {
+          const tool = tools.find(t => t.name === name)
+          if (tool) {
+            while (retryCount < retryConfig.maxRetries) {
+              retryCount++
+              const delay = Math.min(
+                retryConfig.baseDelayMs * Math.pow(2, retryCount - 1),
+                retryConfig.maxDelayMs
+              )
+              logger.info(`Tool ${name} failed, retrying (${retryCount}/${retryConfig.maxRetries}) after ${delay}ms`)
+              await sleep(delay)
+
+              previousErrors.push({ error: errMsg, timestamp: Date.now() })
+
+              try {
+                const toolProgress = options.onProgress
+                  ? (data: ToolProgressData) => {
+                      options.onProgress!({ type: 'tool_progress', toolName: name, toolUseId: id, data })
+                    }
+                  : undefined
+                const retryResult = await tool.call(execResult.input as Record<string, unknown>, toolUseContext, toolProgress)
+                const retryResultStr = typeof retryResult === 'string' ? retryResult : JSON.stringify(retryResult)
+
+                allMessages.push({
+                  id: `result-${id}`,
+                  role: 'user',
+                  content: [{
+                    type: 'tool_result',
+                    tool_use_id: id,
+                    content: `[Retry ${retryCount} successful]\n${retryResultStr}`,
+                    is_error: false,
+                  }],
+                  timestamp: Date.now(),
+                })
+                didRetry = true
+                if (options.onProgress) {
+                  options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: retryResultStr, isError: false } })
+                }
+                break
+              } catch (retryError) {
+                finalErrorMsg = retryError instanceof Error ? retryError.message : String(retryError)
+                logger.warn(`Retry ${retryCount} failed: ${finalErrorMsg}`)
+              }
+            }
+          }
+        }
+
+        if (!didRetry) {
+          if (isFeatureEnabled('telemetry')) {
+            const telemetry = TelemetryManager.getInstance()
+            telemetry.trackToolUse(name, 0, false, classifyError(errMsg))
+          }
+
+          if (enableAdvisor && isFeatureEnabled('advisor_agent') && previousErrors.length === 0) {
+            previousErrors.push({ error: errMsg, timestamp: Date.now() })
+          }
+
+          if (previousErrors.length > 0) {
+            const advisorSuggestion = await callAdvisorForFailure(
+              name,
+              previousErrors,
+              allMessages,
+              provider,
+              options.advisorModel ?? resolvedModel,
+              options.signal,
+            )
+
+            if (advisorSuggestion) {
+              const advisorMsg = formatAdvisorMessage(advisorSuggestion)
+              allMessages.push({
+                id: `advisor-${Date.now()}`,
+                role: 'user',
+                content: [{ type: 'text', text: advisorMsg }],
+                timestamp: Date.now(),
+              })
+              logger.info(`Advisor suggested: ${advisorSuggestion.verdict} - ${advisorSuggestion.suggestion}`)
+            }
+          }
+
+          allMessages.push({
+            id: `result-${id}`,
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: id,
+              content: didRetry ? finalErrorMsg : formattedError,
+              is_error: true,
+            }],
+            timestamp: Date.now(),
+          })
+        }
       } else {
         const resultStr = typeof execResult.output === 'string'
           ? execResult.output
           : JSON.stringify(execResult.output)
+
+        consecutiveFailures.length = 0
 
         allMessages.push({
           id: `result-${id}`,
@@ -642,6 +877,138 @@ async function executeAgentLoop(
         }
       }
     }
+
+    if (isFeatureEnabled('tool_batch_summary') && orchestratedResults.length > 1) {
+      const summaryParts = orchestratedResults.map(({ name, result: r }) => {
+        if (r.error) {
+          return `- ${name}: FAILED (${r.error.code})`
+        }
+        const output = typeof r.output === 'string' ? r.output : JSON.stringify(r.output)
+        const truncated = output.length > 200 ? output.slice(0, 200) + '...' : output
+        return `- ${name}: OK → ${truncated}`
+      })
+
+      let summaryText = `=== Tool Batch Summary ===\n${summaryParts.join('\n')}`
+
+      try {
+        const toolInfos: ToolUseInfo[] = orchestratedResults.map((r, i) => {
+          const call = toolCalls[i]
+          return {
+            name: r.name,
+            input: call?.input ?? {},
+            output: r.result.error ? { error: r.result.error.message } : r.result.output,
+          }
+        })
+        const lastAssistantMsg = allMessages
+          .filter((m): m is Message & { role: 'assistant' } => m.role === 'assistant')
+          .pop()
+        const lastAssistantText = lastAssistantMsg?.content
+          .filter(c => c.type === 'text' && c.text)
+          .map(c => c.text!)
+          .join('\n')
+
+        const llmSummary = await generateToolUseSummary(toolInfos, provider, undefined, lastAssistantText)
+        if (llmSummary) {
+          summaryText = `=== Tool Batch Summary ===\n${llmSummary}\n\nDetails:\n${summaryParts.join('\n')}`
+        }
+      } catch (summaryError) {
+        logger.debug(`LLM tool summary generation failed, using plain summary: ${summaryError instanceof Error ? summaryError.message : String(summaryError)}`)
+      }
+
+      allMessages.push({
+        id: `tool-summary-${Date.now()}`,
+        role: 'user',
+        content: [{ type: 'text', text: summaryText }],
+        timestamp: Date.now(),
+      })
+    }
+
+    if (isFeatureEnabled('consecutive_failure_pivot') && consecutiveFailures.length >= MAX_CONSECUTIVE_FAILURES) {
+      const failureSummary = consecutiveFailures
+        .map((f, i) => `${i + 1}. Turn ${f.turn}: ${f.toolName} — ${f.error.slice(0, 200)}`)
+        .join('\n')
+
+      const pivotMessage = `=== CRITICAL: CONSECUTIVE FAILURE DETECTION ===
+
+You have experienced ${consecutiveFailures.length} consecutive tool failures. This strongly suggests your current approach is not working.
+
+**Failure History:**
+${failureSummary}
+
+**Required Action:** You MUST change your approach. Options:
+1. **Try a completely different tool or method** — if Bash fails, try a different command; if a script fails, try a different script
+2. **Break the problem into smaller steps** — the current step may be too large or complex
+3. **Check your assumptions** — verify the environment, paths, and prerequisites
+4. **Ask for help** — if you're truly stuck, use AskUserQuestion to get guidance
+
+Do NOT repeat the same action that just failed. That is the definition of insanity.`
+
+      allMessages.push({
+        id: `pivot-${Date.now()}`,
+        role: 'user',
+        content: [{ type: 'text', text: pivotMessage }],
+        timestamp: Date.now(),
+      })
+
+      logger.warn(`Consecutive failure threshold reached (${consecutiveFailures.length}), injecting pivot message`)
+      consecutiveFailures.length = 0
+    }
+
+    if (memoryExtractor && isFeatureEnabled('memory_extraction') && turnCount % 3 === 0) {
+      try {
+        if (memoryExtractor.shouldExtract(allMessages.length)) {
+          await memoryExtractor.extractMemories(allMessages)
+          logger.info('Memory extraction completed for this turn')
+        }
+      } catch (extractError) {
+        logger.debug(`Memory extraction skipped: ${extractError instanceof Error ? extractError.message : String(extractError)}`)
+      }
+    }
+
+    if (isFeatureEnabled('auto_compact')) {
+      try {
+        const currentTokens = estimateMessageTokens(allMessages)
+        const compactConfig = getAutoCompactConfig()
+        const warningState = compactConfig.full
+            ? calculateTokenWarningStateLocal(currentTokens, compactConfig.modelMaxTokens, 0.85)
+            : 'ok'
+
+        if (warningState !== 'ok') {
+          logger.info(`Context token usage: ${currentTokens}, state=${warningState}, triggering auto-compact`)
+
+          const compactor = new AutoCompactor(compactConfig)
+          const sessionMemoryContent = loopMemoryManager
+            ? await loopMemoryManager.getMemoryContextForQuery('current session context')
+            : undefined
+
+          const compactResult = await compactor.compactIfNeeded(
+            allMessages,
+            provider,
+            resolvedModel,
+            sessionMemoryContent,
+          )
+
+          if (compactResult.wasCompacted) {
+            allMessages.length = 0
+            allMessages.push(...compactResult.messages)
+            logger.info(
+              `Auto-compact completed: strategy=${compactResult.strategy}, ` +
+              `messages=${compactResult.messages.length}, ` +
+              `wasCompacted=${compactResult.wasCompacted}`,
+            )
+
+            if (options.onProgress) {
+              options.onProgress({
+                type: 'compact_end',
+                messagesRemoved: compactResult.messages.length,
+              })
+            }
+          }
+        }
+      } catch (compactError) {
+        logger.warn(`Auto-compact failed: ${compactError instanceof Error ? compactError.message : String(compactError)}`)
+      }
+    }
   }
 
   if (options.onProgress) {
@@ -668,6 +1035,69 @@ function resolveAgentModel(agentModel: ModelAlias | 'inherit' | undefined, paren
     return agentModel
   }
   return parentModel
+}
+
+type TokenWarningState = 'ok' | 'warning' | 'critical'
+
+function calculateTokenWarningStateLocal(
+  currentTokens: number,
+  maxTokens: number,
+  threshold: number,
+): TokenWarningState {
+  const ratio = currentTokens / maxTokens
+  if (ratio >= 0.95) return 'critical'
+  if (ratio >= threshold) return 'warning'
+  return 'ok'
+}
+
+const COMPLEX_TASK_INDICATORS = [
+  /implement|build|create|develop|design|refactor|migrate/i,
+  /architecture|system|framework|platform/i,
+  /multiple|several|various|comprehensive/i,
+  /integrate|combine|merge|consolidate/i,
+  /end.to.end|full.stack|complete/i,
+  /and then|after that|followed by|next step/i,
+]
+
+function isComplexTask(prompt: string): boolean {
+  const wordCount = prompt.split(/\s+/).length
+  const hasMultipleSteps = /\d+[\.\)]\s/.test(prompt) || /step\s+\d+/i.test(prompt)
+  const hasComplexIndicators = COMPLEX_TASK_INDICATORS.some(pattern => pattern.test(prompt))
+  const hasMultipleRequirements = (prompt.match(/and|also|additionally|furthermore|moreover/gi) || []).length >= 2
+
+  return wordCount > 50 || hasMultipleSteps || (hasComplexIndicators && hasMultipleRequirements)
+}
+
+function generatePlanningHint(prompt: string): string {
+  const steps = extractImpliedSteps(prompt)
+  return `=== TASK PLANNING GUIDANCE ===
+
+This appears to be a complex task. Before diving into execution, you should:
+
+1. **Analyze the task**: Break it down into sub-tasks and identify dependencies
+2. **Create a plan**: Use TodoWrite to create a structured plan with ordered steps
+3. **Execute sequentially**: Work through the plan step by step, verifying each step
+4. **Verify at milestones**: After completing key steps, verify the results before proceeding
+
+${steps.length > 0 ? `**Suggested sub-tasks based on your request:**\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n` : ''}
+Start by creating a plan using TodoWrite, then execute each item. Update the plan as you progress.`
+}
+
+function extractImpliedSteps(prompt: string): string[] {
+  const steps: string[] = []
+
+  const numberedItems = prompt.match(/\d+[\.\)]\s+[^\n]+/g)
+  if (numberedItems) {
+    steps.push(...numberedItems.map(s => s.replace(/^\d+[\.\)]\s+/, '').trim()))
+    return steps
+  }
+
+  const sentences = prompt.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 10)
+  if (sentences.length > 1) {
+    steps.push(...sentences.slice(0, 5))
+  }
+
+  return steps
 }
 
 function resolveAgentTools(agentDef: AgentDefinition, availableTools: Tool[]): Tool[] {
@@ -931,4 +1361,104 @@ function applyPermissionUpdate(
       logger.info(`Permission update: allow ${update.toolName} pattern=${update.pattern ?? '*'}`)
       break
   }
+}
+
+function isRetryableError(errorMsg: string, retryablePatterns: string[]): boolean {
+  const upperError = errorMsg.toUpperCase()
+  return retryablePatterns.some(pattern => upperError.includes(pattern.toUpperCase()))
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function callAdvisorForFailure(
+  toolName: string,
+  errors: Array<{ error: string; timestamp: number }>,
+  allMessages: Message[],
+  provider: LLMProvider,
+  model: string,
+  signal?: AbortSignal,
+): Promise<AdvisorSuggestion | null> {
+  const contextMessages = allMessages.slice(-6)
+  const contextText = contextMessages
+    .map(m => `${m.role}: ${m.content.map(c => c.type === 'text' ? c.text : `[${c.type}]`).join(' ')}`)
+    .join('\n')
+
+  const errorHistory = errors.map((e, i) => `Attempt ${i + 1}: ${e.error}`).join('\n')
+
+  const advisorPrompt = `You are acting as an advisor reviewing a tool failure.
+
+**Failed Tool:** ${toolName}
+**Error History:**
+${errorHistory}
+
+**Recent Conversation Context:**
+${contextText}
+
+Provide specific, actionable advice on what alternative approach the agent should try next.
+
+Output format:
+- **Observation**: What I see happening
+- **Concern**: Why this approach is failing
+- **Suggestion**: Concrete alternative approach to try
+- **Verdict**: PROCEED (if current approach can work with adjustment) / RETHINK (if need different approach) / PIVOT (if should stop and reconsider)`
+
+  try {
+    const response = await provider.createMessage({
+      model,
+      messages: [{ role: 'user', content: [{ type: 'text', text: advisorPrompt }] }],
+      maxTokens: 500,
+      signal,
+    })
+
+    const responseText = response.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text ?? '')
+      .join('')
+
+    const observationMatch = responseText.match(/\*\*Observation\*\*:\s*([\s\S]*?)(?=\*\*Concern\*\*:)/i)
+    const concernMatch = responseText.match(/\*\*Concern\*\*:\s*([\s\S]*?)(?=\*\*Suggestion\*\*:)/i)
+    const suggestionMatch = responseText.match(/\*\*Suggestion\*\*:\s*([\s\S]*?)(?=\*\*Verdict\*\*:)/i)
+    const verdictMatch = responseText.match(/\*\*Verdict\*\*:\s*(PROCEED|RETHINK|PIVOT)/i)
+
+    if (observationMatch && concernMatch && suggestionMatch && verdictMatch) {
+      return {
+        observation: observationMatch[1].trim(),
+        concern: concernMatch[1].trim(),
+        suggestion: suggestionMatch[1].trim(),
+        verdict: verdictMatch[1].trim() as 'PROCEED' | 'RETHINK' | 'PIVOT',
+      }
+    }
+
+    if (responseText.toUpperCase().includes('PIVOT')) {
+      return {
+        observation: `Tool ${toolName} has failed multiple times`,
+        concern: 'The current approach is not working',
+        suggestion: 'Consider stopping the current approach and trying a fundamentally different method',
+        verdict: 'PIVOT',
+      }
+    }
+  } catch (error) {
+    logger.warn(`Advisor call failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  return null
+}
+
+function formatAdvisorMessage(suggestion: AdvisorSuggestion): string {
+  return `
+=== ADVISOR REVIEW ===
+
+**Observation:**
+${suggestion.observation}
+
+**Concern:**
+${suggestion.concern}
+
+**Suggestion:**
+${suggestion.suggestion}
+
+**Verdict:** ${suggestion.verdict}
+`
 }

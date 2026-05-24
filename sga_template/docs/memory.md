@@ -1096,3 +1096,126 @@ resetSgaConfig()
 - [上下文压缩](context-compression.md)
 - [环境变量配置](environment-variables.md) — 所有可配置参数的完整列表
 - [项目架构](architecture.md)
+
+## 记忆管理 API
+
+记忆系统提供 RESTful API 端点，允许外部系统查询、搜索和管理记忆文件。
+
+### 列出所有记忆
+
+```
+GET /api/v1/memories
+```
+
+返回所有作用域的记忆文件列表，按 global/project/session 分组统计：
+
+```json
+{
+  "count": 12,
+  "global": 3,
+  "project": 7,
+  "session": 2,
+  "memories": [
+    {
+      "path": "/path/to/memory.md",
+      "type": "preference",
+      "scope": "global",
+      "description": "User prefers TypeScript",
+      "mtimeMs": 1700000000000,
+      "sizeBytes": 256
+    }
+  ]
+}
+```
+
+### 获取指定记忆详情
+
+```
+GET /api/v1/memories/:name
+```
+
+返回记忆文件的完整内容（含 frontmatter 和正文）：
+
+```json
+{
+  "path": "/path/to/user-preferences.md",
+  "type": "preference",
+  "scope": "global",
+  "description": "User prefers TypeScript",
+  "content": "---\ntype: preference\nscope: global\n---\n# User Preferences\n...",
+  "frontmatter": {
+    "type": "preference",
+    "scope": "global"
+  },
+  "mtimeMs": 1700000000000,
+  "sizeBytes": 256
+}
+```
+
+### 语义搜索记忆
+
+```
+POST /api/v1/memories/search
+```
+
+使用 LLM 智能检索或关键词匹配搜索记忆：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "项目使用的技术栈"}'
+```
+
+```json
+{
+  "query": "项目使用的技术栈",
+  "count": 3,
+  "memories": [
+    {
+      "path": "/path/to/tech-stack.md",
+      "type": "project",
+      "scope": "project",
+      "description": "Project tech stack",
+      "content": "...",
+      "freshnessWarning": null
+    }
+  ]
+}
+```
+
+### 删除会话记忆
+
+```
+DELETE /api/v1/memories/session
+```
+
+清理当前会话的临时记忆文件：
+
+```json
+{
+  "success": true,
+  "deleted": 3,
+  "scope": "session"
+}
+```
+
+### 手动触发记忆提取
+
+```
+POST /api/v1/memories/extract
+```
+
+手动触发从对话中提取记忆（通常由 Agent Loop 自动触发）：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/memories/extract \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId": "sess-xxx"}'
+```
+
+```json
+{
+  "success": true,
+  "messageCount": 15
+}
+```
