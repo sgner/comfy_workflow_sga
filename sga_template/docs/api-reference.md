@@ -222,14 +222,62 @@ curl -X POST http://localhost:3000/api/v1/sessions/sess-xxx/input \
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `actionId` | `string` | 是 | 等待输入的操作 ID |
+| `actionId` | `string` | 是 | 等待输入的操作 ID（来自 SSE 事件的 `actionId` 字段） |
 | `decision` | `string` | 否 | 审批决定：`allow` / `deny` |
 | `updatedInput` | `object` | 否 | 修改后的工具输入 |
 | `reason` | `string` | 否 | 拒绝原因 |
 | `value` | `string` | 否 | 自由文本输入值 |
 | `optionValue` | `string` | 否 | 选项值 |
+| `permissionUpdate` | `object` | 否 | 持久化审批规则（详见下方） |
 
-详见 [人机交互机制](human-interaction.md)。
+**permissionUpdate 字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | `string` | 是 | `always_allow` / `always_deny` / `allow_pattern` |
+| `toolName` | `string` | 是 | 工具名称 |
+| `pattern` | `string` | 否 | 匹配模式（`allow_pattern` 时使用） |
+
+**审批并设置"总是允许"**：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/sessions/sess-xxx/input \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actionId": "approval-xxx",
+    "decision": "allow",
+    "permissionUpdate": {
+      "type": "always_allow",
+      "toolName": "Write"
+    }
+  }'
+```
+
+**审批并设置模式匹配允许**：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/sessions/sess-xxx/input \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actionId": "approval-xxx",
+    "decision": "allow",
+    "permissionUpdate": {
+      "type": "allow_pattern",
+      "toolName": "Write",
+      "pattern": "*.md"
+    }
+  }'
+```
+
+**错误响应**：
+
+```json
+{
+  "error": "Invalid or expired action ID"
+}
+```
+
+详见 [人机交互机制](human-interaction.md) 和 [权限控制](permissions.md)。
 
 ---
 
@@ -654,6 +702,251 @@ curl -X POST http://localhost:3000/api/v1/mcp/servers/filesystem/disconnect
 ```bash
 curl http://localhost:3000/api/v1/mcp/tools
 ```
+
+---
+
+## 权限管理
+
+### GET /permissions/rules
+
+获取当前权限规则。
+
+```bash
+curl http://localhost:3000/api/v1/permissions/rules
+```
+
+**响应**：
+
+```json
+{
+  "version": 1,
+  "rules": {
+    "allow": [
+      { "tool": "Read", "behavior": "allow" }
+    ],
+    "deny": [
+      { "tool": "Bash", "pattern": "rm -rf", "behavior": "deny", "reason": "危险删除命令" }
+    ],
+    "ask": [
+      { "tool": "Write", "behavior": "ask" }
+    ]
+  }
+}
+```
+
+### POST /permissions/rules
+
+添加权限规则。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/permissions/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "Write",
+    "behavior": "allow",
+    "pattern": "*.md"
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `tool` | `string` | 是 | 工具名称 |
+| `behavior` | `string` | 是 | `allow` / `deny` / `ask` |
+| `pattern` | `string` | 否 | 匹配模式 |
+| `reason` | `string` | 否 | 原因说明 |
+
+### DELETE /permissions/rules
+
+删除权限规则。
+
+```bash
+curl -X DELETE http://localhost:3000/api/v1/permissions/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "Write",
+    "behavior": "allow",
+    "pattern": "*.md"
+  }'
+```
+
+### POST /permissions/classify
+
+测试权限分类器。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/permissions/classify \
+  -H "Content-Type: application/json" \
+  -d '{
+    "toolName": "Bash",
+    "toolInput": { "command": "ls -la" }
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "decision": "allow",
+  "confidence": 0.8,
+  "reason": "Safe read-only bash command",
+  "ruleId": "safe_bash_read"
+}
+```
+
+### POST /permissions/check
+
+综合权限检查（规则 + 分类器）。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/permissions/check \
+  -H "Content-Type: application/json" \
+  -d '{
+    "toolName": "Bash",
+    "toolInput": { "command": "rm -rf node_modules" }
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "behavior": "deny",
+  "reason": "危险删除命令",
+  "matchedRule": {
+    "tool": "Bash",
+    "pattern": "rm -rf",
+    "behavior": "deny",
+    "reason": "危险删除命令"
+  }
+}
+```
+
+### POST /permissions/sensitive-path
+
+检测敏感路径。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/permissions/sensitive-path \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "/home/user/.ssh/id_rsa"
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "isSensitive": true,
+  "reason": "SSH private key",
+  "category": "secrets",
+  "riskLevel": "critical"
+}
+```
+
+详见 [权限控制](permissions.md)。
+
+---
+
+## Hook 管理
+
+### GET /hooks
+
+获取当前 Hook 配置。
+
+```bash
+curl http://localhost:3000/api/v1/hooks
+```
+
+**响应**：
+
+```json
+{
+  "version": 1,
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python validate.py",
+      "timeout": 10000
+    }
+  ]
+}
+```
+
+### POST /hooks
+
+添加 Hook。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/hooks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "PreToolUse",
+    "matcher": "Bash",
+    "command": "python validate.py",
+    "timeout": 10000
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `event` | `string` | 是 | Hook 事件类型 |
+| `matcher` | `string` | 否 | 工具名匹配模式 |
+| `command` | `string` | 是 | 要执行的 shell 命令 |
+| `once` | `boolean` | 否 | 是否只执行一次 |
+| `timeout` | `number` | 否 | 超时时间（毫秒） |
+
+### DELETE /hooks
+
+删除 Hook。
+
+```bash
+curl -X DELETE http://localhost:3000/api/v1/hooks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "PreToolUse",
+    "command": "python validate.py"
+  }'
+```
+
+### POST /hooks/execute
+
+手动触发 Hook 执行（测试用）。
+
+```bash
+curl -X POST http://localhost:3000/api/v1/hooks/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "PreToolUse",
+    "context": {
+      "toolName": "Bash",
+      "toolInput": { "command": "npm test" },
+      "cwd": "/project"
+    }
+  }'
+```
+
+**响应**：
+
+```json
+{
+  "results": [
+    {
+      "exitCode": 0,
+      "stdout": "Validation passed",
+      "stderr": "",
+      "proceed": true
+    }
+  ]
+}
+```
+
+详见 [Hook 钩子系统](hooks.md)。
 
 ---
 

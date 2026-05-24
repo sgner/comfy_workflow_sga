@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
-import type { Message, UsageMetrics, PermissionMode } from '../core/types.js'
+import type { Message, UsageMetrics, PermissionMode, AgentStreamEvent, SSEEventType, SSEEvent } from '../core/types.js'
 import type { PendingAction, SuspendedContext } from './interaction.js'
 
 export interface SessionConfig {
@@ -52,6 +52,11 @@ export interface UserInputRequest {
   optionValue?: string
   updatedInput?: Record<string, unknown>
   reason?: string
+  permissionUpdate?: {
+    type: 'always_allow' | 'always_deny' | 'allow_pattern'
+    toolName: string
+    pattern?: string
+  }
 }
 
 export interface SendMessageResponse {
@@ -63,9 +68,30 @@ export interface SendMessageResponse {
   pendingActionId?: string
 }
 
-export interface StreamEventPayload {
-  type: 'text_delta' | 'tool_use_start' | 'tool_use_result' | 'thinking_delta' | 'turn_end' | 'error' | 'done' | 'approval_required' | 'human_input_required'
-  data: unknown
+export type { AgentStreamEvent, SSEEventType, SSEEvent } from '../core/types.js'
+
+export type StreamEventPayload = AgentStreamEvent
+
+export function formatSSE(event: AgentStreamEvent, eventId?: string): string {
+  const lines: string[] = []
+  lines.push(`event: ${event.type}`)
+  lines.push(`data: ${JSON.stringify(event)}`)
+  if (eventId) {
+    lines.push(`id: ${eventId}`)
+  }
+  return lines.join('\n') + '\n\n'
+}
+
+export function parseSSE(raw: string): AgentStreamEvent | null {
+  try {
+    const parsed = JSON.parse(raw) as AgentStreamEvent
+    if (parsed && typeof parsed.type === 'string') {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 export function createSession(config: SessionConfig = {}): Session {

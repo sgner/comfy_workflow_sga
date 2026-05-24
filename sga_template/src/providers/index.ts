@@ -5,4 +5,4 @@ export { registerProvider, unregisterProvider, getRegisteredProviders, getProvid
 export { TransformableProvider } from './transformable-provider.js'
 export { loadProviderModule, loadRequestTransformer, loadResponseTransformer, loadStreamChunkTransformer } from './provider-loader.js'
 export type { StoredProviderConfig, ProviderValidationResult } from './provider-store.js'
-export { addProvider, removeProvider, replaceProviderInstance, getProvider, getProviderConfig, getDefaultProvider, getDefaultProviderName, setDefaultProvider, getAllProviderNames, getAllProviders, resolveProvider, loadProvidersFromEnv, loadProvidersFromConfig, validateProviderConfig } from './provider-store.js'
+export { addProvider, removeProvider, getProvider, getProviderConfig, getDefaultProvider, getDefaultProviderName, setDefaultProvider, getAllProviderNames, getAllProviders, resolveProvider, loadProvidersFromEnv, loadProvidersFromConfig, validateProviderConfig, normalizeProviderConfig } from './provider-store.js'

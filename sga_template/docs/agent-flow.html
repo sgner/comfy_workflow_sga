@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGA Agent 执行流程可视化</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0e1a;
+    color: #e0e6f0;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+  }
+  #canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .controls {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    z-index: 10;
+  }
+  .controls button {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #e0e6f0;
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+    backdrop-filter: blur(8px);
+  }
+  .controls button:hover {
+    background: rgba(255,255,255,0.15);
+    border-color: rgba(255,255,255,0.3);
+  }
+  .controls button.active {
+    background: rgba(99, 179, 237, 0.25);
+    border-color: rgba(99, 179, 237, 0.5);
+    color: #63b3ed;
+  }
+  .legend {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(10, 14, 26, 0.85);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 16px 20px;
+    font-size: 13px;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+  }
+  .legend h3 {
+    font-size: 14px;
+    margin-bottom: 10px;
+    color: #a0aec0;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .title-bar {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 10;
+  }
+  .title-bar h1 {
+    font-size: 20px;
+    font-weight: 600;
+    background: linear-gradient(135deg, #63b3ed, #b794f4);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .title-bar p {
+    font-size: 12px;
+    color: #718096;
+    margin-top: 4px;
+  }
+  .step-info {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(10, 14, 26, 0.85);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 10px 24px;
+    font-size: 14px;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+    text-align: center;
+    min-width: 300px;
+    transition: all 0.3s;
+  }
+  .step-info .step-name {
+    font-weight: 600;
+    color: #63b3ed;
+  }
+  .step-info .step-desc {
+    font-size: 12px;
+    color: #a0aec0;
+    margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="title-bar">
+  <h1>SGA Agent Flow</h1>
+  <p>Agent Execution Pipeline Visualization</p>
+</div>
+
+<div class="step-info" id="stepInfo">
+  <div class="step-name" id="stepName">Ready</div>
+  <div class="step-desc" id="stepDesc">Click Play to start animation</div>
+</div>
+
+<div class="legend">
+  <h3>Legend</h3>
+  <div class="legend-item"><div class="legend-dot" style="background:#63b3ed"></div> Init / I/O</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f6ad55"></div> LLM Call</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#68d391"></div> Tool Pipeline</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#fc8181"></div> Human Interaction</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#b794f4"></div> Memory / Context</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f687b3"></div> Decision</div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<div class="controls">
+  <button id="btnPlay" class="active" onclick="togglePlay()">⏸ Pause</button>
+  <button onclick="resetAnim()">↻ Reset</button>
+  <button onclick="changeSpeed(-0.5)">Slow</button>
+  <button onclick="changeSpeed(0.5)">Fast</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas')
+const ctx = canvas.getContext('2d')
+let W, H, dpr
+
+function resize() {
+  dpr = window.devicePixelRatio || 1
+  W = window.innerWidth
+  H = window.innerHeight
+  canvas.width = W * dpr
+  canvas.height = H * dpr
+  canvas.style.width = W + 'px'
+  canvas.style.height = H + 'px'
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+}
+resize()
+window.addEventListener('resize', resize)
+
+const COLORS = {
+  init: '#63b3ed',
+  llm: '#f6ad55',
+  tool: '#68d391',
+  human: '#fc8181',
+  memory: '#b794f4',
+  decision: '#f687b3',
+  bg: '#0a0e1a',
+  line: 'rgba(255,255,255,0.12)',
+  lineActive: 'rgba(99,179,237,0.6)',
+  text: '#e0e6f0',
+  textDim: '#718096',
+}
+
+const nodes = [
+  { id: 'start', label: 'API Request', sub: 'POST /messages', color: COLORS.init, x: 0.5, y: 0.04 },
+  { id: 'session', label: 'Session Init', sub: 'Create / Load Session', color: COLORS.init, x: 0.5, y: 0.10 },
+  { id: 'memory', label: 'Memory Context', sub: 'Build context + working set', color: COLORS.memory, x: 0.22, y: 0.17 },
+  { id: 'system_prompt', label: 'System Prompt', sub: 'Agent def + memory + thinking', color: COLORS.memory, x: 0.78, y: 0.17 },
+  { id: 'loop_start', label: 'Agent Loop', sub: 'while turn < maxTurns', color: COLORS.decision, x: 0.5, y: 0.25 },
+  { id: 'llm_call', label: 'LLM Provider', sub: 'Stream / Non-stream call', color: COLORS.llm, x: 0.5, y: 0.35 },
+  { id: 'stream', label: 'Stream Chunks', sub: 'SSE: text_delta / thinking_delta', color: COLORS.llm, x: 0.78, y: 0.35 },
+  { id: 'response', label: 'Parse Response', sub: 'Content blocks + usage', color: COLORS.llm, x: 0.5, y: 0.44 },
+  { id: 'has_tools', label: 'Tool Calls?', sub: 'stopReason check', color: COLORS.decision, x: 0.5, y: 0.53 },
+  { id: 'no_tools', label: 'Final Response', sub: 'Return content to user', color: COLORS.init, x: 0.82, y: 0.53 },
+  { id: 'tool_validate', label: 'Validate Input', sub: 'Schema validation', color: COLORS.tool, x: 0.22, y: 0.62 },
+  { id: 'tool_permission', label: 'Check Permission', sub: 'allow / ask / deny', color: COLORS.tool, x: 0.22, y: 0.71 },
+  { id: 'approval', label: 'Approval Required', sub: 'SSE → User decision', color: COLORS.human, x: 0.08, y: 0.80 },
+  { id: 'user_approve', label: 'User Decision', sub: 'allow / deny / modify', color: COLORS.human, x: 0.08, y: 0.89 },
+  { id: 'tool_execute', label: 'Execute Tool', sub: 'tool.call(input, ctx)', color: COLORS.tool, x: 0.38, y: 0.80 },
+  { id: 'tool_result', label: 'Tool Result', sub: 'Append to messages', color: COLORS.tool, x: 0.5, y: 0.89 },
+  { id: 'human_input', label: 'Human Input', sub: 'AskUserQuestion tool', color: COLORS.human, x: 0.65, y: 0.80 },
+  { id: 'loop_back', label: 'Next Turn', sub: 'Continue agent loop', color: COLORS.decision, x: 0.5, y: 0.96 },
+]
+
+const edges = [
+  { from: 'start', to: 'session' },
+  { from: 'session', to: 'memory' },
+  { from: 'session', to: 'system_prompt' },
+  { from: 'memory', to: 'loop_start' },
+  { from: 'system_prompt', to: 'loop_start' },
+  { from: 'loop_start', to: 'llm_call' },
+  { from: 'llm_call', to: 'stream', label: 'stream=true' },
+  { from: 'llm_call', to: 'response', label: 'stream=false' },
+  { from: 'stream', to: 'response' },
+  { from: 'response', to: 'has_tools' },
+  { from: 'has_tools', to: 'no_tools', label: 'No' },
+  { from: 'has_tools', to: 'tool_validate', label: 'Yes' },
+  { from: 'tool_validate', to: 'tool_permission' },
+  { from: 'tool_permission', to: 'approval', label: 'ask' },
+  { from: 'tool_permission', to: 'tool_execute', label: 'allow' },
+  { from: 'approval', to: 'user_approve' },
+  { from: 'user_approve', to: 'tool_execute', label: 'allow' },
+  { from: 'user_approve', to: 'tool_result', label: 'deny' },
+  { from: 'tool_execute', to: 'tool_result' },
+  { from: 'tool_execute', to: 'human_input', label: 'AskUser' },
+  { from: 'human_input', to: 'tool_result' },
+  { from: 'tool_result', to: 'loop_back' },
+  { from: 'loop_back', to: 'loop_start' },
+  { from: 'no_tools', to: 'loop_back' },
+]
+
+const animSteps = [
+  { node: 'start', name: 'API Request', desc: 'User sends POST /api/v1/sessions/{id}/messages' },
+  { node: 'session', name: 'Session Init', desc: 'Load or create session, resolve agent definition' },
+  { node: 'memory', name: 'Memory Context', desc: 'Build context from memory manager + working set' },
+  { node: 'system_prompt', name: 'System Prompt', desc: 'Compose: agent prompt + memory + thinking strategy' },
+  { node: 'loop_start', name: 'Agent Loop Start', desc: 'Enter while loop (maxTurns=50)' },
+  { node: 'llm_call', name: 'LLM Provider Call', desc: 'Call provider.createMessage / createStreamingMessage' },
+  { node: 'stream', name: 'Stream Processing', desc: 'Consume SSE chunks: text_delta, thinking_delta, tool_use_start' },
+  { node: 'response', name: 'Parse Response', desc: 'Extract content blocks + accumulate usage metrics' },
+  { node: 'has_tools', name: 'Decision: Tool Calls?', desc: 'Check if response contains tool_use blocks' },
+  { node: 'tool_validate', name: 'Tool Validation', desc: 'tool.validateInput() — schema check' },
+  { node: 'tool_permission', name: 'Permission Check', desc: 'tool.checkPermissions() → allow / ask / deny' },
+  { node: 'approval', name: 'Approval Required', desc: 'SSE event: approval_required → session.waiting_input' },
+  { node: 'user_approve', name: 'User Decision', desc: 'POST /input → allow / deny / modify input' },
+  { node: 'tool_execute', name: 'Tool Execution', desc: 'tool.call(input, context) — execute the actual tool' },
+  { node: 'human_input', name: 'Human Input', desc: 'AskUserQuestion tool → SSE human_input_required' },
+  { node: 'tool_result', name: 'Tool Result', desc: 'Append tool_result message, emit onProgress event' },
+  { node: 'no_tools', name: 'No Tool Calls', desc: 'stopReason=end_turn → final response' },
+  { node: 'loop_back', name: 'Next Turn', desc: 'Loop back or return final result + usage' },
+]
+
+let playing = true
+let speed = 1
+let time = 0
+let currentStepIdx = 0
+let stepProgress = 0
+let activeNodes = new Set()
+let activeEdges = new Set()
+let particles = []
+let nodePositions = {}
+
+function getNodePos(node) {
+  return { x: node.x * W, y: node.y * H }
+}
+
+function getNodeById(id) {
+  return nodes.find(n => n.id === id)
+}
+
+function lerp(a, b, t) { return a + (b - a) * t }
+
+function easeInOut(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t }
+
+function drawRoundedRect(x, y, w, h, r) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
+  ctx.lineTo(x + w, y + h - r)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
+  ctx.lineTo(x + r, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
+  ctx.lineTo(x, y + r)
+  ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
+}
+
+function drawDiamond(cx, cy, w, h) {
+  ctx.beginPath()
+  ctx.moveTo(cx, cy - h / 2)
+  ctx.lineTo(cx + w / 2, cy)
+  ctx.lineTo(cx, cy + h / 2)
+  ctx.lineTo(cx - w / 2, cy)
+  ctx.closePath()
+}
+
+function isDecisionNode(node) {
+  return node.color === COLORS.decision
+}
+
+function drawNode(node, glow, pulse) {
+  const pos = getNodePos(node)
+  const nw = isDecisionNode(node) ? 130 : 150
+  const nh = isDecisionNode(node) ? 52 : 48
+  const x = pos.x - nw / 2
+  const y = pos.y - nh / 2
+
+  nodePositions[node.id] = { x: pos.x, y: pos.y, w: nw, h: nh }
+
+  ctx.save()
+
+  if (glow > 0) {
+    ctx.shadowColor = node.color
+    ctx.shadowBlur = 20 + pulse * 10
+  }
+
+  if (isDecisionNode(node)) {
+    drawDiamond(pos.x, pos.y, nw, nh)
+  } else {
+    drawRoundedRect(x, y, nw, nh, 10)
+  }
+
+  const alpha = 0.12 + glow * 0.18
+  ctx.fillStyle = node.color + Math.round(alpha * 255).toString(16).padStart(2, '0')
+  ctx.fill()
+
+  ctx.strokeStyle = node.color + Math.round((0.3 + glow * 0.5) * 255).toString(16).padStart(2, '0')
+  ctx.lineWidth = 1.5 + glow * 0.5
+  ctx.stroke()
+
+  ctx.shadowBlur = 0
+
+  ctx.fillStyle = COLORS.text
+  ctx.font = 'bold 12px "Segoe UI", system-ui, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(node.label, pos.x, pos.y - 7)
+
+  ctx.fillStyle = COLORS.textDim
+  ctx.font = '10px "Segoe UI", system-ui, sans-serif'
+  ctx.fillText(node.sub, pos.x, pos.y + 9)
+
+  ctx.restore()
+}
+
+function drawEdge(edge, progress) {
+  const fromNode = getNodeById(edge.from)
+  const toNode = getNodeById(edge.to)
+  if (!fromNode || !toNode) return
+
+  const from = getNodePos(fromNode)
+  const to = getNodePos(toNode)
+
+  ctx.save()
+
+  const isActive = progress > 0
+  ctx.strokeStyle = isActive ? COLORS.lineActive : COLORS.line
+  ctx.lineWidth = isActive ? 1.8 : 1
+
+  if (isActive) {
+    ctx.setLineDash([])
+  } else {
+    ctx.setLineDash([4, 4])
+  }
+
+  const fromH = isDecisionNode(fromNode) ? 26 : 24
+  const toH = isDecisionNode(toNode) ? 26 : 24
+
+  let startX = from.x, startY = from.y + fromH
+  let endX = to.x, endY = to.y - toH
+
+  if (edge.from === 'has_tools' && edge.to === 'no_tools') {
+    startX = from.x + 65
+    startY = from.y
+    endX = to.x - 75
+    endY = to.y
+  } else if (edge.from === 'has_tools' && edge.to === 'tool_validate') {
+    startX = from.x - 65
+    startY = from.y
+    endX = to.x + 75
+    endY = to.y
+  } else if (edge.from === 'tool_permission' && edge.to === 'approval') {
+    startX = from.x - 75
+    startY = from.y
+    endX = to.x + 65
+    endY = to.y
+  } else if (edge.from === 'tool_permission' && edge.to === 'tool_execute') {
+    startX = from.x + 75
+    startY = from.y
+    endX = to.x - 75
+    endY = to.y
+  } else if (edge.from === 'user_approve' && edge.to === 'tool_execute') {
+    startX = from.x + 65
+    startY = from.y
+    endX = to.x - 75
+    endY = to.y
+  } else if (edge.from === 'user_approve' && edge.to === 'tool_result') {
+    startX = from.x + 65
+    startY = from.y
+    endX = to.x - 75
+    endY = to.y
+  } else if (edge.from === 'tool_execute' && edge.to === 'human_input') {
+    startX = from.x + 75
+    startY = from.y
+    endX = to.x - 65
+    endY = to.y
+  } else if (edge.from === 'loop_back' && edge.to === 'loop_start') {
+    startX = from.x + 75
+    startY = from.y - 24
+    endX = to.x + 75
+    endY = to.y + 24
+  } else if (edge.from === 'no_tools' && edge.to === 'loop_back') {
+    startX = from.x
+    startY = from.y + 24
+    endX = to.x + 75
+    endY = to.y - 24
+  } else if (edge.from === 'session' && edge.to === 'memory') {
+    startX = from.x - 50
+    startY = from.y + 24
+    endX = to.x + 75
+    endY = to.y - 24
+  } else if (edge.from === 'session' && edge.to === 'system_prompt') {
+    startX = from.x + 50
+    startY = from.y + 24
+    endX = to.x - 75
+    endY = to.y - 24
+  } else if (edge.from === 'memory' && edge.to === 'loop_start') {
+    startX = from.x + 50
+    startY = from.y + 24
+    endX = to.x - 50
+    endY = to.y - 24
+  } else if (edge.from === 'system_prompt' && edge.to === 'loop_start') {
+    startX = from.x - 50
+    startY = from.y + 24
+    endX = to.x + 50
+    endY = to.y - 24
+  } else if (edge.from === 'llm_call' && edge.to === 'stream') {
+    startX = from.x + 75
+    startY = from.y
+    endX = to.x - 75
+    endY = to.y
+  } else if (edge.from === 'llm_call' && edge.to === 'response') {
+    startX = from.x
+    startY = from.y + 24
+    endX = to.x
+    endY = to.y - 24
+  } else if (edge.from === 'stream' && edge.to === 'response') {
+    startX = from.x - 50
+    startY = from.y + 24
+    endX = to.x + 50
+    endY = to.y - 24
+  }
+
+  ctx.beginPath()
+  ctx.moveTo(startX, startY)
+
+  const midX = (startX + endX) / 2
+  const midY = (startY + endY) / 2
+  const dx = endX - startX
+  const dy = endY - startY
+
+  if (Math.abs(dx) > Math.abs(dy) * 0.5) {
+    ctx.lineTo(endX, endY)
+  } else {
+    const cp1x = startX
+    const cp1y = startY + dy * 0.3
+    const cp2x = endX
+    const cp2y = endY - dy * 0.3
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, endX, endY)
+  }
+
+  ctx.stroke()
+
+  if (isActive && progress > 0.3) {
+    const t = Math.min(1, progress)
+    let px, py
+    if (Math.abs(dx) > Math.abs(dy) * 0.5) {
+      px = lerp(startX, endX, t)
+      py = lerp(startY, endY, t)
+    } else {
+      const cp1x = startX
+      const cp1y = startY + dy * 0.3
+      const cp2x = endX
+      const cp2y = endY - dy * 0.3
+      const u = 1 - t
+      px = u*u*u*startX + 3*u*u*t*cp1x + 3*u*t*t*cp2x + t*t*t*endX
+      py = u*u*u*startY + 3*u*u*t*cp1y + 3*u*t*t*cp2y + t*t*t*endY
+    }
+
+    const fromColor = fromNode.color
+    ctx.beginPath()
+    ctx.arc(px, py, 4, 0, Math.PI * 2)
+    ctx.fillStyle = fromColor
+    ctx.shadowColor = fromColor
+    ctx.shadowBlur = 12
+    ctx.fill()
+    ctx.shadowBlur = 0
+  }
+
+  if (edge.label) {
+    const labelX = (startX + endX) / 2
+    const labelY = (startY + endY) / 2 - 8
+    ctx.font = '9px "Segoe UI", system-ui, sans-serif'
+    ctx.fillStyle = isActive ? COLORS.text : COLORS.textDim
+    ctx.textAlign = 'center'
+    ctx.fillText(edge.label, labelX, labelY)
+  }
+
+  const angle = Math.atan2(endY - startY, endX - startX)
+  const arrowLen = 6
+  ctx.setLineDash([])
+  ctx.beginPath()
+  ctx.moveTo(endX, endY)
+  ctx.lineTo(endX - arrowLen * Math.cos(angle - 0.4), endY - arrowLen * Math.sin(angle - 0.4))
+  ctx.moveTo(endX, endY)
+  ctx.lineTo(endX - arrowLen * Math.cos(angle + 0.4), endY - arrowLen * Math.sin(angle + 0.4))
+  ctx.strokeStyle = isActive ? COLORS.lineActive : COLORS.line
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+
+  ctx.restore()
+}
+
+function drawBackground() {
+  ctx.fillStyle = COLORS.bg
+  ctx.fillRect(0, 0, W, H)
+
+  const gridSize = 40
+  ctx.strokeStyle = 'rgba(255,255,255,0.02)'
+  ctx.lineWidth = 1
+  for (let x = 0; x < W; x += gridSize) {
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, H)
+    ctx.stroke()
+  }
+  for (let y = 0; y < H; y += gridSize) {
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(W, y)
+    ctx.stroke()
+  }
+}
+
+let lastTime = performance.now()
+
+function animate(now) {
+  const dt = (now - lastTime) / 1000
+  lastTime = now
+
+  if (playing) {
+    time += dt * speed
+    stepProgress += dt * speed * 0.5
+
+    if (stepProgress >= 1) {
+      stepProgress = 0
+      currentStepIdx = (currentStepIdx + 1) % animSteps.length
+      const step = animSteps[currentStepIdx]
+      activeNodes.add(step.node)
+      document.getElementById('stepName').textContent = step.name
+      document.getElementById('stepDesc').textContent = step.desc
+
+      edges.forEach((e, i) => {
+        if (e.from === step.node) {
+          activeEdges.add(i)
+        }
+      })
+    }
+  }
+
+  const pulse = Math.sin(time * 3) * 0.5 + 0.5
+
+  drawBackground()
+
+  edges.forEach((edge, i) => {
+    const isActive = activeEdges.has(i)
+    const progress = isActive ? stepProgress : 0
+    drawEdge(edge, progress)
+  })
+
+  nodes.forEach(node => {
+    const isActive = activeNodes.has(node.id)
+    const isCurrentStep = animSteps[currentStepIdx]?.node === node.id
+    const glow = isCurrentStep ? (0.6 + pulse * 0.4) : (isActive ? 0.3 : 0)
+    drawNode(node, glow, pulse)
+  })
+
+  requestAnimationFrame(animate)
+}
+
+function togglePlay() {
+  playing = !playing
+  const btn = document.getElementById('btnPlay')
+  btn.textContent = playing ? '⏸ Pause' : '▶ Play'
+  btn.classList.toggle('active', playing)
+}
+
+function resetAnim() {
+  time = 0
+  currentStepIdx = 0
+  stepProgress = 0
+  activeNodes.clear()
+  activeEdges.clear()
+  document.getElementById('stepName').textContent = 'Ready'
+  document.getElementById('stepDesc').textContent = 'Click Play to start animation'
+}
+
+function changeSpeed(delta) {
+  speed = Math.max(0.25, Math.min(3, speed + delta))
+}
+
+requestAnimationFrame(animate)
+</script>
+</body>
+</html>

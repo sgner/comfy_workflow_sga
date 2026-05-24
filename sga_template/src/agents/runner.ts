@@ -1,4 +1,4 @@
-import type { Message, ModelAlias, UsageMetrics, PermissionMode, ThinkingEffort } from '../core/types.js'
+import type { Message, ModelAlias, UsageMetrics, PermissionMode, ThinkingEffort, AgentStreamEvent, ToolProgressData } from '../core/types.js'
 import type { AgentDefinition } from './definition.js'
 import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { SystemPrompt } from '../context/system-prompt.js'
@@ -7,6 +7,9 @@ import type { ToolExecutionPipeline, ToolOrchestrationConfig } from '../tools/ex
 import { filterToolsForAgent } from '../tools/base.js'
 import { ALL_AGENT_DISALLOWED_TOOLS } from './definition.js'
 import { createDefaultPipeline, orchestrateToolCalls, ToolExecutionError } from '../tools/execution.js'
+import { createPermissionChecker, createDefaultClassifier } from '../permissions/index.js'
+import { HookRegistry, HookExecutor, loadHookConfig } from '../hooks/index.js'
+import type { HookExecutionContext } from '../hooks/index.js'
 import { createLogger } from '../utils/logger.js'
 import { getMemoryManager } from '../memory/manager.js'
 import { getWorkingSet } from '../memory/working-set-registry.js'
@@ -28,6 +31,12 @@ export interface ApprovalResponse {
   decision: 'allow' | 'deny'
   updatedInput?: Record<string, unknown>
   reason?: string
+  permissionUpdate?: {
+    type: 'always_allow' | 'always_deny' | 'allow_pattern'
+    toolName: string
+    pattern?: string
+    reason?: string
+  }
 }
 
 export interface HumanInputEvent {
@@ -49,10 +58,11 @@ export interface AgentRunOptions {
   maxBudgetUsd?: number
   signal?: AbortSignal
   stream?: boolean
-  onProgress?: (event: unknown) => void
+  onProgress?: (event: AgentStreamEvent) => void
   parentContext?: ToolUseContext
   pipeline?: ToolExecutionPipeline
   orchestrationConfig?: ToolOrchestrationConfig
+  permissionMode?: PermissionMode
   requestApproval?: (event: ApprovalEvent) => Promise<ApprovalResponse>
   requestHumanInput?: (event: HumanInputEvent) => Promise<string>
 }
@@ -218,11 +228,34 @@ async function executeAgentLoop(
 
   const useStream = options.stream ?? false
 
+  let hookRegistry: HookRegistry | undefined
+  let hookExecutor: HookExecutor | undefined
+  try {
+    const hookConfig = loadHookConfig()
+    if (hookConfig.hooks.length > 0) {
+      hookRegistry = new HookRegistry()
+      for (const hookDef of hookConfig.hooks) {
+        hookRegistry.register(hookDef)
+      }
+      hookExecutor = new HookExecutor(hookRegistry)
+
+      const sessionHookCtx: HookExecutionContext = {
+        sessionId: options.parentContext?.agentId,
+        cwd: process.cwd(),
+      }
+      await hookExecutor.execute('SessionStart', sessionHookCtx)
+    }
+  } catch (error) {
+    logger.debug(`Hook system initialization skipped: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   while (turnCount < maxTurns) {
     turnCount++
     logger.debug(`Turn ${turnCount} starting`)
 
-    const turnStartUsage = { ...usage }
+    if (options.onProgress) {
+      options.onProgress({ type: 'turn_start', turnCount })
+    }
 
     const providerMessages = allMessages.map(m => ({
       role: m.role as 'user' | 'assistant',
@@ -256,6 +289,10 @@ async function executeAgentLoop(
     let response: ProviderResponse
     try {
       logger.debug(`Calling provider ${provider.name} with model ${resolvedModel}, stream=${useStream}`)
+
+      if (options.onProgress) {
+        options.onProgress({ type: 'api_call_start', turnCount })
+      }
 
       if (useStream) {
         response = await consumeStream(provider, requestOptions, options.onProgress)
@@ -312,15 +349,7 @@ async function executeAgentLoop(
     if (toolUseBlocks.length === 0) {
       logger.info(`No tool calls, ending loop at turn ${turnCount}`)
       if (options.onProgress) {
-        const turnDelta = {
-          inputTokens: usage.inputTokens - turnStartUsage.inputTokens,
-          outputTokens: usage.outputTokens - turnStartUsage.outputTokens,
-          cacheReadInputTokens: usage.cacheReadInputTokens - turnStartUsage.cacheReadInputTokens,
-          cacheCreationInputTokens: usage.cacheCreationInputTokens - turnStartUsage.cacheCreationInputTokens,
-          totalTokens: usage.totalTokens - turnStartUsage.totalTokens,
-          totalCostUsd: usage.totalCostUsd - turnStartUsage.totalCostUsd,
-        }
-        options.onProgress({ type: 'turn_end', turnCount, usage: turnDelta })
+        options.onProgress({ type: 'turn_end', turnCount, usage })
       }
       break
     }
@@ -354,6 +383,8 @@ async function executeAgentLoop(
           : undefined,
       }),
       setAppState: () => {},
+      permissionMode: options.permissionMode ?? 'default',
+      permissionChecker: createPermissionChecker(options.permissionMode ?? 'default', undefined, createDefaultClassifier()),
     }
 
     const orchestratedResults = await orchestrateToolCalls(
@@ -362,6 +393,17 @@ async function executeAgentLoop(
       toolUseContext,
       pipeline,
       orchestrationConfig,
+      options.onProgress
+        ? (toolUseId: string, data: ToolProgressData) => {
+            const toolCall = toolCalls.find(tc => tc.id === toolUseId)
+            options.onProgress!({
+              type: 'tool_progress',
+              toolName: toolCall?.name ?? 'unknown',
+              toolUseId,
+              data,
+            })
+          }
+        : undefined,
     )
 
     for (const { id, name, result: execResult } of orchestratedResults) {
@@ -385,8 +427,17 @@ async function executeAgentLoop(
             const tool = tools.find(t => t.name === name)
             const effectiveInput = userDecision.updatedInput ?? execResult.input as Record<string, unknown>
 
+            if (userDecision.permissionUpdate) {
+              applyPermissionUpdate(userDecision.permissionUpdate, toolUseContext)
+            }
+
             try {
-              const result = await tool!.call(effectiveInput, toolUseContext)
+              const toolProgress = options.onProgress
+                ? (data: ToolProgressData) => {
+                    options.onProgress!({ type: 'tool_progress', toolName: name, toolUseId: id, data })
+                  }
+                : undefined
+              const result = await tool!.call(effectiveInput, toolUseContext, toolProgress)
               const resultStr = typeof result === 'string' ? result : JSON.stringify(result)
               allMessages.push({
                 id: `result-${id}`,
@@ -395,7 +446,7 @@ async function executeAgentLoop(
                 timestamp: Date.now(),
               })
               if (options.onProgress) {
-                options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: resultStr, isError: false } })
+                options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: resultStr, isError: false } })
               }
             } catch (callError) {
               const msg = callError instanceof Error ? callError.message : String(callError)
@@ -406,7 +457,7 @@ async function executeAgentLoop(
                 timestamp: Date.now(),
               })
               if (options.onProgress) {
-                options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: msg, isError: true } })
+                options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: msg, isError: true } })
               }
             }
           } else {
@@ -418,7 +469,7 @@ async function executeAgentLoop(
               timestamp: Date.now(),
             })
             if (options.onProgress) {
-              options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: denyMsg, isError: true } })
+              options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: denyMsg, isError: true } })
             }
           }
         } catch (approvalError) {
@@ -448,9 +499,6 @@ async function executeAgentLoop(
           }],
           timestamp: Date.now(),
         })
-        if (options.onProgress) {
-          options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: errMsg, isError: true } })
-        }
       } else {
         const resultStr = typeof execResult.output === 'string'
           ? execResult.output
@@ -467,22 +515,23 @@ async function executeAgentLoop(
           }],
           timestamp: Date.now(),
         })
-        if (options.onProgress) {
-          options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: resultStr, isError: false } })
-        }
       }
     }
+  }
 
-    if (options.onProgress) {
-      const turnDelta = {
-        inputTokens: usage.inputTokens - turnStartUsage.inputTokens,
-        outputTokens: usage.outputTokens - turnStartUsage.outputTokens,
-        cacheReadInputTokens: usage.cacheReadInputTokens - turnStartUsage.cacheReadInputTokens,
-        cacheCreationInputTokens: usage.cacheCreationInputTokens - turnStartUsage.cacheCreationInputTokens,
-        totalTokens: usage.totalTokens - turnStartUsage.totalTokens,
-        totalCostUsd: usage.totalCostUsd - turnStartUsage.totalCostUsd,
+  if (options.onProgress) {
+    options.onProgress({ type: 'turn_end', turnCount, usage })
+  }
+
+  if (hookExecutor) {
+    try {
+      const stopHookCtx: HookExecutionContext = {
+        sessionId: options.parentContext?.agentId,
+        cwd: process.cwd(),
       }
-      options.onProgress({ type: 'turn_end', turnCount, usage: turnDelta })
+      await hookExecutor.execute('Stop', stopHookCtx)
+    } catch (error) {
+      logger.debug(`Stop hook execution failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -523,13 +572,15 @@ function createDefaultToolUseContext(tools: Tool[]): ToolUseContext {
     abortController: new AbortController(),
     getAppState: () => ({}),
     setAppState: () => {},
+    permissionMode: 'default',
+    permissionChecker: createPermissionChecker('default', undefined, createDefaultClassifier()),
   }
 }
 
 async function consumeStream(
   provider: LLMProvider,
   options: ProviderRequestOptions,
-  onProgress?: (event: unknown) => void,
+  onProgress?: (event: AgentStreamEvent) => void,
 ): Promise<ProviderResponse> {
   const contentBlocks: ProviderContentBlock[] = []
   let currentTextBlock: { type: 'text'; text: string } | null = null
@@ -545,28 +596,6 @@ async function consumeStream(
       case 'stream_chunk': {
         if (chunk.contentBlock) {
           if (chunk.contentBlock.type === 'tool_use') {
-            if (currentToolUseBlock) {
-              let parsedInput: Record<string, unknown> = {}
-              try {
-                parsedInput = JSON.parse(currentToolUseBlock.input) as Record<string, unknown>
-              } catch {
-                parsedInput = {}
-              }
-              contentBlocks.push({
-                type: 'tool_use',
-                id: currentToolUseBlock.id,
-                name: currentToolUseBlock.name,
-                input: parsedInput,
-              })
-              if (onProgress) {
-                onProgress({
-                  type: 'tool_use_input_complete',
-                  toolName: currentToolUseBlock.name,
-                  toolUseId: currentToolUseBlock.id,
-                  toolInput: parsedInput,
-                })
-              }
-            }
             currentToolUseBlock = {
               type: 'tool_use',
               id: chunk.contentBlock.id ?? '',
@@ -576,12 +605,10 @@ async function consumeStream(
             if (onProgress) {
               onProgress({
                 type: 'tool_use_start',
-                toolName: chunk.contentBlock.name,
-                toolUseId: chunk.contentBlock.id,
+                toolName: chunk.contentBlock.name ?? '',
+                toolUseId: chunk.contentBlock.id ?? '',
               })
             }
-          } else if (chunk.contentBlock.type === 'text' && !currentTextBlock) {
-            currentTextBlock = { type: 'text', text: chunk.contentBlock.text ?? '' }
           }
         }
 
@@ -602,9 +629,6 @@ async function consumeStream(
             if (currentToolUseBlock) {
               currentToolUseBlock.input += chunk.delta.partialJson ?? ''
             }
-            if (chunk.delta.stopReason) {
-              stopReason = chunk.delta.stopReason
-            }
           } else if (chunk.delta.type === 'message_delta') {
             if (chunk.delta.stopReason) {
               stopReason = chunk.delta.stopReason
@@ -613,8 +637,8 @@ async function consumeStream(
         }
 
         if (chunk.usage) {
-          if (chunk.usage.inputTokens) inputTokens = chunk.usage.inputTokens
-          if (chunk.usage.outputTokens) outputTokens = chunk.usage.outputTokens
+          if (chunk.usage.inputTokens != null) inputTokens = chunk.usage.inputTokens
+          if (chunk.usage.outputTokens != null) outputTokens = chunk.usage.outputTokens
         }
         break
       }
@@ -639,8 +663,8 @@ async function consumeStream(
             if (onProgress) {
               onProgress({
                 type: 'tool_use_start',
-                toolName: chunk.contentBlock.name,
-                toolUseId: chunk.contentBlock.id,
+                toolName: chunk.contentBlock.name ?? '',
+                toolUseId: chunk.contentBlock.id ?? '',
               })
             }
           }
@@ -686,14 +710,6 @@ async function consumeStream(
             name: currentToolUseBlock.name,
             input: parsedInput,
           })
-          if (onProgress) {
-            onProgress({
-              type: 'tool_use_input_complete',
-              toolName: currentToolUseBlock.name,
-              toolUseId: currentToolUseBlock.id,
-              toolInput: parsedInput,
-            })
-          }
           currentToolUseBlock = null
         }
         break
@@ -729,14 +745,6 @@ async function consumeStream(
       name: currentToolUseBlock.name,
       input: parsedInput,
     })
-    if (onProgress) {
-      onProgress({
-        type: 'tool_use_input_complete',
-        toolName: currentToolUseBlock.name,
-        toolUseId: currentToolUseBlock.id,
-        toolInput: parsedInput,
-      })
-    }
     currentToolUseBlock = null
   }
 
@@ -751,5 +759,51 @@ async function consumeStream(
       cacheCreationInputTokens,
       cacheReadInputTokens,
     },
+  }
+}
+
+function applyPermissionUpdate(
+  update: {
+    type: 'always_allow' | 'always_deny' | 'allow_pattern'
+    toolName: string
+    pattern?: string
+    reason?: string
+  },
+  context: ToolUseContext,
+): void {
+  const checker = context.permissionChecker
+  if (!checker) {
+    logger.warn('Cannot apply permission update: no permission checker in context')
+    return
+  }
+
+  switch (update.type) {
+    case 'always_allow':
+      checker.addRule({
+        tool: update.toolName,
+        behavior: 'allow',
+        reason: update.reason ?? 'User approved: always allow',
+      })
+      logger.info(`Permission update: always allow ${update.toolName}`)
+      break
+
+    case 'always_deny':
+      checker.addRule({
+        tool: update.toolName,
+        behavior: 'deny',
+        reason: update.reason ?? 'User denied: always deny',
+      })
+      logger.info(`Permission update: always deny ${update.toolName}`)
+      break
+
+    case 'allow_pattern':
+      checker.addRule({
+        tool: update.toolName,
+        pattern: update.pattern,
+        behavior: 'allow',
+        reason: update.reason ?? 'User approved pattern',
+      })
+      logger.info(`Permission update: allow ${update.toolName} pattern=${update.pattern ?? '*'}`)
+      break
   }
 }

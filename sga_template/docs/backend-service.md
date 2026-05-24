@@ -157,6 +157,15 @@ curl -X POST http://localhost:3000/api/v1/sessions/{sessionId}/messages \
 | `error` | 错误事件 |
 | `done` | 全部完成 |
 
+### 流式模式 Usage 统计
+
+流式模式下，`done` 事件的 `data.usage` 字段包含完整的 Token 用量统计。注意事项：
+
+- **OpenAI 兼容供应商**：需支持 `stream_options: { include_usage: true }`，否则 usage 可能为 0
+- **Anthropic**：usage 数据分散在 `message_start` 和 `message_delta` 事件中，框架自动累积
+- **多轮对话**：usage 为所有轮次的累积值
+- 可通过 `GET /api/v1/sessions/:id/usage` 随时查询最新用量
+
 ### SSE 事件数据格式
 
 每个 SSE 事件的格式为：
@@ -228,6 +237,53 @@ data: {"type": "done", "data": null, "sessionId": "sess-xxx"}
 | `agentType` | `string` | 无 | 指定 Agent 类型 |
 | `mcpServers` | `object[]` | 无 | MCP 服务器配置列表 |
 | `providerName` | `string` | 无 | 供应商名称（需预先配置，不指定则使用默认供应商） |
+
+### 添加供应商配置
+
+> 📄 相关源文件：`src/providers/provider-store.ts`（`normalizeProviderConfig` 函数）
+
+通过 `POST /api/v1/providers` 添加供应商时，框架支持多种配置格式：
+
+**标准格式（camelCase）**：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "deepseek",
+    "apiKey": "sk-xxx",
+    "baseUrl": "https://api.deepseek.com/v1",
+    "defaultModel": "deepseek-chat",
+    "setAsDefault": true
+  }'
+```
+
+**兼容格式（snake_case + custom_config）**：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "zz",
+    "api_key": "sk-xxx",
+    "base_url": "https://ai.t8star.org",
+    "default_model": "gpt-5.4",
+    "is_default": true,
+    "custom_config": {
+      "endpoint": "/v1/chat/completions",
+      "headers": "{\"Authorization\": \"Bearer $apiKey\"}"
+    },
+    "model_configs": {
+      "gpt-5.4": {
+        "id": "gpt-5.4",
+        "supportsToolUse": true,
+        "supportsStreaming": true
+      }
+    }
+  }'
+```
+
+> 框架自动归一化 snake_case 字段、`custom_config`、`$apiKey` 占位符等。详见 [多供应商 LLM 接入 - 配置归一化](multi-provider.md#配置归一化)。
 
 ## 相关文档
 

@@ -25,6 +25,16 @@ import {
   handleRemoveProvider,
   handleSetDefaultProvider,
   handleHealth,
+  handleGetPermissionRules,
+  handleUpdatePermissionMode,
+  handleAddPermissionRule,
+  handleRemovePermissionRule,
+  handleCheckPermission,
+  handleListHooks,
+  handleAddHook,
+  handleRemoveHook,
+  handleTestHook,
+  handleClassifyPermission,
 } from './routes.js'
 import {
   handleListSkills,
@@ -104,6 +114,19 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.delete(`${base}/tasks/:taskId`, handleKillTask)
   app.get(`${base}/tasks/notifications`, handleTaskNotifications)
   app.get(`${base}/tools`, handleListTools)
+
+  app.get(`${base}/permissions/rules`, handleGetPermissionRules)
+  app.put(`${base}/permissions/mode`, handleUpdatePermissionMode)
+  app.post(`${base}/permissions/rules`, handleAddPermissionRule)
+  app.delete(`${base}/permissions/rules`, handleRemovePermissionRule)
+  app.post(`${base}/permissions/check`, handleCheckPermission)
+
+  app.get(`${base}/hooks`, handleListHooks)
+  app.post(`${base}/hooks`, handleAddHook)
+  app.delete(`${base}/hooks`, handleRemoveHook)
+  app.post(`${base}/hooks/test`, handleTestHook)
+
+  app.post(`${base}/permissions/classify`, handleClassifyPermission)
 
   app.get(`${base}/providers`, handleListConfiguredProviders)
   app.post(`${base}/providers`, handleAddProvider)

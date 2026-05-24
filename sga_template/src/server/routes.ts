@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 import type { Session, CreateSessionRequest, SendMessageRequest, SendMessageResponse, StreamEventPayload, UserInputRequest } from './session.js'
-import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput } from './session.js'
-import type { Message } from '../core/types.js'
+import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput, formatSSE } from './session.js'
+import type { Message, AgentStreamEvent } from '../core/types.js'
 import type { PendingAction, UserApprovalResponse, UserInputResponse, SuspendedContext } from './interaction.js'
 import { createLogger } from '../utils/logger.js'
 import { getSessionStore } from './session-store.js'
@@ -22,6 +22,25 @@ import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultPro
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
 import type { PermissionResult } from '../tools/base.js'
+import {
+  loadPermissionRules,
+  savePermissionRules,
+  addRuleToConfig,
+  removeRuleFromConfig,
+  listRulesFromConfig,
+  ruleFileToRuleSet,
+  createPermissionCheckerFromConfig,
+  createDefaultClassifier,
+} from '../permissions/index.js'
+import type { PermissionRuleFile } from '../permissions/index.js'
+import {
+  loadHookConfig,
+  addHookToConfig,
+  removeHookFromConfig,
+  listHooksFromConfig,
+} from '../hooks/config.js'
+import { HookRegistry, HookExecutor } from '../hooks/executor.js'
+import type { HookEventType, HookExecutionContext } from '../hooks/types.js'
 
 const costTrackers: Map<string, CostTracker> = new Map()
 const pendingResolvers: Map<string, {
@@ -251,6 +270,7 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
           decision: userResponse.decision,
           updatedInput: userResponse.updatedInput,
           reason: userResponse.reason,
+          permissionUpdate: userResponse.permissionUpdate,
         }
       } catch (error) {
         clearSessionWaitingInput(session)
@@ -368,9 +388,9 @@ async function handleStreamResponse(
 
   activeSSEConnections.set(session.id, res)
 
-  const sendEvent = (event: StreamEventPayload) => {
+  const sendEvent = (event: AgentStreamEvent) => {
     try {
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
+      res.write(formatSSE(event))
     } catch {
       // connection closed
     }
@@ -384,6 +404,8 @@ async function handleStreamResponse(
     const agentDef = body.agentType
       ? getAgentDefinitionByName(body.agentType, agentDefs)
       : agentDefs[0]
+
+    sendEvent({ type: 'session_start', sessionId: session.id, model, agentType: body.agentType })
 
     if (!agentDef) {
       sendEvent({ type: 'error', data: 'No agent definition available' })
@@ -411,7 +433,12 @@ async function handleStreamResponse(
 
       sendEvent({
         type: 'approval_required',
-        data: approvalReq,
+        actionId: approvalReq.id,
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        toolCallId: event.toolCallId,
+        message: event.message,
+        suggestions: event.suggestions,
       })
 
       const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
@@ -453,6 +480,7 @@ async function handleStreamResponse(
           decision: userResponse.decision,
           updatedInput: userResponse.updatedInput,
           reason: userResponse.reason,
+          permissionUpdate: userResponse.permissionUpdate,
         }
       } catch (error) {
         clearSessionWaitingInput(session)
@@ -474,7 +502,10 @@ async function handleStreamResponse(
 
       sendEvent({
         type: 'human_input_required',
-        data: inputReq,
+        actionId: inputReq.id,
+        message: event.message,
+        context: event.context,
+        options: event.options,
       })
 
       const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
@@ -531,25 +562,8 @@ async function handleStreamResponse(
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
       stream: true,
-      onProgress: (event: unknown) => {
-        const e = event as { type: string; text?: string; toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; toolCallId?: string; message?: string; suggestions?: string[]; reason?: unknown }
-        switch (e.type) {
-          case 'stream_delta':
-            sendEvent({ type: 'text_delta', data: e.text ?? '' })
-            break
-          case 'thinking_delta':
-            sendEvent({ type: 'thinking_delta', data: e.text ?? '' })
-            break
-          case 'tool_use_start':
-            sendEvent({ type: 'tool_use_start', data: { toolName: e.toolName, toolUseId: e.toolUseId } })
-            break
-          case 'tool_use_result':
-            sendEvent({ type: 'tool_use_result', data: e })
-            break
-          case 'turn_end':
-            sendEvent({ type: 'turn_end', data: e })
-            break
-        }
+      onProgress: (event: AgentStreamEvent) => {
+        sendEvent(event)
       },
       requestApproval,
       requestHumanInput,
@@ -569,7 +583,7 @@ async function handleStreamResponse(
     sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
   } catch (error) {
     getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
-    sendEvent({ type: 'error', data: session.error })
+    sendEvent({ type: 'error', data: session.error ?? 'Unknown error' })
     sendEvent({ type: 'done', data: null })
   }
 
@@ -612,6 +626,7 @@ export function handleUserInput(req: Request, res: Response): void {
       decision: body.decision ?? 'deny',
       updatedInput: body.updatedInput,
       reason: body.reason,
+      permissionUpdate: body.permissionUpdate,
     }
     pendingResolver.resolve(response)
   } else {
@@ -971,7 +986,7 @@ export function handleTaskNotifications(req: Request, res: Response): void {
 
   const handler = (notification: import('../tasks/types.js').TaskNotification) => {
     try {
-      res.write(`data: ${JSON.stringify(notification)}\n\n`)
+      res.write(`event: task_notification\ndata: ${JSON.stringify(notification)}\n\n`)
     } catch {
       // connection closed
     }
@@ -1062,9 +1077,9 @@ export function handleListConfiguredProviders(_req: Request, res: Response): voi
 }
 
 export async function handleAddProvider(req: Request, res: Response): Promise<void> {
-  const config: StoredProviderConfig = req.body
+  const { normalizeProviderConfig, validateProviderConfig } = await import('../providers/provider-store.js')
+  const config = normalizeProviderConfig(req.body as Record<string, unknown>)
 
-  const { validateProviderConfig } = await import('../providers/provider-store.js')
   const validation = validateProviderConfig(config)
 
   if (!validation.valid) {
@@ -1076,7 +1091,7 @@ export async function handleAddProvider(req: Request, res: Response): Promise<vo
     return
   }
 
-  const setAsDefault = req.body.setAsDefault === true
+  const setAsDefault = req.body.setAsDefault === true || req.body.is_default === true
   try {
     const provider = await addProvider(config, setAsDefault)
     res.status(201).json({
@@ -1140,4 +1155,188 @@ function triggerMemoryExtraction(
   extractor.extractMemories(messages).catch(err => {
     logger.warn(`Background memory extraction failed: ${err instanceof Error ? err.message : String(err)}`)
   })
+}
+
+export function handleGetPermissionRules(_req: Request, res: Response): void {
+  const rules = listRulesFromConfig()
+  res.json({ rules })
+}
+
+export function handleUpdatePermissionMode(req: Request, res: Response): void {
+  const { mode } = req.body as { mode: string }
+  const validModes = ['default', 'plan', 'acceptEdits', 'bypassPermissions', 'auto', 'bubble', 'dontAsk']
+  if (!mode || !validModes.includes(mode)) {
+    res.status(400).json({ error: `Invalid permission mode. Valid modes: ${validModes.join(', ')}` })
+    return
+  }
+
+  const ruleFile = loadPermissionRules()
+  ruleFile.mode = mode as PermissionRuleFile['mode']
+  savePermissionRules(ruleFile)
+  res.json({ mode: ruleFile.mode, rules: ruleFile })
+}
+
+export function handleAddPermissionRule(req: Request, res: Response): void {
+  const { tool, pattern, behavior, reason } = req.body as {
+    tool: string
+    pattern?: string
+    behavior: 'allow' | 'deny' | 'ask'
+    reason?: string
+  }
+
+  if (!tool || !behavior) {
+    res.status(400).json({ error: 'tool and behavior are required' })
+    return
+  }
+
+  if (!['allow', 'deny', 'ask'].includes(behavior)) {
+    res.status(400).json({ error: 'behavior must be one of: allow, deny, ask' })
+    return
+  }
+
+  addRuleToConfig({ tool, pattern, behavior, reason })
+  const rules = listRulesFromConfig()
+  res.json({ rules })
+}
+
+export function handleRemovePermissionRule(req: Request, res: Response): void {
+  const { tool, pattern, behavior } = req.body as {
+    tool: string
+    pattern?: string
+    behavior: 'allow' | 'deny' | 'ask'
+  }
+
+  if (!tool || !behavior) {
+    res.status(400).json({ error: 'tool and behavior are required' })
+    return
+  }
+
+  removeRuleFromConfig(behavior, tool, pattern)
+  const rules = listRulesFromConfig()
+  res.json({ rules })
+}
+
+export function handleCheckPermission(req: Request, res: Response): void {
+  const { toolName, input } = req.body as { toolName: string; input?: Record<string, unknown> }
+
+  if (!toolName) {
+    res.status(400).json({ error: 'toolName is required' })
+    return
+  }
+
+  const checker = createPermissionCheckerFromConfig()
+  const result = checker.check(toolName, input)
+  res.json({ result })
+}
+
+export function handleListHooks(_req: Request, res: Response): void {
+  const hooks = listHooksFromConfig()
+  res.json({ hooks })
+}
+
+export function handleAddHook(req: Request, res: Response): void {
+  const { event, matcher, command, once, timeout } = req.body as {
+    event: string
+    matcher?: string
+    command: string
+    once?: boolean
+    timeout?: number
+  }
+
+  const validEvents = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'Stop', 'TaskCompleted', 'SessionEnd']
+  if (!event || !validEvents.includes(event)) {
+    res.status(400).json({ error: `event is required and must be one of: ${validEvents.join(', ')}` })
+    return
+  }
+  if (!command || typeof command !== 'string') {
+    res.status(400).json({ error: 'command is required and must be a string' })
+    return
+  }
+
+  addHookToConfig({
+    event: event as HookEventType,
+    matcher,
+    command,
+    once,
+    timeout,
+  })
+
+  const hooks = listHooksFromConfig()
+  res.json({ hooks })
+}
+
+export function handleRemoveHook(req: Request, res: Response): void {
+  const { event, command } = req.body as { event: string; command: string }
+
+  if (!event || !command) {
+    res.status(400).json({ error: 'event and command are required' })
+    return
+  }
+
+  removeHookFromConfig(event as HookEventType, command)
+
+  const hooks = listHooksFromConfig()
+  res.json({ hooks })
+}
+
+export function handleTestHook(req: Request, res: Response): void {
+  const { event, toolName, toolInput } = req.body as {
+    event: string
+    toolName?: string
+    toolInput?: Record<string, unknown>
+  }
+
+  const validEvents = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'Stop', 'TaskCompleted', 'SessionEnd']
+  if (!event || !validEvents.includes(event)) {
+    res.status(400).json({ error: `event is required and must be one of: ${validEvents.join(', ')}` })
+    return
+  }
+
+  const config = loadHookConfig()
+  const registry = new HookRegistry()
+  for (const hookDef of config.hooks) {
+    registry.register(hookDef)
+  }
+  const executor = new HookExecutor(registry)
+
+  const context: HookExecutionContext = {
+    toolName,
+    toolInput,
+    cwd: process.cwd(),
+  }
+
+  executor.execute(event as HookEventType, context)
+    .then(results => {
+      res.json({ results })
+    })
+    .catch(error => {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+    })
+}
+
+export function handleClassifyPermission(req: Request, res: Response): void {
+  const { toolName, input, permissionMode } = req.body as {
+    toolName: string
+    input?: Record<string, unknown>
+    permissionMode?: string
+  }
+
+  if (!toolName) {
+    res.status(400).json({ error: 'toolName is required' })
+    return
+  }
+
+  const classifier = createDefaultClassifier()
+
+  const context: import('../tools/base.js').ToolUseContext = {
+    tools: [],
+    messages: [],
+    abortController: new AbortController(),
+    getAppState: () => ({}),
+    setAppState: () => {},
+    permissionMode: permissionMode ?? 'default',
+  }
+
+  const result = classifier.classify(toolName, input ?? {}, context)
+  res.json({ classification: result })
 }
