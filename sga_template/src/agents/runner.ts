@@ -14,9 +14,17 @@ import { createLogger } from '../utils/logger.js'
 import { getMemoryManager } from '../memory/manager.js'
 import { getWorkingSet } from '../memory/working-set-registry.js'
 import { buildContext, detectFocusMode } from '../memory/context-builder.js'
+import { microCompactMessages, estimateMessageTokens } from '../memory/compact/micro-compact.js'
+import { CircuitBreaker } from '../utils/circuit-breaker.js'
 import { resolveThinkingStrategy } from './thinking-prompts.js'
 
 const logger = createLogger('agent-runner')
+
+const providerCircuitBreaker = new CircuitBreaker({
+  maxConsecutiveFailures: 3,
+  cooldownMs: 60_000,
+  halfOpenMaxAttempts: 1,
+})
 
 export interface ApprovalEvent {
   type: 'approval_required'
@@ -102,6 +110,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   if (memoryManager) {
     try {
       const userQuery = extractTextFromMessages(options.messages) ?? prompt
+      const agentContextConfig = agentDefinition.getContextConfig()
 
       const ws = getWorkingSet()
       if (ws && userQuery) {
@@ -123,10 +132,46 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           role: m.role,
           content: m.content.filter(c => c.type === 'text' && c.text).map(c => c.text!).join('\n'),
         })),
+        focusMode: agentContextConfig.focusMode,
+        budgetConfig: agentContextConfig.budgetConfig,
+        maxMemoryItems: agentContextConfig.maxMemoryItems,
+        enableDedup: agentContextConfig.enableDedup,
+        enableCompression: agentContextConfig.enableCompression,
       })
 
       if (contextResult.systemPrompt) {
         systemPromptContent = systemPromptContent + '\n\n' + contextResult.systemPrompt
+      }
+
+      if (agentContextConfig.enableSgaMd) {
+        try {
+          const { loadSgaMd } = await import('../context/claudemd.js')
+          const sgaMdContent = await loadSgaMd()
+          if (sgaMdContent.trim()) {
+            systemPromptContent = systemPromptContent + '\n\n## Project Context (SGA.md)\n' + sgaMdContent
+          }
+        } catch (err) {
+          logger.debug(`SGA.md loading skipped: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      if (agentContextConfig.enableSkills && agentContextConfig.skillNames?.length) {
+        try {
+          const { formatSkillListForPrompt, separateConditionalSkills, activateConditionalSkills } = await import('../skills/index.js')
+          const { discoverSkills } = await import('../skills/index.js')
+          const allSkills = await discoverSkills()
+          const skillState = separateConditionalSkills(allSkills)
+          const activeSkills = activateConditionalSkills(skillState, userQuery || '')
+          const filtered = activeSkills.filter(s => agentContextConfig.skillNames!.includes(s.name))
+          if (filtered.length > 0) {
+            const skillPrompt = formatSkillListForPrompt(filtered)
+            if (skillPrompt.trim()) {
+              systemPromptContent = systemPromptContent + '\n\n## Available Skills\n' + skillPrompt
+            }
+          }
+        } catch (err) {
+          logger.debug(`Skills loading skipped: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
 
       logger.info(
@@ -232,19 +277,17 @@ async function executeAgentLoop(
   let hookExecutor: HookExecutor | undefined
   try {
     const hookConfig = loadHookConfig()
-    if (hookConfig.hooks.length > 0) {
-      hookRegistry = new HookRegistry()
-      for (const hookDef of hookConfig.hooks) {
-        hookRegistry.register(hookDef)
-      }
-      hookExecutor = new HookExecutor(hookRegistry)
-
-      const sessionHookCtx: HookExecutionContext = {
-        sessionId: options.parentContext?.agentId,
-        cwd: process.cwd(),
-      }
-      await hookExecutor.execute('SessionStart', sessionHookCtx)
+    hookRegistry = new HookRegistry()
+    for (const hookDef of hookConfig.hooks) {
+      hookRegistry.register(hookDef)
     }
+    hookExecutor = new HookExecutor(hookRegistry)
+
+    const sessionHookCtx: HookExecutionContext = {
+      sessionId: options.parentContext?.agentId,
+      cwd: process.cwd(),
+    }
+    await hookExecutor.execute('SessionStart', sessionHookCtx)
   } catch (error) {
     logger.debug(`Hook system initialization skipped: ${error instanceof Error ? error.message : String(error)}`)
   }
@@ -255,6 +298,52 @@ async function executeAgentLoop(
 
     if (options.onProgress) {
       options.onProgress({ type: 'turn_start', turnCount })
+    }
+
+    if (hookExecutor && turnCount === 1) {
+      try {
+        const promptCtx: HookExecutionContext = {
+          sessionId: options.parentContext?.agentId,
+          cwd: process.cwd(),
+        }
+        await hookExecutor.execute('UserPromptSubmit', promptCtx)
+      } catch (err) {
+        logger.debug(`UserPromptSubmit hook skipped: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    const compactResult = microCompactMessages(allMessages)
+    if (compactResult.tokensSaved > 0) {
+      logger.info(
+        `Micro-compact: trigger=${compactResult.trigger}, cleared=${compactResult.toolsCleared}, saved≈${compactResult.tokensSaved} tokens`,
+      )
+      allMessages.length = 0
+      allMessages.push(...compactResult.messages)
+    }
+
+    const currentTokens = estimateMessageTokens(allMessages)
+    const maxContextTokens = options.agentDefinition.getContextConfig().budgetConfig?.maxContextTokens ?? 200_000
+    if (currentTokens > maxContextTokens * 0.9) {
+      try {
+        const { compressContext } = await import('../context/compression.js')
+        const compressionResult = await compressContext(allMessages, currentTokens, {
+          autoCompactEnabled: true,
+          autoCompactThreshold: 0.75,
+          maxContextTokens,
+          snipEnabled: true,
+          microEnabled: false,
+          collapseEnabled: true,
+        })
+        if (compressionResult.wasCompressed) {
+          logger.info(
+            `Context compressed: level=${compressionResult.level}, saved≈${compressionResult.tokensSaved} tokens`,
+          )
+          allMessages.length = 0
+          allMessages.push(...compressionResult.messages)
+        }
+      } catch (err) {
+        logger.warn(`Context compression failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
 
     const providerMessages = allMessages.map(m => ({
@@ -288,6 +377,11 @@ async function executeAgentLoop(
 
     let response: ProviderResponse
     try {
+      if (!providerCircuitBreaker.canExecute()) {
+        const stats = providerCircuitBreaker.getStats()
+        throw new Error(`Provider circuit breaker is open (failures: ${stats.consecutiveFailures}, cooldown: ${Math.ceil(stats.timeUntilCooldown / 1000)}s)`)
+      }
+
       logger.debug(`Calling provider ${provider.name} with model ${resolvedModel}, stream=${useStream}`)
 
       if (options.onProgress) {
@@ -300,9 +394,12 @@ async function executeAgentLoop(
         response = await provider.createMessage(requestOptions)
       }
 
+      providerCircuitBreaker.recordSuccess()
+
       logger.info(`Provider responded, stopReason=${response.stopReason}, usage={in:${response.usage.inputTokens}, out:${response.usage.outputTokens}}`)
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
+      providerCircuitBreaker.recordFailure(error instanceof Error ? error : undefined)
       logger.error(`Provider call failed: ${errMsg}`)
       allMessages.push({
         id: `msg-${Date.now()}`,
@@ -515,6 +612,34 @@ async function executeAgentLoop(
           }],
           timestamp: Date.now(),
         })
+
+        if (hookExecutor) {
+          try {
+            const postToolCtx: HookExecutionContext = {
+              toolName: name,
+              toolInput: execResult.input as Record<string, unknown>,
+              toolOutput: execResult.output,
+              sessionId: options.parentContext?.agentId,
+              cwd: process.cwd(),
+            }
+            await hookExecutor.execute('PostToolUse', postToolCtx)
+          } catch (hookErr) {
+            logger.debug(`PostToolUse hook failed for ${name}: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`)
+          }
+        }
+
+        if (name === 'workflow_action' && options.onProgress) {
+          try {
+            const toolInput = execResult.input as Record<string, unknown>
+            const actionType = (toolInput.action_type as string) ?? 'unknown'
+            const workflowJson = (toolInput.workflow_json as string) ?? ''
+            if (workflowJson) {
+              options.onProgress({ type: 'workflow_updated', workflowJson, actionType })
+            }
+          } catch {
+            // skip
+          }
+        }
       }
     }
   }

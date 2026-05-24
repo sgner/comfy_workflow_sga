@@ -261,11 +261,25 @@ async function callGoogleGemini(
 }
 
 // --- Helper for Python Backend Calls (SSE Streaming) ---
+const workflowToSessionMap = new Map<string, string>()
+
+export function getSgaSessionId(workflowId: string): string | undefined {
+    return workflowToSessionMap.get(workflowId)
+}
+
+export function setSgaSessionId(workflowId: string, sgaSessionId: string): void {
+    workflowToSessionMap.set(workflowId, sgaSessionId)
+}
+
+export function clearSgaSessionMapping(workflowId: string): void {
+    workflowToSessionMap.delete(workflowId)
+}
+
 async function callPythonBackendStream(
     settings: AppSettings,
     prompt: string,
     workflow: ComfyWorkflow,
-    sessionId: string,
+    workflowId: string,
     errorLog: string | null,
     onStream?: (chunk: string) => void,
     onStatus?: (status: AgentStatus) => void,
@@ -274,7 +288,8 @@ async function callPythonBackendStream(
     onToolUseStart?: (info: ToolCallInfo) => void,
     onToolUseResult?: (info: ToolCallInfo) => void,
     onActivity?: (activity: AgentActivity) => void,
-    onUsage?: (usage: TokenUsage) => void
+    onUsage?: (usage: TokenUsage) => void,
+    onWorkflowUpdate?: (workflowJson: string, actionType: string) => void
 ): Promise<{
     text: string;
     sources: Array<{uri:string, title:string}>;
@@ -290,24 +305,91 @@ async function callPythonBackendStream(
     
     if (!settings.pythonBackendUrl) throw new Error("Python Backend URL is missing.");
 
-   const workflowContext = await collectWorkflowContextAsync().catch(() => collectWorkflowContext());
-   const payload = {
-        message: prompt,
-        workflow: workflow,
-        session_id: sessionId,
-        error_log: errorLog,
-        language: settings.language,
-        config_id: settings.activeBackendConfigId || undefined,
-        workflow_context: workflowContext,
-        workflow_context_text: formatWorkflowContextForPrompt(workflowContext),
-    };
-    
-    const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/chat/stream`, {
+    const baseUrl = settings.pythonBackendUrl.replace(/\/$/, '');
+    const configId = settings.activeBackendConfigId || undefined;
+
+    let effectiveSessionId = workflowToSessionMap.get(workflowId) || '';
+
+    if (!effectiveSessionId) {
+        try {
+            const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    providerName: configId ? `comfyui-${configId}` : undefined,
+                    agentType: 'comfyui-workflow',
+                }),
+            });
+            if (sessionRes.ok) {
+                const sessionData = await sessionRes.json();
+                effectiveSessionId = sessionData.session?.id || '';
+                if (effectiveSessionId) {
+                    workflowToSessionMap.set(workflowId, effectiveSessionId);
+                }
+            }
+        } catch {
+            // failed to create session
+        }
+    } else {
+        try {
+            const checkRes = await fetch(`${baseUrl}/api/v1/sessions/${effectiveSessionId}`);
+            if (!checkRes.ok) {
+                workflowToSessionMap.delete(workflowId);
+                const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        providerName: configId ? `comfyui-${configId}` : undefined,
+                        agentType: 'comfyui-workflow',
+                    }),
+                });
+                if (sessionRes.ok) {
+                    const sessionData = await sessionRes.json();
+                    effectiveSessionId = sessionData.session?.id || '';
+                    if (effectiveSessionId) {
+                        workflowToSessionMap.set(workflowId, effectiveSessionId);
+                    }
+                }
+            }
+        } catch {
+            // session check failed, try to use existing mapping
+        }
+    }
+
+    if (!effectiveSessionId) {
+        throw new Error("Failed to create or retrieve SGA session");
+    }
+
+    const workflowContext = await collectWorkflowContextAsync().catch(() => collectWorkflowContext());
+    const contextParts: string[] = [];
+    if (workflow) {
+        contextParts.push(`[CURRENT WORKFLOW STATE]\nNode Count: ${workflow?.nodes?.length || 0}\nNodes Summary: ${JSON.stringify(workflow?.nodes?.map((n: any) => ({id: n.id, type: n.type, title: n.properties?.['Node name for S&R']})) || [])}\n\n[FULL WORKFLOW JSON]\n${JSON.stringify(workflow)}`);
+    }
+    const workflowContextText = formatWorkflowContextForPrompt(workflowContext);
+    if (workflowContextText) {
+        contextParts.push(`[WORKFLOW PANEL CONTEXT (from ComfyUI RightSidePanel data sources)]\n${workflowContextText}`);
+    }
+    if (errorLog) {
+        contextParts.push(`[RUNTIME ERRORS]\nThe user encountered the following errors during execution:\n${errorLog}`);
+    }
+    if (settings.language && settings.language !== 'en') {
+        contextParts.push(`IMPORTANT: You MUST respond in the following language code: "${settings.language}". Translate your advice and interface text accordingly.`);
+    }
+    const fullContent = contextParts.length > 0
+        ? `${contextParts.join('\n\n')}\n\n${prompt}`
+        : prompt;
+
+    const response = await fetch(`${baseUrl}/api/v1/sessions/${effectiveSessionId}/messages`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+            content: fullContent,
+            stream: true,
+            agentType: 'comfyui-workflow',
+            providerName: configId ? `comfyui-${configId}` : undefined,
+        })
     });
 
     if (!response.ok) {
@@ -389,7 +471,7 @@ async function callPythonBackendStream(
                     const eventType = currentEvent || (data.type as string) || '';
                     
                     switch (eventType) {
-                        case 'agent_start':
+                        case 'session_start':
                             if (onActivity) {
                                 onActivity({
                                     id: `act-start-${Date.now()}`,
@@ -407,7 +489,7 @@ async function callPythonBackendStream(
                                 });
                             }
                             break;
-                        case 'thinking':
+                        case 'thinking_delta':
                             if (onActivity) {
                                 onActivity({
                                     id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -437,29 +519,27 @@ async function callPythonBackendStream(
                                 });
                             }
                             break;
-                        case 'content':
-                            const text = data.chunk || '';
-                            fullText += text;
-                            if (onStream) onStream(text);
+                        case 'stream_delta':
+                            const streamText = data.text || '';
+                            fullText += streamText;
+                            if (onStream) onStream(streamText);
                             break;
                         case 'tool_use_start':
                             if (onToolUseStart) {
                                 onToolUseStart({
-                                    toolName: data.data?.toolName,
-                                    toolUseId: data.data?.toolUseId,
+                                    toolName: data.toolName,
+                                    toolUseId: data.toolUseId,
                                     status: 'running',
-                                    toolInput: data.data?.toolInput,
                                     startTime: Date.now(),
                                 });
                             }
                             if (onActivity) {
                                 onActivity({
-                                    id: `act-tool-${data.data?.toolUseId || Date.now()}`,
+                                    id: `act-tool-${data.toolUseId || Date.now()}`,
                                     type: 'tool_start',
                                     timestamp: Date.now(),
-                                    label: getToolDisplayName(data.data?.toolName),
-                                    toolName: data.data?.toolName,
-                                    toolInput: data.data?.toolInput,
+                                    label: getToolDisplayName(data.toolName),
+                                    toolName: data.toolName,
                                     status: 'processing',
                                 });
                             }
@@ -489,8 +569,8 @@ async function callPythonBackendStream(
                         case 'tool_use_result':
                             if (onToolUseResult) {
                                 onToolUseResult({
-                                    toolName: data.data?.toolName,
-                                    toolUseId: data.data?.toolUseId,
+                                    toolName: data.toolName,
+                                    toolUseId: data.result?.toolUseId,
                                     status: 'completed',
                                     endTime: Date.now(),
                                 });
@@ -500,20 +580,43 @@ async function callPythonBackendStream(
                                     id: `act-tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                                     type: 'tool_result',
                                     timestamp: Date.now(),
-                                    label: `${getToolDisplayName(data.data?.toolName)} 完成`,
-                                    toolName: data.data?.toolName,
+                                    label: `${getToolDisplayName(data.toolName)} 完成`,
+                                    toolName: data.toolName,
                                     status: 'done',
                                 });
                             }
                             break;
                         case 'approval_required':
-                            if (onApprovalRequired && data.data) {
-                                onApprovalRequired(data.data as ApprovalRequest);
+                            if (onApprovalRequired) {
+                                onApprovalRequired({
+                                    id: data.actionId,
+                                    type: 'approval_required',
+                                    toolName: data.toolName,
+                                    toolInput: data.toolInput,
+                                    message: data.message,
+                                    suggestions: data.suggestions,
+                                    sessionId: effectiveSessionId,
+                                    isDestructive: true,
+                                    isReadOnly: false,
+                                } as ApprovalRequest);
                             }
                             break;
                         case 'human_input_required':
-                            if (onHumanInputRequired && data.data) {
-                                onHumanInputRequired(data.data as HumanInputRequest);
+                            if (onHumanInputRequired) {
+                                onHumanInputRequired({
+                                    id: data.actionId,
+                                    type: 'human_input_required',
+                                    message: data.message,
+                                    context: data.context,
+                                    options: data.options,
+                                    sessionId: effectiveSessionId,
+                                    allowFreeText: true,
+                                } as HumanInputRequest);
+                            }
+                            break;
+                        case 'turn_end':
+                            if (onUsage && data.usage) {
+                                onUsage(data.usage as TokenUsage);
                             }
                             break;
                         case 'result':
@@ -521,12 +624,10 @@ async function callPythonBackendStream(
                                 structuredResult = data.data as typeof structuredResult;
                             }
                             break;
-                        case 'usage':
-                            if (onUsage && data.usage) {
-                                onUsage(data.usage as TokenUsage);
+                        case 'done':
+                            if (data.data?.usage && onUsage) {
+                                onUsage(data.data.usage as TokenUsage);
                             }
-                            break;
-                        case 'end':
                             break;
                         case 'error':
                             if (onActivity) {
@@ -534,8 +635,143 @@ async function callPythonBackendStream(
                                     id: `act-err-${Date.now()}`,
                                     type: 'error',
                                     timestamp: Date.now(),
-                                    label: data.chunk || '发生错误',
+                                    label: data.data || '发生错误',
                                     status: 'error',
+                                });
+                            }
+                            break;
+                        case 'turn_start':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-turn-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `第 ${data.turnCount ?? 0} 轮开始`,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'api_call_start':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-api-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: '调用 LLM API...',
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'tool_progress':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-prog-${data.toolUseId || Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `${getToolDisplayName(data.toolName)}: ${data.data?.text || '处理中...'}`,
+                                    toolName: data.toolName,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'tool_use_end':
+                            if (onToolUseResult) {
+                                onToolUseResult({
+                                    toolName: data.toolName,
+                                    toolUseId: data.toolUseId,
+                                    status: data.isError ? 'error' : 'completed',
+                                    endTime: Date.now(),
+                                });
+                            }
+                            break;
+                        case 'compact_start':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-compact-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `压缩上下文: ${data.reason || ''}`,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'compact_end':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-compact-end-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `上下文压缩完成，移除 ${data.messagesRemoved ?? 0} 条消息`,
+                                    status: 'done',
+                                });
+                            }
+                            break;
+                        case 'task_started':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-task-${data.taskId || Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `任务开始: ${data.description || ''}`,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'task_progress':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-task-prog-${data.taskId || Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: data.summary || data.description || '任务进行中...',
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'task_notification':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-task-notif-${data.taskId || Date.now()}`,
+                                    type: data.status === 'failed' ? 'error' : 'status',
+                                    timestamp: Date.now(),
+                                    label: `任务${data.status === 'completed' ? '完成' : data.status === 'failed' ? '失败' : '停止'}: ${data.summary || ''}`,
+                                    status: data.status === 'completed' ? 'done' : data.status === 'failed' ? 'error' : 'done',
+                                });
+                            }
+                            break;
+                        case 'recovery':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-recovery-${Date.now()}`,
+                                    type: 'error',
+                                    timestamp: Date.now(),
+                                    label: `恢复中 (第 ${data.attempt ?? 0} 次尝试): ${data.error?.message || '未知错误'}`,
+                                    status: 'error',
+                                });
+                            }
+                            break;
+                        case 'workflow_updated':
+                            if (onWorkflowUpdate && data.workflowJson) {
+                                onWorkflowUpdate(data.workflowJson, data.actionType || 'unknown');
+                            }
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-wf-update-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `工作流已更新: ${data.actionType || 'unknown'}`,
+                                    status: 'done',
+                                });
+                            }
+                            break;
+                        case 'stop':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-stop-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `Agent 停止: ${data.reason || '未知原因'}`,
+                                    status: 'done',
                                 });
                             }
                             break;
@@ -556,20 +792,29 @@ async function callPythonBackendStream(
 
 export const fetchChatHistory = async (
     settings: AppSettings,
-    sessionId: string
+    workflowId: string
 ): Promise<ChatMessage[]> => {
     if (!settings.usePythonBackend || !settings.pythonBackendUrl) return [];
 
+    const sgaSessionId = workflowToSessionMap.get(workflowId);
+    if (!sgaSessionId) return [];
+
     try {
-        const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/chat/history/${sessionId}`);
+        const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/v1/sessions/${sgaSessionId}/messages`);
         if (!response.ok) return [];
 
-        const rawHistory = await response.json();
+        const rawResult = await response.json();
+        const rawHistory = Array.isArray(rawResult.messages) ? rawResult.messages : (Array.isArray(rawResult) ? rawResult : []);
         if (!Array.isArray(rawHistory)) return [];
 
         return rawHistory.map((msg: any, idx: number) => {
-            const isAi = msg.sender === 'ai' || msg.sender === 'assistant';
-            let text = msg.text || '';
+            const isAi = msg.role === 'assistant';
+            let text = '';
+            if (Array.isArray(msg.content)) {
+                text = msg.content.filter((c: any) => c.type === 'text' && c.text).map((c: any) => c.text).join('\n');
+            } else {
+                text = msg.text || msg.content || '';
+            }
             const agentIssues = isAi ? parseIssuesFromText(text) : undefined;
 
             if (isAi) {
@@ -601,9 +846,11 @@ export const fetchChatHistory = async (
 export const analyzeWorkflowWithBackend = async (
     settings: AppSettings,
     workflow: ComfyWorkflow,
-    sessionId: string
+    workflowId: string
 ): Promise<WorkflowIssue[]> => {
     if (!settings.pythonBackendUrl) return [];
+
+    const sgaSessionId = workflowToSessionMap.get(workflowId) || workflowId;
 
     try {
         const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/workflow/analyze`, {
@@ -611,7 +858,7 @@ export const analyzeWorkflowWithBackend = async (
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 workflow: workflow,
-                session_id: sessionId,
+                session_id: sgaSessionId,
                 language: settings.language
             })
         });
@@ -721,7 +968,7 @@ export const sendMessageToComfyAgent = async (
     userPrompt: string,
     settings: AppSettings,
     _history: string[] = [],
-    sessionId: string = "default",
+    workflowId: string = "default",
     errorLog: string | null,
     workflowContextPrompt: string | null = null,
     onStream?: (chunk: string) => void,
@@ -731,18 +978,25 @@ export const sendMessageToComfyAgent = async (
     onToolUseStart?: (info: ToolCallInfo) => void,
     onToolUseResult?: (info: ToolCallInfo) => void,
     onActivity?: (activity: AgentActivity) => void,
-    onUsage?: (usage: TokenUsage) => void
+    onUsage?: (usage: TokenUsage) => void,
+    onWorkflowUpdate?: (workflowJson: string, actionType: string) => void
 ): Promise<GeminiResponseSchema> => {
     
     const lang = settings.language;
 
     try {
-        const languageInstruction = `\nIMPORTANT: You MUST respond in the following language code: "${settings.language}". Translate your advice and interface text accordingly.`;
-        const fullSystemInstruction = BASE_SYSTEM_INSTRUCTION + languageInstruction;
-
         let textResponse = "";
         let sources: Array<{ uri: string; title: string }> = [];
-        let prompt = `
+
+        if (settings.usePythonBackend) {
+             const res = await callPythonBackendStream(settings, userPrompt, currentWorkflow, workflowId, errorLog, onStream, onStatus, onApprovalRequired, onHumanInputRequired, onToolUseStart, onToolUseResult, onActivity, onUsage, onWorkflowUpdate);
+             textResponse = res.text;
+             sources = res.sources;
+        } else {
+            const languageInstruction = `\nIMPORTANT: You MUST respond in the following language code: "${settings.language}". Translate your advice and interface text accordingly.`;
+            const fullSystemInstruction = BASE_SYSTEM_INSTRUCTION + languageInstruction;
+
+            let prompt = `
             [CURRENT WORKFLOW STATE]
             Node Count: ${currentWorkflow?.nodes?.length || 0}
             Nodes Summary: ${JSON.stringify(currentWorkflow?.nodes?.map(n => ({id: n.id, type: n.type, title: n.properties?.['Node name for S&R']})) || [])}
@@ -770,49 +1024,17 @@ export const sendMessageToComfyAgent = async (
             - Suggest 2-3 short follow-up actions if applicable in the format "SUGGESTED_ACTIONS: [Action 1, Action 2]".
             - Provide 3 Related Questions in the format \`RELATED_QUESTIONS: ["Q1", "Q2"]\`. These must be questions the USER would ask the agent, NOT questions the agent asks the user. Do NOT phrase them as offers or suggestions from the agent (e.g. avoid "Do you want me to..."); instead phrase them as what the user might want to know or request next.
             `;
-        
-        let structuredFromBackend: {
-            chatResponse: string;
-            updatedWorkflow: Record<string, unknown> | null;
-            issues: Array<{ nodeId: string | null; severity: string; message: string; fixSuggestion?: string }>;
-            relatedQuestions: string[];
-            missingNodes: string[];
-            groundingSources: Array<{ uri: string; title: string }>;
-        } | undefined = undefined;
 
-        if (settings.usePythonBackend) {
-             const res = await callPythonBackendStream(settings, userPrompt, currentWorkflow, sessionId, errorLog, onStream, onStatus, onApprovalRequired, onHumanInputRequired, onToolUseStart, onToolUseResult, onActivity, onUsage);
-             textResponse = res.text;
-             sources = res.sources;
-             structuredFromBackend = res.structuredResult;
-        } else if (settings.provider === 'google') {
-            const res = await callGoogleGemini(settings, prompt, fullSystemInstruction, onStream);
-            textResponse = res.text;
-            sources = res.sources;
-        } else {
-            textResponse = await callCustomLLM(settings, prompt, fullSystemInstruction, onStream);
+            if (settings.provider === 'google') {
+                const res = await callGoogleGemini(settings, prompt, fullSystemInstruction, onStream);
+                textResponse = res.text;
+                sources = res.sources;
+            } else {
+                textResponse = await callCustomLLM(settings, prompt, fullSystemInstruction, onStream);
+            }
         }
         
         // --- Parsing Logic ---
-
-        if (structuredFromBackend) {
-            return {
-                chatResponse: structuredFromBackend.chatResponse || textResponse,
-                updatedWorkflow: structuredFromBackend.updatedWorkflow as ComfyWorkflow | null,
-                missingNodes: structuredFromBackend.missingNodes ?? [],
-                issues: (structuredFromBackend.issues ?? []).map((issue: any, idx: number) => ({
-                    id: `ai-issue-${Date.now()}-${idx}`,
-                    nodeId: issue.nodeId ? Number(issue.nodeId) || null : (issue.node_id ? Number(issue.node_id) || null : null),
-                    severity: (issue.severity || 'warning') as 'error' | 'warning' | 'info',
-                    message: issue.message ?? issue.issue ?? issue.details ?? 'Unknown issue',
-                    fixSuggestion: issue.fixSuggestion ?? issue.fix_suggestion ?? (issue.details && issue.issue ? issue.details : undefined),
-                    nodeType: issue.nodeType ?? issue.node_type ?? undefined,
-                    source: 'agent' as const,
-                })),
-                relatedQuestions: structuredFromBackend.relatedQuestions ?? [],
-                groundingSources: structuredFromBackend.groundingSources ?? sources,
-            };
-        }
 
         let updatedWorkflow: ComfyWorkflow | null = null;
         const allJsonMatches = textResponse.matchAll(/```json\s*([\s\S]*?)\s*```/g);

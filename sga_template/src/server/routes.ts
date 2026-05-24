@@ -3,13 +3,22 @@ import type { Session, CreateSessionRequest, SendMessageRequest, SendMessageResp
 import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput, formatSSE } from './session.js'
 import type { Message, AgentStreamEvent } from '../core/types.js'
 import type { PendingAction, UserApprovalResponse, UserInputResponse, SuspendedContext } from './interaction.js'
+import { createApprovalRequest, createHumanInputRequest, pendingResolvers } from './interaction.js'
 import { createLogger } from '../utils/logger.js'
 import { getSessionStore } from './session-store.js'
 import { getMemoryManager } from '../memory/manager.js'
-import { MemoryExtractor } from '../memory/extractor.js'
+import { MemoryExtractor, DEFAULT_EXTRACTOR_CONFIG } from '../memory/extractor.js'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'fs'
+import { join } from 'path'
+import { getSgaHome } from '../memory/paths.js'
+import { undoLastAction } from '../tools/built-in/workflow-action.js'
+import { getWorkingSet, initWorkingSet } from '../memory/working-set-registry.js'
+import { config as dotenvConfig } from 'dotenv'
+import { resolve } from 'path'
+
+dotenvConfig({ path: resolve(process.cwd(), '.env'), override: true })
 
 const logger = createLogger('routes')
-import { createApprovalRequest, createHumanInputRequest } from './interaction.js'
 import { createBuiltinTools } from '../tools/built-in/index.js'
 import { assembleToolPool } from '../tools/registry.js'
 import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
@@ -17,7 +26,7 @@ import { createAllMCPToolAdapters } from '../mcp/adapter.js'
 import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan, listSnapshots, getCoordinatorSystemPrompt } from '../agents/index.js'
 import { getTaskManager } from '../tasks/index.js'
 import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks } from '../tools/built-in/agent.js'
-import { CostTracker } from '../utils/cost-tracker.js'
+import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
 import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider } from '../providers/provider-store.js'
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
@@ -42,11 +51,6 @@ import {
 import { HookRegistry, HookExecutor } from '../hooks/executor.js'
 import type { HookEventType, HookExecutionContext } from '../hooks/types.js'
 
-const costTrackers: Map<string, CostTracker> = new Map()
-const pendingResolvers: Map<string, {
-  resolve: (response: unknown) => void
-  reject: (error: Error) => void
-}> = new Map()
 const activeSSEConnections: Map<string, Response> = new Map()
 
 function getSessionId(req: Request): string {
@@ -89,16 +93,29 @@ export function handleListSessions(_req: Request, res: Response): void {
   res.json({ sessions: list })
 }
 
-export function handleCreateSession(req: Request, res: Response): void {
+export async function handleCreateSession(req: Request, res: Response): Promise<void> {
   const body: CreateSessionRequest = req.body
 
   if (body.providerName) {
     const available = getAllProviderNames()
     if (!available.includes(body.providerName)) {
-      res.status(400).json({
-        error: `Provider "${body.providerName}" is not configured. Available providers: ${available.join(', ') || 'none'}`,
-      })
-      return
+      if (body.providerName.startsWith('comfyui-')) {
+        const configId = body.providerName.slice('comfyui-'.length)
+        const config = comfyUIConfigStore.getConfigById(configId)
+        if (config) {
+          await ensureSgaProvider(config)
+        } else {
+          res.status(400).json({
+            error: `ComfyUI config "${configId}" not found. Available configs: ${comfyUIConfigStore.getConfigs().map(c => c.id).join(', ') || 'none'}`,
+          })
+          return
+        }
+      } else {
+        res.status(400).json({
+          error: `Provider "${body.providerName}" is not configured. Available providers: ${available.join(', ') || 'none'}`,
+        })
+        return
+      }
     }
   }
 
@@ -114,7 +131,7 @@ export function handleCreateSession(req: Request, res: Response): void {
     providerName: body.providerName,
   })
   store.set(session)
-  costTrackers.set(session.id, new CostTracker({ maxBudgetUsd: body.maxBudgetUsd }))
+  getOrCreateCostManager(session.id, body.maxBudgetUsd)
   res.status(201).json({ session })
 }
 
@@ -155,7 +172,7 @@ export function handleDeleteSession(req: Request, res: Response): void {
     return
   }
   store.delete(sessionId)
-  costTrackers.delete(sessionId)
+  removeCostManager(sessionId)
   pendingResolvers.delete(sessionId)
   activeSSEConnections.delete(sessionId)
   res.json({ success: true })
@@ -190,6 +207,62 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
   const useStream = body.stream === true || body.stream === 'true'
 
   logger.info(`Session ${sessionId}: received message, content length=${body.content.length}, stream=${useStream}`)
+
+  if (session.config.agentType === 'comfyui-workflow' || body.agentType === 'comfyui-workflow') {
+    let ws = getWorkingSet()
+    if (!ws) {
+      ws = initWorkingSet()
+    }
+    const workflowMatch = body.content.match(/\[FULL WORKFLOW JSON\]\s*([\s\S]*?)(?:\n\[|$)/)
+    if (workflowMatch) {
+      try {
+        const workflowObj = JSON.parse(workflowMatch[1].trim())
+        const nodes = (workflowObj?.nodes ?? []) as Array<Record<string, unknown>>
+        ws.pin(
+          `workflow-${sessionId}`,
+          `ComfyUI Workflow (${nodes.length} nodes)`,
+          JSON.stringify(workflowObj),
+          'comfyui-workflow',
+          'critical',
+          20_000,
+        )
+
+        const nodeTypes = nodes.map(n => n.type as string).filter(Boolean)
+        const uniqueTypes = [...new Set(nodeTypes)]
+        const typeCounts = new Map<string, number>()
+        for (const t of nodeTypes) {
+          typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1)
+        }
+        const summaryLines = [
+          `Total nodes: ${nodes.length}`,
+          `Unique node types: ${uniqueTypes.length}`,
+          `Node types: ${uniqueTypes.map(t => `${t}(${typeCounts.get(t)})`).join(', ')}`,
+        ]
+        ws.pin(
+          `workflow-summary-${sessionId}`,
+          `Workflow Summary`,
+          summaryLines.join('\n'),
+          'comfyui-workflow',
+          'high',
+          1_000,
+        )
+      } catch {
+        // not valid JSON, skip
+      }
+    }
+
+    const errorMatch = body.content.match(/\[RUNTIME ERRORS\]\s*([\s\S]*?)(?:\n\[|$)/)
+    if (errorMatch && errorMatch[1].trim()) {
+      ws.pin(
+        `error-log-${sessionId}`,
+        `Runtime Errors`,
+        errorMatch[1].trim(),
+        'comfyui-workflow',
+        'high',
+        3_000,
+      )
+    }
+  }
 
   const userMessage: Message = {
     id: `msg-${Date.now()}`,
@@ -357,7 +430,7 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     store.appendMessage(session.id, assistantMessage)
     store.appendUsage(session.id, result.usage)
 
-    triggerMemoryExtraction(session.messages, provider, model)
+    triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
 
     const response: SendMessageResponse = {
       sessionId: session.id,
@@ -578,7 +651,12 @@ async function handleStreamResponse(
     getSessionStore().appendMessage(session.id, assistantMessage)
     getSessionStore().appendUsage(session.id, result.usage)
 
-    triggerMemoryExtraction(session.messages, provider, model)
+    const costMgr = getCostManager(session.id)
+    if (costMgr) {
+      costMgr.recordUsage(result.usage)
+    }
+
+    triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
 
     sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
   } catch (error) {
@@ -647,6 +725,198 @@ export function handleUserInput(req: Request, res: Response): void {
   })
 }
 
+export async function handleComfyUIFork(req: Request, res: Response): Promise<void> {
+  const { session_id, directive, max_turns } = req.body as Record<string, unknown>
+
+  const store = getSessionStore()
+  const session = store.get(session_id as string)
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  try {
+    const { buildForkedMessagesFromParentContext } = await import('../agents/fork.js')
+    const { runComfyUIAgent } = await import('../comfyui/adapter.js')
+
+    const provider = getProviderForSession(session)
+    const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+    const tools = buildToolPool()
+    const agentDefs = await getAllAgentDefinitions()
+    const agentDef = agentDefs.find(a => a.name === 'comfyui-workflow') ?? agentDefs[0]
+
+    if (!agentDef) {
+      res.status(500).json({ error: 'No agent definition available' })
+      return
+    }
+
+    const forkedMessages = buildForkedMessagesFromParentContext(
+      directive as string,
+      session.messages,
+    )
+
+    const result = await runComfyUIAgent({
+      agentDefinition: agentDef,
+      prompt: directive as string,
+      messages: forkedMessages,
+      tools,
+      model,
+      provider,
+      maxTurns: (max_turns as number) ?? 5,
+    })
+
+    res.json({
+      success: true,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`Fork failed: ${msg}`)
+    res.status(500).json({ error: msg })
+  }
+}
+
+export async function handleComfyUICoordinator(req: Request, res: Response): Promise<void> {
+  const { session_id, query, strategy } = req.body as Record<string, unknown>
+
+  const store = getSessionStore()
+  const session = store.get(session_id as string)
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  try {
+    const { Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan } = await import('../agents/coordinator.js')
+
+    const provider = getProviderForSession(session)
+    const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+    const tools = buildToolPool()
+    const agentDefs = await getAllAgentDefinitions()
+
+    const coordinator = new Coordinator({
+      maxConcurrency: 2,
+      defaultModel: model,
+      provider,
+      tools,
+      agentDefinitions: agentDefs,
+      maxTurnsPerAgent: 5,
+    })
+
+    let plan
+    if (strategy === 'dynamic') {
+      plan = await generateDynamicPlan(query as string, agentDefs, provider, model)
+    } else {
+      plan = createCoordinatorPlanFromUserQuery(query as string, agentDefs)
+      if (strategy) {
+        plan.strategy = strategy as 'parallel' | 'sequential' | 'hybrid'
+      }
+    }
+
+    const result = await coordinator.execute(plan)
+
+    res.json({
+      success: true,
+      synthesis: result.synthesis,
+      totalUsage: result.totalUsage,
+      totalDurationMs: result.totalDurationMs,
+      tasks: result.tasks.map(t => ({
+        id: t.id,
+        phase: t.phase,
+        status: t.status,
+        description: t.description,
+        result: t.result ? {
+          content: t.result.content,
+          turnCount: t.result.turnCount,
+          durationMs: t.result.durationMs,
+        } : undefined,
+      })),
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`Coordinator failed: ${msg}`)
+    res.status(500).json({ error: msg })
+  }
+}
+
+export async function handleComfyUIAutoDream(req: Request, res: Response): Promise<void> {
+  const { session_id } = req.body as Record<string, unknown>
+
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(500).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  try {
+    const { shouldConsolidate, executeAutoDream } = await import('../memory/consolidation/auto-dream.js')
+
+    const store = getSessionStore()
+    const session = session_id ? store.get(session_id as string) : null
+    const provider = session ? getProviderForSession(session) : null
+
+    if (!provider) {
+      res.status(500).json({ error: 'No provider available' })
+      return
+    }
+
+    const sessionCount = store.size()
+
+    const { shouldRun, hoursSinceLast } = shouldConsolidate(
+      memoryManager.getMemoryDir(),
+      sessionCount,
+    )
+
+    if (!shouldRun) {
+      res.json({
+        success: true,
+        consolidated: false,
+        hoursSinceLast,
+        sessionCount,
+        message: `Not enough time or sessions since last consolidation (${hoursSinceLast.toFixed(1)}h, ${sessionCount} sessions)`,
+      })
+      return
+    }
+
+    const result = await executeAutoDream(memoryManager, provider, sessionCount)
+
+    res.json({
+      success: true,
+      consolidated: result.consolidated,
+      hoursSinceLast: result.hoursSinceLast,
+      sessionsReviewed: result.sessionsReviewed,
+      summary: result.summary,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`Auto-dream failed: ${msg}`)
+    res.status(500).json({ error: msg })
+  }
+}
+
+export function handleComfyUICost(req: Request, res: Response): void {
+  const { session_id } = req.query as Record<string, unknown>
+  const store = getSessionStore()
+  const session = session_id ? store.get(session_id as string) : null
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+  const costMgr = getCostManager(session.id)
+  const report = costMgr?.getReport()
+  res.json({
+    session_id: session.id,
+    usage: session.usage,
+    costReport: report?.report ?? 'No cost tracker',
+    totalCostUsd: report?.totalCostUsd ?? 0,
+    isOverBudget: report?.isOverBudget ?? false,
+    isNearBudget: report?.isNearBudget ?? false,
+    remainingBudget: report?.remainingBudget,
+  })
+}
+
 export function handleGetMessages(req: Request, res: Response): void {
   const sessionId = getSessionId(req)
   const store = getSessionStore()
@@ -666,10 +936,10 @@ export function handleGetUsage(req: Request, res: Response): void {
     res.status(404).json({ error: 'Session not found' })
     return
   }
-  const tracker = costTrackers.get(sessionId)
+  const costMgr = getCostManager(sessionId)
   res.json({
     usage: session.usage,
-    costReport: tracker?.getUsageReport() ?? 'No cost tracker',
+    costReport: costMgr?.getReport().report ?? 'No cost tracker',
   })
 }
 
@@ -1143,11 +1413,24 @@ function triggerMemoryExtraction(
   messages: Message[],
   provider: LLMProvider,
   model: string,
+  sessionId: string,
+  agentType?: string,
 ): void {
   const memoryManager = getMemoryManager()
   if (!memoryManager) return
 
-  const extractor = new MemoryExtractor(memoryManager)
+  if (memoryManager.getSessionId() !== sessionId) {
+    memoryManager.setSessionId(sessionId)
+  }
+
+  memoryManager.setProvider(provider, model)
+
+  const isComfyUIAgent = agentType === 'comfyui-workflow'
+  const extractorConfig = isComfyUIAgent
+    ? { ...DEFAULT_EXTRACTOR_CONFIG, forceScope: 'session' as const }
+    : DEFAULT_EXTRACTOR_CONFIG
+
+  const extractor = new MemoryExtractor(memoryManager, extractorConfig)
   extractor.setProvider(provider, model)
 
   if (!extractor.shouldExtract(messages.length)) return
@@ -1339,4 +1622,799 @@ export function handleClassifyPermission(req: Request, res: Response): void {
 
   const result = classifier.classify(toolName, input ?? {}, context)
   res.json({ classification: result })
+}
+
+export interface ComfyUIModelConfig {
+  id: string
+  displayName?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  inputPricePerMToken?: number
+  outputPricePerMToken?: number
+  supportsVision?: boolean
+  supportsToolUse?: boolean
+  supportsStreaming?: boolean
+  supportsThinking?: boolean
+  supportsReasoningEffort?: boolean
+  defaultMaxTokens?: number
+  defaultTemperature?: number
+  maxTemperature?: number
+  thinkingBudget?: number
+  baseUrl?: string
+  streamingBaseUrl?: string
+  apiKey?: string
+  headers?: Record<string, string>
+  extra?: Record<string, unknown>
+}
+
+export interface ComfyUIProviderConfig {
+  id: string
+  provider: string
+  name: string
+  api_key: string
+  default_model: string
+  base_url?: string
+  is_default: boolean
+  default_max_tokens?: number
+  default_temperature?: number
+  retries?: number
+  retry_delay?: number
+  headers?: Record<string, string>
+  custom_config?: Record<string, unknown>
+  model_configs?: Record<string, ComfyUIModelConfig>
+  created_at: number
+  updated_at: number
+}
+
+export class ComfyUIConfigStore {
+  private configDir: string
+  private configFile: string
+  private githubTokenFile: string
+
+  constructor() {
+    const baseDir = process.env.COMFYUI_CONFIG_DIR ?? join(getSgaHome(), 'comfyui')
+    this.configDir = join(baseDir, 'api_configs')
+    this.configFile = join(this.configDir, 'providers.json')
+    this.githubTokenFile = join(this.configDir, 'github_token.json')
+
+    if (!existsSync(baseDir)) {
+      mkdirSync(baseDir, { recursive: true })
+    }
+    if (!existsSync(this.configDir)) {
+      mkdirSync(this.configDir, { recursive: true })
+    }
+  }
+
+  private loadConfigs(): ComfyUIProviderConfig[] {
+    if (!existsSync(this.configFile)) {
+      return []
+    }
+
+    try {
+      const content = readFileSync(this.configFile, 'utf-8')
+      const data = JSON.parse(content)
+      return Array.isArray(data) ? data : []
+    } catch (e) {
+      logger.error(`Error loading configs: ${e instanceof Error ? e.message : String(e)}`)
+      return []
+    }
+  }
+
+  private saveConfigs(configs: ComfyUIProviderConfig[]): void {
+    try {
+      writeFileSync(this.configFile, JSON.stringify(configs, null, 2), 'utf-8')
+    } catch (e) {
+      logger.error(`Error saving configs: ${e instanceof Error ? e.message : String(e)}`)
+      throw new Error(`Error saving configs: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  getConfigs(): ComfyUIProviderConfig[] {
+    return this.loadConfigs()
+  }
+
+  getConfigById(id: string): ComfyUIProviderConfig | undefined {
+    return this.loadConfigs().find(c => c.id === id)
+  }
+
+  getDefaultConfig(): ComfyUIProviderConfig | undefined {
+    const configs = this.loadConfigs()
+    const defaultConfig = configs.find(c => c.is_default)
+    if (defaultConfig) return defaultConfig
+    return configs.length > 0 ? configs[0] : undefined
+  }
+
+  createConfig(input: {
+    provider: string
+    name: string
+    api_key: string
+    default_model?: string
+    base_url?: string
+    is_default: boolean
+    default_max_tokens?: number
+    default_temperature?: number
+    retries?: number
+    retry_delay?: number
+    headers?: Record<string, string>
+    custom_config?: Record<string, unknown>
+    model_configs?: Record<string, ComfyUIModelConfig>
+  }): ComfyUIProviderConfig {
+    const configs = this.loadConfigs()
+    const now = Date.now() / 1000
+    const id = crypto.randomUUID()
+
+    if (input.is_default) {
+      for (const c of configs) {
+        c.is_default = false
+      }
+    }
+
+    let resolvedDefaultModel = input.default_model || ''
+    if (!resolvedDefaultModel && input.model_configs) {
+      const firstKey = Object.keys(input.model_configs)[0]
+      if (firstKey) {
+        resolvedDefaultModel = input.model_configs[firstKey].id
+      }
+    }
+
+    const newConfig: ComfyUIProviderConfig = {
+      id,
+      provider: input.provider,
+      name: input.name,
+      api_key: input.api_key,
+      default_model: resolvedDefaultModel,
+      base_url: input.base_url,
+      is_default: input.is_default,
+      default_max_tokens: input.default_max_tokens,
+      default_temperature: input.default_temperature,
+      retries: input.retries,
+      retry_delay: input.retry_delay,
+      headers: input.headers,
+      custom_config: input.custom_config,
+      model_configs: input.model_configs,
+      created_at: now,
+      updated_at: now,
+    }
+
+    configs.push(newConfig)
+    this.saveConfigs(configs)
+    return newConfig
+  }
+
+  updateConfig(id: string, updates: Partial<ComfyUIProviderConfig>): ComfyUIProviderConfig | undefined {
+    const configs = this.loadConfigs()
+    const index = configs.findIndex(c => c.id === id)
+
+    if (index === -1) return undefined
+
+    const config = configs[index]
+
+    if (updates.provider !== undefined) config.provider = updates.provider
+    if (updates.name !== undefined) config.name = updates.name
+    if (updates.api_key !== undefined) config.api_key = updates.api_key
+    if (updates.default_model !== undefined) config.default_model = updates.default_model
+    if (updates.base_url !== undefined) config.base_url = updates.base_url
+    if (updates.default_max_tokens !== undefined) config.default_max_tokens = updates.default_max_tokens
+    if (updates.default_temperature !== undefined) config.default_temperature = updates.default_temperature
+    if (updates.retries !== undefined) config.retries = updates.retries
+    if (updates.retry_delay !== undefined) config.retry_delay = updates.retry_delay
+    if (updates.headers !== undefined) config.headers = updates.headers
+    if (updates.custom_config !== undefined) {
+      if (config.provider === 'custom') {
+        config.custom_config = updates.custom_config
+      } else {
+        config.custom_config = undefined
+      }
+    }
+    if (updates.model_configs !== undefined) config.model_configs = updates.model_configs
+
+    if (updates.is_default !== undefined) {
+      if (updates.is_default) {
+        for (const c of configs) {
+          c.is_default = false
+        }
+      }
+      config.is_default = updates.is_default
+    }
+
+    config.updated_at = Date.now() / 1000
+    configs[index] = config
+    this.saveConfigs(configs)
+    return config
+  }
+
+  deleteConfig(id: string): boolean {
+    const configs = this.loadConfigs()
+    const index = configs.findIndex(c => c.id === id)
+
+    if (index === -1) return false
+
+    configs.splice(index, 1)
+    this.saveConfigs(configs)
+    return true
+  }
+
+  setDefaultConfig(id: string): ComfyUIProviderConfig | undefined {
+    const configs = this.loadConfigs()
+    const target = configs.find(c => c.id === id)
+
+    if (!target) return undefined
+
+    for (const c of configs) {
+      c.is_default = false
+    }
+
+    target.is_default = true
+    target.updated_at = Date.now() / 1000
+    this.saveConfigs(configs)
+    return target
+  }
+
+  hasGitHubToken(): boolean {
+    return existsSync(this.githubTokenFile)
+  }
+
+  getGitHubToken(): string | undefined {
+    if (!existsSync(this.githubTokenFile)) return undefined
+
+    try {
+      const content = readFileSync(this.githubTokenFile, 'utf-8')
+      const data = JSON.parse(content)
+      return data.token as string
+    } catch {
+      return undefined
+    }
+  }
+
+  updateGitHubToken(token: string): void {
+    const data = { token, created_at: Date.now() / 1000, updated_at: Date.now() / 1000 }
+    writeFileSync(this.githubTokenFile, JSON.stringify(data, null, 2), 'utf-8')
+
+    process.env.GITHUB_TOKEN = token
+  }
+
+  deleteGitHubToken(): void {
+    if (existsSync(this.githubTokenFile)) {
+      unlinkSync(this.githubTokenFile)
+    }
+    delete process.env.GITHUB_TOKEN
+  }
+}
+
+const comfyUIConfigStore = new ComfyUIConfigStore()
+
+async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProvider> {
+  const providerName = `comfyui-${config.id}`
+  const existingNames = getAllProviderNames()
+
+  if (existingNames.includes(providerName)) {
+    removeProvider(providerName)
+  }
+
+  let effectiveBaseUrl = config.base_url
+  let resolvedHeaders: Record<string, string> = { ...config.headers }
+
+  if (config.provider === 'custom' && config.custom_config) {
+    const customConfig = config.custom_config
+    const endpoint = (customConfig.endpoint as string) || '/chat/completions'
+    const headersTemplate = customConfig.headers as string | undefined
+
+    const endpointWithoutChatCompletions = endpoint.replace(/\/chat\/completions$/, '').replace(/\/$/, '')
+    if (effectiveBaseUrl && endpointWithoutChatCompletions) {
+      effectiveBaseUrl = effectiveBaseUrl.replace(/\/$/, '') + endpointWithoutChatCompletions
+    }
+
+    if (headersTemplate) {
+      try {
+        const resolved = headersTemplate.replace(/\$apiKey/g, config.api_key)
+        const parsed = JSON.parse(resolved) as Record<string, unknown>
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'string' && v.startsWith('$')) continue
+          resolvedHeaders[k] = String(v)
+        }
+      } catch (e) {
+        console.warn('[SGA] Failed to parse headers template:', e)
+      }
+    }
+  }
+
+  const storedConfig: StoredProviderConfig = {
+    name: providerName,
+    apiKey: config.api_key,
+    baseUrl: effectiveBaseUrl,
+    defaultModel: config.default_model,
+    defaultMaxTokens: config.default_max_tokens,
+    defaultTemperature: config.default_temperature,
+    retries: config.retries,
+    retryDelay: config.retry_delay,
+    headers: Object.keys(resolvedHeaders).length > 0 ? resolvedHeaders : undefined,
+    modelConfigs: config.model_configs as Record<string, import('../providers/types.js').ModelConfig> | undefined,
+    extra: config.custom_config as Record<string, unknown> | undefined,
+  }
+
+  await addProvider(storedConfig)
+  return resolveProvider(providerName)
+}
+
+export async function handleComfyUIChatStream(req: Request, res: Response): Promise<void> {
+  const { message, workflow, session_id, error_log, language, config_id, workflow_context_text } = req.body as Record<string, unknown>
+  const sessionId = session_id as string
+  const userMessage = message as string
+  const errorLog = error_log as string | undefined
+  const lang = (language as string) ?? 'en'
+  const configId = config_id as string | undefined
+  const workflowContextText = workflow_context_text as string | undefined
+
+  try {
+    const config = configId ? comfyUIConfigStore.getConfigById(configId) : comfyUIConfigStore.getDefaultConfig()
+
+    if (!config) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.setHeader('X-Accel-Buffering', 'no')
+      res.write(formatSSE({ type: 'error', data: 'No provider configuration found. Please configure a provider in settings.' }))
+      res.write(formatSSE({ type: 'done', data: null }))
+      res.end()
+      return
+    }
+
+    await ensureSgaProvider(config)
+    const providerName = `comfyui-${config.id}`
+    const model = config.default_model ?? 'sonnet'
+
+    const store = getSessionStore()
+    let session = store.get(sessionId)
+    if (!session) {
+      session = createSession({
+        model,
+        providerName,
+        agentType: 'comfyui-workflow',
+      })
+      session.id = sessionId
+      store.set(session)
+    }
+
+    getOrCreateCostManager(session.id)
+
+    let ws = getWorkingSet()
+    if (!ws) {
+      ws = initWorkingSet()
+    }
+
+    if (workflow) {
+      const workflowStr = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+      const workflowObj = workflow as Record<string, unknown> | undefined
+      const nodes = (workflowObj?.nodes ?? []) as Array<Record<string, unknown>>
+      ws.pin(
+        `workflow-${sessionId}`,
+        `ComfyUI Workflow (${nodes.length} nodes)`,
+        workflowStr,
+        'comfyui-workflow',
+        'critical',
+        20_000,
+      )
+
+      const nodeTypes = nodes.map(n => n.type as string).filter(Boolean)
+      const uniqueTypes = [...new Set(nodeTypes)]
+      const typeCounts = new Map<string, number>()
+      for (const t of nodeTypes) {
+        typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1)
+      }
+      const summaryLines = [
+        `Total nodes: ${nodes.length}`,
+        `Unique node types: ${uniqueTypes.length}`,
+        `Node types: ${uniqueTypes.map(t => `${t}(${typeCounts.get(t)})`).join(', ')}`,
+      ]
+      const lastNodeId = workflowObj?.last_node_id ?? 'unknown'
+      const lastLinkId = workflowObj?.last_link_id ?? 'unknown'
+      summaryLines.push(`Last node ID: ${lastNodeId}, Last link ID: ${lastLinkId}`)
+
+      ws.pin(
+        `workflow-summary-${sessionId}`,
+        `Workflow Summary`,
+        summaryLines.join('\n'),
+        'comfyui-workflow',
+        'high',
+        1_000,
+      )
+    }
+
+    if (errorLog) {
+      ws.pin(
+        `error-log-${sessionId}`,
+        `Runtime Errors`,
+        errorLog,
+        'comfyui-workflow',
+        'high',
+        3_000,
+      )
+    }
+
+    let contextParts: string[] = []
+    if (workflow) {
+      const workflowStr = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+      contextParts.push(`[FULL WORKFLOW JSON]\n${workflowStr}`)
+    }
+    if (workflowContextText) {
+      contextParts.push(`[WORKFLOW PANEL CONTEXT (from ComfyUI RightSidePanel data sources)]\n${workflowContextText}`)
+    }
+    if (errorLog) {
+      contextParts.push(`[RUNTIME ERRORS]\nThe user encountered the following errors during execution:\n${errorLog}`)
+    }
+    if (lang && lang !== 'en') {
+      contextParts.push(`IMPORTANT: You MUST respond in the following language code: "${lang}". Translate your advice and interface text accordingly.`)
+    }
+
+    const fullContent = contextParts.length > 0
+      ? `${contextParts.join('\n\n')}\n\n${userMessage}`
+      : userMessage
+
+    const userMsg: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: [{ type: 'text', text: fullContent }],
+      timestamp: Date.now(),
+    }
+    store.appendMessage(session.id, userMsg)
+
+    const contextInjector = new ComfyUIContextInjector()
+    await contextInjector.onSessionStart(session.messages)
+    contextInjector.injectWorkflowSummary(session.messages)
+
+    await handleStreamResponse(req, res, session, {
+      content: fullContent,
+      stream: true,
+      agentType: 'comfyui-workflow',
+      providerName,
+      model,
+    })
+  } catch (error) {
+    logger.error(`Chat stream error: ${error instanceof Error ? error.message : String(error)}`)
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.setHeader('X-Accel-Buffering', 'no')
+    }
+    try {
+      res.write(formatSSE({ type: 'error', data: error instanceof Error ? error.message : String(error) }))
+      res.write(formatSSE({ type: 'done', data: null }))
+    } catch {
+      // connection closed
+    }
+    res.end()
+  }
+}
+
+export function handleComfyUIChatHistory(req: Request, res: Response): void {
+  const sessionId = req.params.sessionId as string
+  const store = getSessionStore()
+  const session = store.get(sessionId)
+
+  if (!session) {
+    res.json([])
+    return
+  }
+
+  const history = session.messages
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => {
+      let text = m.content
+        .filter(c => c.type === 'text' && c.text)
+        .map(c => c.text!)
+        .join('\n')
+      if (m.role === 'user') {
+        const requestMatch = text.match(/\[USER REQUEST\]\s*"([^"]*)"/)
+        if (requestMatch) {
+          text = requestMatch[1]
+        }
+      } else if (m.role === 'assistant') {
+        text = text
+          .replace(/SUGGESTED_ACTIONS:\s*\[.*?\]/, '')
+          .replace(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/, '')
+          .trim()
+      }
+      return {
+        sender: m.role === 'user' ? 'user' : 'ai',
+        text,
+        timestamp: m.timestamp,
+        metadata: m.role === 'assistant' ? { provider: 'sga' } : undefined,
+      }
+    })
+
+  res.json(history)
+}
+
+export async function handleComfyUIWorkflowAnalyze(req: Request, res: Response): Promise<void> {
+  const { workflow, language } = req.body as Record<string, unknown>
+
+  try {
+    const tools = buildToolPool()
+    const analyzerTool = tools.find(t => t.name === 'workflow_analyzer')
+
+    if (!analyzerTool) {
+      res.json({ issues: [] })
+      return
+    }
+
+    const workflowJson = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+    const result = await analyzerTool.call(
+      { workflow_json: workflowJson, language: (language as string) ?? 'en' },
+      {
+        tools,
+        messages: [],
+        abortController: new AbortController(),
+        getAppState: () => ({}),
+        setAppState: () => {},
+      },
+    )
+
+    const analysis = JSON.parse(result as string)
+    res.json({ issues: analysis.issues ?? [], analysis })
+  } catch (error) {
+    logger.error(`Workflow analyze error: ${error instanceof Error ? error.message : String(error)}`)
+    res.json({ issues: [] })
+  }
+}
+
+export async function handleComfyUIWorkflowParse(req: Request, res: Response): Promise<void> {
+  const { workflow, language } = req.body as Record<string, unknown>
+
+  try {
+    const tools = buildToolPool()
+    const analyzerTool = tools.find(t => t.name === 'workflow_analyzer')
+
+    if (!analyzerTool) {
+      res.json({ analysis: { summary: '', data_flow: [], key_nodes: [], issues: [], suggestions: [] }, workflow_json: workflow })
+      return
+    }
+
+    const workflowJson = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+    const result = await analyzerTool.call(
+      { workflow_json: workflowJson, language: (language as string) ?? 'en' },
+      {
+        tools,
+        messages: [],
+        abortController: new AbortController(),
+        getAppState: () => ({}),
+        setAppState: () => {},
+      },
+    )
+
+    const analysis = JSON.parse(result as string)
+    res.json({ analysis, workflow_json: workflow })
+  } catch (error) {
+    logger.error(`Workflow parse error: ${error instanceof Error ? error.message : String(error)}`)
+    res.json({ analysis: { summary: '', data_flow: [], key_nodes: [], issues: [], suggestions: [] }, workflow_json: workflow })
+  }
+}
+
+export function handleComfyUIActionExecute(req: Request, res: Response): void {
+  const { action_type, action_data } = req.body as Record<string, unknown>
+
+  try {
+    res.json({
+      success: true,
+      message: `Action ${action_type as string} executed successfully`,
+      data: action_data,
+      can_undo: true,
+      undo_action: 'undo',
+    })
+  } catch (error) {
+    res.json({
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+export function handleComfyUIActionUndo(_req: Request, res: Response): void {
+  try {
+    const lastAction = undoLastAction()
+    if (lastAction) {
+      res.json({
+        success: true,
+        message: 'Action undone successfully',
+        restored_state: lastAction.workflow_before,
+      })
+    } else {
+      res.json({
+        success: false,
+        message: 'No action to undo',
+      })
+    }
+  } catch (error) {
+    res.json({
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+function toFrontendConfig(config: ComfyUIProviderConfig): Record<string, unknown> {
+  return {
+    id: config.id,
+    provider: config.provider,
+    name: config.name,
+    default_model: config.default_model,
+    base_url: config.base_url,
+    is_default: config.is_default,
+    default_max_tokens: config.default_max_tokens,
+    default_temperature: config.default_temperature,
+    retries: config.retries,
+    retry_delay: config.retry_delay,
+    headers: config.headers,
+    custom_config: config.custom_config,
+    model_configs: config.model_configs,
+    extension: config.provider === 'custom' && config.custom_config
+      ? { providerModule: undefined }
+      : undefined,
+    has_api_key: !!config.api_key,
+    created_at: new Date(config.created_at * 1000).toISOString(),
+  }
+}
+
+export function handleComfyUIListConfigs(_req: Request, res: Response): void {
+  const configs = comfyUIConfigStore.getConfigs()
+  res.json({ configs: configs.map(toFrontendConfig), total: configs.length })
+}
+
+export function handleComfyUICreateConfig(req: Request, res: Response): void {
+  try {
+    const body = req.body as Record<string, unknown>
+    const provider = body.provider as string
+    const custom_config = body.custom_config as Record<string, unknown> | undefined
+
+    if (provider !== 'custom' && custom_config) {
+      res.status(400).json({ error: 'custom_config is only allowed for custom provider' })
+      return
+    }
+
+    const config = comfyUIConfigStore.createConfig({
+      provider,
+      name: body.name as string,
+      api_key: body.api_key as string,
+      default_model: body.default_model as string | undefined,
+      base_url: body.base_url as string | undefined,
+      is_default: (body.is_default as boolean) ?? false,
+      default_max_tokens: body.default_max_tokens as number | undefined,
+      default_temperature: body.default_temperature as number | undefined,
+      retries: body.retries as number | undefined,
+      retry_delay: body.retry_delay as number | undefined,
+      headers: body.headers as Record<string, string> | undefined,
+      custom_config,
+      model_configs: body.model_configs as Record<string, ComfyUIModelConfig> | undefined,
+    })
+
+    res.json(toFrontendConfig(config))
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export function handleComfyUIGetConfig(req: Request, res: Response): void {
+  const configId = req.params.configId as string
+  const config = comfyUIConfigStore.getConfigById(configId)
+  if (!config) {
+    res.status(404).json({ error: 'Config not found' })
+    return
+  }
+  res.json(toFrontendConfig(config))
+}
+
+export function handleComfyUIUpdateConfig(req: Request, res: Response): void {
+  try {
+    const configId = req.params.configId as string
+    const body = req.body as Record<string, unknown>
+
+    const updates: Partial<ComfyUIProviderConfig> = {}
+    if (body.provider !== undefined) updates.provider = body.provider as string
+    if (body.name !== undefined) updates.name = body.name as string
+    if (body.api_key !== undefined) updates.api_key = body.api_key as string
+    if (body.default_model !== undefined) updates.default_model = body.default_model as string
+    if (body.base_url !== undefined) updates.base_url = body.base_url as string | undefined
+    if (body.is_default !== undefined) updates.is_default = body.is_default as boolean
+    if (body.default_max_tokens !== undefined) updates.default_max_tokens = body.default_max_tokens as number | undefined
+    if (body.default_temperature !== undefined) updates.default_temperature = body.default_temperature as number | undefined
+    if (body.retries !== undefined) updates.retries = body.retries as number | undefined
+    if (body.retry_delay !== undefined) updates.retry_delay = body.retry_delay as number | undefined
+    if (body.headers !== undefined) updates.headers = body.headers as Record<string, string> | undefined
+    if (body.custom_config !== undefined) updates.custom_config = body.custom_config as Record<string, unknown> | undefined
+    if (body.model_configs !== undefined) updates.model_configs = body.model_configs as Record<string, ComfyUIModelConfig> | undefined
+
+    const config = comfyUIConfigStore.updateConfig(configId, updates)
+    if (!config) {
+      res.status(404).json({ error: 'Config not found' })
+      return
+    }
+    res.json(toFrontendConfig(config))
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export function handleComfyUIDeleteConfig(req: Request, res: Response): void {
+  const configId = req.params.configId as string
+  const success = comfyUIConfigStore.deleteConfig(configId)
+  res.json({ success, message: success ? 'Config deleted successfully' : 'Config not found' })
+}
+
+export function handleComfyUISetDefaultConfig(req: Request, res: Response): void {
+  const { config_id } = req.body as Record<string, unknown>
+  const config = comfyUIConfigStore.setDefaultConfig(config_id as string)
+  if (!config) {
+    res.status(404).json({ error: 'Config not found' })
+    return
+  }
+  res.json(toFrontendConfig(config))
+}
+
+export function handleComfyUIGetGitHubToken(_req: Request, res: Response): void {
+  const hasToken = comfyUIConfigStore.hasGitHubToken()
+  res.json({ has_token: hasToken })
+}
+
+export function handleComfyUIUpdateGitHubToken(req: Request, res: Response): void {
+  const { token } = req.body as Record<string, unknown>
+  comfyUIConfigStore.updateGitHubToken(token as string)
+  res.json({ success: true, message: 'GitHub token updated successfully', has_token: true })
+}
+
+export function handleComfyUIDeleteGitHubToken(_req: Request, res: Response): void {
+  comfyUIConfigStore.deleteGitHubToken()
+  res.json({ success: true, message: 'GitHub token deleted successfully', has_token: false })
+}
+
+export function handleComfyUIUserInput(req: Request, res: Response): void {
+  const { session_id, action_id, decision, updatedInput, reason, value, optionValue } = req.body as Record<string, unknown>
+
+  const store = getSessionStore()
+  const session = store.get(session_id as string)
+
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  if (session.status !== 'waiting_input') {
+    res.status(400).json({ error: 'Session is not waiting for input' })
+    return
+  }
+
+  if (!session.pendingAction) {
+    res.status(400).json({ error: 'No pending action found' })
+    return
+  }
+
+  const pendingResolver = pendingResolvers.get(action_id as string)
+  if (!pendingResolver) {
+    res.status(400).json({ error: 'Invalid or expired action ID' })
+    return
+  }
+
+  if (session.pendingAction.type === 'approval') {
+    const response: UserApprovalResponse = {
+      actionId: action_id as string,
+      decision: (decision as 'allow' | 'deny') ?? 'deny',
+      updatedInput: updatedInput as Record<string, unknown> | undefined,
+      reason: reason as string | undefined,
+    }
+    pendingResolver.resolve(response)
+  } else {
+    const response: UserInputResponse = {
+      actionId: action_id as string,
+      value: (value as string) ?? '',
+      optionValue: optionValue as string | undefined,
+    }
+    pendingResolver.resolve(response)
+  }
+
+  pendingResolvers.delete(action_id as string)
+
+  res.json({
+    success: true,
+    sessionId: session.id,
+    message: 'Input received, agent execution will resume',
+  })
 }

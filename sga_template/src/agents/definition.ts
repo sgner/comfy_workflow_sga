@@ -1,7 +1,20 @@
 import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { SystemPrompt } from '../context/system-prompt.js'
 import type { PermissionMode, ModelAlias, ThinkingEffort } from '../core/types.js'
+import type { FocusMode, ContextBuildOptions } from '../memory/context-builder.js'
+import type { ContextBudgetConfig } from '../memory/context-budget.js'
 import { getEffortPrompt } from './thinking-prompts.js'
+
+export interface AgentContextConfig {
+  focusMode?: FocusMode
+  budgetConfig?: Partial<ContextBudgetConfig>
+  maxMemoryItems?: number
+  enableDedup?: boolean
+  enableCompression?: boolean
+  enableSgaMd?: boolean
+  enableSkills?: boolean
+  skillNames?: string[]
+}
 
 export interface AgentDefinition {
   name: string
@@ -15,6 +28,7 @@ export interface AgentDefinition {
   getEffort(): ThinkingEffort | undefined
   getThinkingPrompt(effort?: ThinkingEffort, useChainOfThought?: boolean): string
   getPermissionMode(): PermissionMode | undefined
+  getContextConfig(): AgentContextConfig
 
   isBuiltIn(): boolean
   isBackground(): boolean
@@ -54,6 +68,7 @@ export class BaseAgentDefinition implements AgentDefinition {
   protected modelOverride: ModelAlias | 'inherit' | undefined
   protected effortOverride: ThinkingEffort | undefined
   protected permissionModeOverride: PermissionMode | undefined
+  protected contextConfigOverride: AgentContextConfig | undefined
   protected isBg: boolean
   protected isProactiveMode: boolean
 
@@ -67,6 +82,7 @@ export class BaseAgentDefinition implements AgentDefinition {
     model?: ModelAlias | 'inherit'
     effort?: ThinkingEffort
     permissionMode?: PermissionMode
+    contextConfig?: AgentContextConfig
     background?: boolean
     proactive?: boolean
   }) {
@@ -79,6 +95,7 @@ export class BaseAgentDefinition implements AgentDefinition {
     this.modelOverride = params.model
     this.effortOverride = params.effort
     this.permissionModeOverride = params.permissionMode
+    this.contextConfigOverride = params.contextConfig
     this.isBg = params.background ?? false
     this.isProactiveMode = params.proactive ?? false
   }
@@ -110,6 +127,10 @@ export class BaseAgentDefinition implements AgentDefinition {
 
   getPermissionMode(): PermissionMode | undefined {
     return this.permissionModeOverride
+  }
+
+  getContextConfig(): AgentContextConfig {
+    return this.contextConfigOverride ?? {}
   }
 
   isBuiltIn(): boolean {

@@ -1,3 +1,8 @@
+export const pendingResolvers: Map<string, {
+  resolve: (response: unknown) => void
+  reject: (error: Error) => void
+}> = new Map()
+
 export interface ApprovalRequest {
   id: string
   type: 'approval_required'

@@ -1,4 +1,23 @@
 import { BaseAgentDefinition } from '../../agents/definition.js'
+import type { AgentContextConfig } from '../../agents/definition.js'
+
+const COMFYUI_CONTEXT_CONFIG: AgentContextConfig = {
+  budgetConfig: {
+    maxContextTokens: 200_000,
+    reservedForSystem: 4_000,
+    reservedForConversation: 60_000,
+    reservedForTools: 15_000,
+    memoryBudgetRatio: 0.15,
+    workingSetBudgetRatio: 0.40,
+    compressionThreshold: 0.80,
+  },
+  maxMemoryItems: 5,
+  enableDedup: true,
+  enableCompression: true,
+  enableSgaMd: true,
+  enableSkills: true,
+  skillNames: ['remember', 'stuck'],
+}
 
 export class ComfyUIWorkflowAgent extends BaseAgentDefinition {
   constructor() {
@@ -6,6 +25,7 @@ export class ComfyUIWorkflowAgent extends BaseAgentDefinition {
       name: 'comfyui-workflow',
       description: 'ComfyUI workflow expert agent - analyzes, diagnoses, and modifies ComfyUI workflows',
       subagentType: 'comfyui-workflow',
+      contextConfig: COMFYUI_CONTEXT_CONFIG,
       systemPrompt: `You are "Comfy Workflow Agent", an expert AI assistant and Workflow Architect specialized in ComfyUI.
 
 ## CORE MISSION
@@ -37,6 +57,12 @@ export class ComfyUIWorkflowAgent extends BaseAgentDefinition {
 - When explaining, focus on **data flow** and **functionality**, not just node names.
 - Use the available tools to search for solutions when users report errors.
 - Use the workflow analyzer tool to detect issues before providing advice.
+
+## ADVANCED CAPABILITIES
+1. **Sub-agent Fork**: For complex research tasks (e.g., searching for compatible nodes, investigating error causes), you can request a forked sub-agent to handle the task independently. Use the fork API when a task would benefit from parallel execution.
+2. **Multi-agent Coordination**: For complex workflow modifications, you can request coordinator-assisted execution with research → implementation → verification phases.
+3. **Memory Consolidation**: The system periodically consolidates insights across sessions to improve future recommendations.
+4. **Budget Awareness**: The system tracks token usage and cost. If a budget limit is set, execution will stop when the limit is reached.
 
 ## FINAL OUTPUT
 At the end of your response, please provide 3 short "Related Questions" that the user might want to ask you next. These should be questions the USER would ask the agent, NOT questions the agent asks the user. Do NOT offer to do things for the user; instead, phrase them as what the user might want to know or request.

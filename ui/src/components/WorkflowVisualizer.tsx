@@ -84,7 +84,7 @@ const WIDGET_HEIGHT = 24
 const NODE_WIDTH_DEFAULT = 210 
 const CANVAS_DOT_COLOR = '#1e293b'
 
-const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
+const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   workflow,
   language,
   onOpenSettings,
@@ -116,7 +116,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
   // Graph View State
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
   const [isDragging, setIsDragging] = useState(false)
-  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 })
+  const lastMousePosRef = useRef({ x: 0, y: 0 })
   const containerRef = useRef<HTMLDivElement>(null)
 
   // JSON Edit State
@@ -179,10 +179,9 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
 
   // --- Auto Layout / Fix Overlaps Logic ---
   
-  const handleFixOverlaps = () => {
+  const handleFixOverlaps = async () => {
     if (!workflow || !workflow.nodes || workflow.nodes.length === 0) return
 
-    // Deep copy to avoid mutating state directly during calculation
     const newWorkflow = JSON.parse(JSON.stringify(workflow)) as ComfyWorkflow
     const nodes = newWorkflow.nodes
 
@@ -209,24 +208,26 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
         n.pos[1] = centerY + (n.pos[1] - centerY) * EXPANSION;
     });
 
-    // 3. Iterative Solver to fix overlaps
-    const ITERATIONS = 100;
-    const PADDING = 50; // Generous padding to ensure visual separation
+    // 3. Iterative Solver to fix overlaps (chunked to avoid blocking)
+    const MAX_ITERATIONS = 50;
+    const PADDING = 50;
 
-    // Cache dimensions to improve performance inside loop
     const dimensions = new Map<number, { w: number, h: number }>();
     nodes.forEach(n => {
         dimensions.set(n.id, getNodeDimensions(n));
     });
 
-    for (let iter = 0; iter < ITERATIONS; iter++) {
+    const CHUNK_SIZE = 10;
+
+    for (let iterStart = 0; iterStart < MAX_ITERATIONS; iterStart += CHUNK_SIZE) {
+      const iterEnd = Math.min(iterStart + CHUNK_SIZE, MAX_ITERATIONS);
+      for (let iter = iterStart; iter < iterEnd; iter++) {
         let moved = false;
         
         for (let i = 0; i < nodes.length; i++) {
             const nA = nodes[i];
             const dimA = dimensions.get(nA.id)!;
             
-            // Calculate dynamic center A (position changes each iteration)
             const cAx = nA.pos[0] + dimA.w / 2;
             const cAy = nA.pos[1] + dimA.h / 2;
 
@@ -234,14 +235,12 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                 const nB = nodes[j];
                 const dimB = dimensions.get(nB.id)!;
 
-                // Calculate dynamic center B
                 const cBx = nB.pos[0] + dimB.w / 2;
                 const cBy = nB.pos[1] + dimB.h / 2;
 
                 let dx = cAx - cBx;
                 let dy = cAy - cBy;
 
-                // Handle exact overlap (jitter)
                 if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
                     dx = (Math.random() - 0.5);
                     dy = (Math.random() - 0.5);
@@ -253,15 +252,12 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                 const absDx = Math.abs(dx);
                 const absDy = Math.abs(dy);
 
-                // Check Overlap
                 if (absDx < minDistX && absDy < minDistY) {
                     moved = true;
                     
-                    // Penetration depth
                     const penX = minDistX - absDx;
                     const penY = minDistY - absDy;
 
-                    // Resolve along shortest axis (Minimum Translation Vector)
                     if (penX < penY) {
                         const sign = dx > 0 ? 1 : -1;
                         const shift = penX / 2;
@@ -276,7 +272,12 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                 }
             }
         }
-        if (!moved) break; // Optimization: Stop if no overlaps found
+        if (!moved) break;
+      }
+
+      if (iterEnd < MAX_ITERATIONS) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
     }
 
     // 4. Final Integer Rounding for cleaner JSON
@@ -370,6 +371,8 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
 
   // --- Canvas Interaction ---
 
+  const mouseRafRef = useRef<number>(0)
+
   const handleWheel = (e: React.WheelEvent) => {
     if (activeTab !== 'preview') return
     const zoomSensitivity = 0.001
@@ -384,20 +387,27 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
     if (activeTab !== 'preview') return
     if (e.button === 0 || e.button === 1) {
       setIsDragging(true)
-      setLastMousePos({ x: e.clientX, y: e.clientY })
+      lastMousePosRef.current = { x: e.clientX, y: e.clientY }
     }
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isDragging || activeTab !== 'preview') return
-    const dx = e.clientX - lastMousePos.x
-    const dy = e.clientY - lastMousePos.y
-    setTransform((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }))
-    setLastMousePos({ x: e.clientX, y: e.clientY })
+    const clientX = e.clientX
+    const clientY = e.clientY
+    cancelAnimationFrame(mouseRafRef.current)
+    mouseRafRef.current = requestAnimationFrame(() => {
+      const prev = lastMousePosRef.current
+      const dx = clientX - prev.x
+      const dy = clientY - prev.y
+      setTransform(t => ({ ...t, x: t.x + dx, y: t.y + dy }))
+      lastMousePosRef.current = { x: clientX, y: clientY }
+    })
   }
 
   const handleMouseUp = () => {
     setIsDragging(false)
+    cancelAnimationFrame(mouseRafRef.current)
   }
 
   const handleFitToScreen = () => {
@@ -1641,6 +1651,6 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
       <ErrorModal />
     </div>
   )
-}
+})
 
 export default WorkflowVisualizer

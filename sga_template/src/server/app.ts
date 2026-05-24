@@ -35,6 +35,26 @@ import {
   handleRemoveHook,
   handleTestHook,
   handleClassifyPermission,
+  handleComfyUIChatStream,
+  handleComfyUIChatHistory,
+  handleComfyUIWorkflowParse,
+  handleComfyUIWorkflowAnalyze,
+  handleComfyUIActionExecute,
+  handleComfyUIActionUndo,
+  handleComfyUIUserInput,
+  handleComfyUIListConfigs,
+  handleComfyUICreateConfig,
+  handleComfyUIGetConfig,
+  handleComfyUIUpdateConfig,
+  handleComfyUIDeleteConfig,
+  handleComfyUISetDefaultConfig,
+  handleComfyUIGetGitHubToken,
+  handleComfyUIUpdateGitHubToken,
+  handleComfyUIDeleteGitHubToken,
+  handleComfyUIFork,
+  handleComfyUICoordinator,
+  handleComfyUIAutoDream,
+  handleComfyUICost,
 } from './routes.js'
 import {
   handleListSkills,
@@ -147,6 +167,36 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/mcp/servers/:name/disconnect`, handleDisconnectMCPServer)
   app.get(`${base}/mcp/tools`, handleListMCPTools)
 
+  app.post('/api/chat/stream', handleComfyUIChatStream)
+  app.get('/api/chat/history/:sessionId', handleComfyUIChatHistory)
+
+  app.post('/api/workflow/parse', handleComfyUIWorkflowParse)
+  app.post('/api/workflow/analyze', handleComfyUIWorkflowAnalyze)
+
+  app.post('/api/actions/execute', handleComfyUIActionExecute)
+  app.post('/api/actions/undo', handleComfyUIActionUndo)
+  app.post('/api/user-input', handleComfyUIUserInput)
+
+  app.get('/api/configs', handleComfyUIListConfigs)
+  app.post('/api/configs', handleComfyUICreateConfig)
+  app.get('/api/configs/:configId', handleComfyUIGetConfig)
+  app.put('/api/configs/:configId', handleComfyUIUpdateConfig)
+  app.delete('/api/configs/:configId', handleComfyUIDeleteConfig)
+  app.post('/api/configs/set-default', handleComfyUISetDefaultConfig)
+
+  app.get('/api/github-token', handleComfyUIGetGitHubToken)
+  app.put('/api/github-token', handleComfyUIUpdateGitHubToken)
+  app.delete('/api/github-token', handleComfyUIDeleteGitHubToken)
+
+  app.post('/api/fork', handleComfyUIFork)
+  app.post('/api/coordinator', handleComfyUICoordinator)
+  app.post('/api/auto-dream', handleComfyUIAutoDream)
+  app.get('/api/cost', handleComfyUICost)
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok', service: 'comfyui-workflow-agent', version: '2.0.0' })
+  })
+
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' })
   })
@@ -242,6 +292,13 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     if (memoryManager) {
       memoryManager.setProvider(defaultProvider, defaultProvider.config.defaultModel)
     }
+  }
+
+  const { ComfyUIConfigStore } = await import('./routes.js')
+  const configStore = new ComfyUIConfigStore()
+  const githubToken = configStore.getGitHubToken()
+  if (githubToken) {
+    process.env.GITHUB_TOKEN = githubToken
   }
 
   const port = config.port ?? 3000

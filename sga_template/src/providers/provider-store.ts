@@ -337,7 +337,7 @@ export async function loadProvidersFromConfig(configs: Array<StoredProviderConfi
       const setAsDefault = defaultName ? config.name === defaultName : false
       await addProvider(config, setAsDefault)
     } catch (error) {
-      logger.error(`Failed to load provider "${config.name}" from config file: ${error instanceof Error ? error.message : String(error)}`)
+      logger.error(`Failed to load provider from config file: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   if (defaultName) {

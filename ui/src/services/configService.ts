@@ -115,10 +115,17 @@ export const submitUserInput = async (backendUrl: string, payload: {
     value?: string;
     optionValue?: string;
 }): Promise<{ success: boolean; message: string }> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/user-input`, {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${payload.session_id}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+            actionId: payload.action_id,
+            decision: payload.decision,
+            updatedInput: payload.updatedInput,
+            reason: payload.reason,
+            value: payload.value,
+            optionValue: payload.optionValue,
+        })
     });
     if (!res.ok) throw new Error('Failed to submit user input');
     return res.json();
@@ -152,19 +159,20 @@ export const analyzeWorkflow = async (backendUrl: string, workflow: Record<strin
 // --- MCP Server Endpoints ---
 
 export const fetchMCPServers = async (backendUrl: string): Promise<MCPServerInfo[]> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers`);
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/servers`);
     if (!res.ok) throw new Error('Failed to fetch MCP servers');
-    return res.json();
+    const data = await res.json();
+    return data.servers || data;
 };
 
 export const fetchMCPServer = async (backendUrl: string, name: string): Promise<MCPServerInfo> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}`);
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/servers/${encodeURIComponent(name)}`);
     if (!res.ok) throw new Error('Failed to fetch MCP server');
     return res.json();
 };
 
 export const addMCPServer = async (backendUrl: string, config: { name: string; transport: string; command?: string; url?: string; args?: string[]; env?: Record<string, string> }): Promise<MCPServerInfo> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers`, {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/servers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -174,42 +182,44 @@ export const addMCPServer = async (backendUrl: string, config: { name: string; t
 };
 
 export const deleteMCPServer = async (backendUrl: string, name: string): Promise<void> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete MCP server');
 };
 
 export const connectMCPServer = async (backendUrl: string, name: string): Promise<void> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}/connect`, { method: 'POST' });
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/servers/${encodeURIComponent(name)}/connect`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to connect MCP server');
 };
 
 export const disconnectMCPServer = async (backendUrl: string, name: string): Promise<void> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}/disconnect`, { method: 'POST' });
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/servers/${encodeURIComponent(name)}/disconnect`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to disconnect MCP server');
 };
 
 export const fetchMCPTools = async (backendUrl: string): Promise<Array<{ name: string; description: string; serverName: string }>> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/tools`);
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/mcp/tools`);
     if (!res.ok) throw new Error('Failed to fetch MCP tools');
-    return res.json();
+    const data = await res.json();
+    return data.tools || data;
 };
 
 // --- Skills Endpoints ---
 
 export const fetchSkills = async (backendUrl: string): Promise<SkillInfo[]> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills`);
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/skills`);
     if (!res.ok) throw new Error('Failed to fetch skills');
-    return res.json();
+    const data = await res.json();
+    return data.skills || data;
 };
 
 export const fetchSkill = async (backendUrl: string, name: string): Promise<SkillInfo> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills/${encodeURIComponent(name)}`);
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/skills/${encodeURIComponent(name)}`);
     if (!res.ok) throw new Error('Failed to fetch skill');
     return res.json();
 };
 
 export const addSkill = async (backendUrl: string, config: { name: string; description: string; whenToUse?: string; userInvocable?: boolean; source?: string }): Promise<SkillInfo> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills`, {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/skills`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -219,6 +229,6 @@ export const addSkill = async (backendUrl: string, config: { name: string; descr
 };
 
 export const deleteSkill = async (backendUrl: string, name: string): Promise<void> => {
-    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete skill');
 };

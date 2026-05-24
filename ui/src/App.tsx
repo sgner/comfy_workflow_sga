@@ -1,6 +1,6 @@
 
 
-import { GripHorizontal, Maximize2, Minimize2, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson } from 'lucide-react'
+import { GripHorizontal, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ChatPanel from './components/ChatPanel'
@@ -20,7 +20,6 @@ interface AppProps {
 const App: React.FC<AppProps> = () => {
   // --- UI State ---
   const [isVisible, setIsVisible] = useState(false)
-  const [isMinimized, setIsMinimized] = useState(false)
   const [visualizerTab, setVisualizerTab] = useState<VisualizerTab>('preview')
 
   // Window Management State
@@ -42,6 +41,8 @@ const App: React.FC<AppProps> = () => {
   // We start with a random one, but try to resolve a persistent one from the workflow
   const sessionIdRef = useRef<string>(`session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
   const lastLoadedSessionId = useRef<string | null>(null);
+  const sessionStoreRef = useRef<Map<string, ChatMessage[]>>(new Map())
+  const currentSessionIdRef = useRef<string | null>(null)
   
 
   // --- Application State ---
@@ -85,10 +86,49 @@ const App: React.FC<AppProps> = () => {
       }
     }
   ])
-  const [input, setInput] = useState('')
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
   const [isProcessing, setIsProcessing] = useState(false)
+  const [streamingText, setStreamingText] = useState('')
+  const streamingTextRef = useRef('')
+  const rafIdRef = useRef<number>(0)
   const [currentStatus, setCurrentStatus] = useState<AgentStatus | null>(null)
   const [activityTimeline, setActivityTimeline] = useState<AgentActivity[]>([])
+  const activityBufferRef = useRef<AgentActivity[]>([])
+  const activityRafRef = useRef<number>(0)
+
+  const flushActivityBuffer = useCallback(() => {
+    const buffered = activityBufferRef.current
+    if (buffered.length === 0) return
+    activityBufferRef.current = []
+    setActivityTimeline(prev => {
+      const updated = [...prev]
+      for (const activity of buffered) {
+        if (activity.type === 'tool_start') {
+          const existingIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
+          if (existingIdx !== -1) continue
+          const prevProcessing = updated.findIndex(a => a.status === 'processing' && (a.type === 'status' || a.type === 'thinking'))
+          if (prevProcessing !== -1) {
+            updated[prevProcessing] = { ...updated[prevProcessing], status: 'done', duration: activity.timestamp - updated[prevProcessing].timestamp }
+          }
+        }
+        if (activity.type === 'tool_result') {
+          const startIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
+          if (startIdx !== -1) {
+            updated[startIdx] = { ...updated[startIdx], status: 'done', duration: activity.timestamp - updated[startIdx].timestamp }
+          }
+        }
+        updated.push(activity)
+      }
+      return updated
+    })
+  }, [])
+
+  const bufferActivity = useCallback((activity: AgentActivity) => {
+    activityBufferRef.current.push(activity)
+    cancelAnimationFrame(activityRafRef.current)
+    activityRafRef.current = requestAnimationFrame(flushActivityBuffer)
+  }, [flushActivityBuffer])
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null)
   const [pendingHumanInput, setPendingHumanInput] = useState<HumanInputRequest | null>(null)
@@ -235,21 +275,6 @@ const App: React.FC<AppProps> = () => {
     if (app && app.graph) {
       const graphData = app.graph.serialize()
       setWorkflow(graphData as unknown as ComfyWorkflow)
-      const ctx = collectWorkflowContext()
-      setWorkflowContext(ctx)
-
-      const ctxIssues = contextErrorsToIssues(ctx).map(i => ({ ...i, source: 'native' as const }))
-      if (ctxIssues.length > 0) {
-        setIssues(prev => {
-          const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
-          const newIssues = ctxIssues.filter(i => !nativeIds.has(i.id))
-          const agentIssues = prev.filter(i => i.source === 'agent')
-          return [...newIssues, ...agentIssues]
-        })
-        setVisualizerTab('analysis')
-      } else {
-        setIssues(prev => prev.filter(i => i.source !== 'native'))
-      }
       
       const persistentId = getWorkflowId(graphData);
       if (persistentId) {
@@ -266,8 +291,26 @@ const App: React.FC<AppProps> = () => {
             const agentIssues = prev.filter(i => i.source === 'agent')
             return [...newIssues, ...agentIssues]
           })
+          setVisualizerTab('analysis')
+        } else {
+          setIssues(prev => prev.filter(i => i.source !== 'native'))
         }
-      }).catch(() => {})
+      }).catch(() => {
+        const ctx = collectWorkflowContext()
+        setWorkflowContext(ctx)
+        const ctxIssues = contextErrorsToIssues(ctx).map(i => ({ ...i, source: 'native' as const }))
+        if (ctxIssues.length > 0) {
+          setIssues(prev => {
+            const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
+            const newIssues = ctxIssues.filter(i => !nativeIds.has(i.id))
+            const agentIssues = prev.filter(i => i.source === 'agent')
+            return [...newIssues, ...agentIssues]
+          })
+          setVisualizerTab('analysis')
+        } else {
+          setIssues(prev => prev.filter(i => i.source !== 'native'))
+        }
+      })
     }
   }, [app, getWorkflowId])
 
@@ -377,29 +420,65 @@ const App: React.FC<AppProps> = () => {
      return persistentId || sessionIdRef.current;
   }, [workflow, getWorkflowId]);
 
+  const switchSession = useCallback((newSessionId: string) => {
+    if (newSessionId === currentSessionIdRef.current) return
+
+    if (currentSessionIdRef.current) {
+      sessionStoreRef.current.set(currentSessionIdRef.current, messagesRef.current)
+    }
+
+    currentSessionIdRef.current = newSessionId
+    sessionIdRef.current = newSessionId
+
+    const cached = sessionStoreRef.current.get(newSessionId)
+    if (cached) {
+      setMessages(cached)
+    } else {
+      setMessages([{
+        id: 'init-1',
+        sender: Sender.AI,
+        text: t(appSettings.language, 'welcome'),
+        timestamp: new Date(),
+        metadata: {
+          relatedQuestions: [t(appSettings.language, 'initActionExplain'), t(appSettings.language, 'initActionCheck')]
+        }
+      }])
+    }
+    setIssues([])
+    setActivityTimeline([])
+    activityBufferRef.current = []
+    setActiveToolCalls([])
+    setCurrentStatus(null)
+    setTokenUsage(null)
+    setStreamingText('')
+    streamingTextRef.current = ''
+  }, [appSettings.language])
+
+  useEffect(() => {
+    const newId = activeSessionId
+    if (newId && newId !== currentSessionIdRef.current) {
+      switchSession(newId)
+    }
+  }, [activeSessionId, switchSession])
+
+  useEffect(() => {
+    if (currentSessionIdRef.current) {
+      sessionStoreRef.current.set(currentSessionIdRef.current, messagesRef.current)
+    }
+  }, [messages])
+
   // --- Load Chat History when backend enabled ---
   useEffect(() => {
     if (appSettings.usePythonBackend && appSettings.pythonBackendUrl && isVisible) {
         if (activeSessionId === lastLoadedSessionId.current || isProcessing) {
             return;
         }
-        sessionIdRef.current = activeSessionId;
 
         const loadHistory = async () => {
             const hist = await fetchChatHistory(appSettings, activeSessionId);
             if (hist && hist.length > 0) {
-                setMessages(prev => {
-                     if (prev.length === 1 && prev[0].id === 'init-1') {
-                         return hist;
-                     }
-                     const existingSignatures = new Set(prev.map(m => `${m.sender}:${m.text.trim()}`));
-                     const newMsgs = hist.filter(h => {
-                         const sig = `${h.sender}:${h.text.trim()}`;
-                         return !existingSignatures.has(sig);
-                     });
-                     if (newMsgs.length === 0) return prev;
-                     return [...prev, ...newMsgs].sort((a,b) => a.timestamp.getTime() - b.timestamp.getTime());
-                });
+                setMessages(hist);
+                sessionStoreRef.current.set(activeSessionId, hist);
             }
             lastLoadedSessionId.current = activeSessionId;
         };
@@ -456,6 +535,30 @@ const App: React.FC<AppProps> = () => {
 
   // --- Event Listener for Runtime Exceptions ---
   useEffect(() => {
+    const registerWatcher = () => {
+      const currentApp = (window as any).app
+      if (currentApp && currentApp.registerExtension) {
+        currentApp.registerExtension({
+          name: 'Comfy.WorkflowAgent.GraphWatcher',
+          afterConfigureGraph() {
+            window.dispatchEvent(new CustomEvent('comfy-workflow-agent:graph-loaded'))
+          }
+        })
+        return true
+      }
+      return false
+    }
+
+    if (registerWatcher()) return
+
+    const retryTimer = setInterval(() => {
+      if (registerWatcher()) clearInterval(retryTimer)
+    }, 500)
+
+    return () => clearInterval(retryTimer)
+  }, [])
+
+  useEffect(() => {
     const handleToggle = () => setIsVisible(prev => !prev)
     window.addEventListener("comfy-workflow-agent-toggle", handleToggle)
 
@@ -485,14 +588,32 @@ const App: React.FC<AppProps> = () => {
         }
     }
 
+    const handleGraphChanged = () => {
+      const currentApp = (window as any).app
+      if (currentApp && currentApp.graph) {
+        const graphData = currentApp.graph.serialize()
+        setWorkflow(graphData as unknown as ComfyWorkflow)
+      }
+    }
+
+    const handleGraphCleared = () => {
+      setWorkflow({ last_node_id: 0, last_link_id: 0, nodes: [], links: [], groups: [], config: {}, extra: {}, version: 0.4 })
+    }
+
+    const handleWorkflowLoaded = () => {
+      const currentApp = (window as any).app
+      if (currentApp && currentApp.graph) {
+        const graphData = currentApp.graph.serialize()
+        setWorkflow(graphData as unknown as ComfyWorkflow)
+      }
+    }
+
     const setupApiListener = async () => {
         try {
-             // Try dynamic import for ComfyUI environment
              // @ts-ignore
              const module = await import("/scripts/api.js");
              apiInstance = module.api;
         } catch (e) {
-             // Fallback for dev mode or if dynamic import fails
              if (app && app.api) {
                  apiInstance = app.api;
              } else if ((window as any).app && (window as any).app.api) {
@@ -502,15 +623,22 @@ const App: React.FC<AppProps> = () => {
         
         if (apiInstance) {
             apiInstance.addEventListener('execution_error', handleExecutionError);
+            apiInstance.addEventListener('graphChanged', handleGraphChanged);
+            apiInstance.addEventListener('graphCleared', handleGraphCleared);
         }
     };
     
     setupApiListener();
 
+    window.addEventListener('comfy-workflow-agent:graph-loaded', handleWorkflowLoaded)
+
     return () => {
         window.removeEventListener("comfy-workflow-agent-toggle", handleToggle)
+        window.removeEventListener('comfy-workflow-agent:graph-loaded', handleWorkflowLoaded)
         if (apiInstance) {
             apiInstance.removeEventListener('execution_error', handleExecutionError);
+            apiInstance.removeEventListener('graphChanged', handleGraphChanged);
+            apiInstance.removeEventListener('graphCleared', handleGraphCleared);
         }
     }
   }, [app, appSettings.language]); 
@@ -631,10 +759,14 @@ const App: React.FC<AppProps> = () => {
   };
 
   // --- Chat Logic ---
+
+  const issuesRef = useRef(issues)
+  issuesRef.current = issues
+
   const handleSendMessage = useCallback(
     async (overrideText?: string, overrideErrorLog?: string) => {
-      const textToSend = overrideText || input
-      if (!textToSend.trim() || isProcessing) return
+      if (!overrideText?.trim() || isProcessing) return
+      const textToSend = overrideText
 
       if (!appSettings.usePythonBackend && !appSettings.apiKey && appSettings.provider === 'custom') {
         setIsSettingsOpen(true)
@@ -646,22 +778,24 @@ const App: React.FC<AppProps> = () => {
         const currentGraph = app.graph.serialize()
         currentWorkflow = currentGraph as unknown as ComfyWorkflow
         setWorkflow(currentWorkflow)
-        let ctx = collectWorkflowContext()
         try {
-          ctx = await collectWorkflowContextAsync()
-        } catch { /* use sync fallback */ }
-        setWorkflowContext(ctx)
+          const ctx = await collectWorkflowContextAsync()
+          setWorkflowContext(ctx)
 
-        const ctxIssues = contextErrorsToIssues(ctx).map(i => ({ ...i, source: 'native' as const }))
-        if (ctxIssues.length > 0) {
-          setIssues(prev => {
-            const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
-            const newIssues = ctxIssues.filter(i => !nativeIds.has(i.id))
-            const agentIssues = prev.filter(i => i.source === 'agent')
-            return [...newIssues, ...agentIssues]
-          })
-        } else {
-          setIssues(prev => prev.filter(i => i.source !== 'native'))
+          const ctxIssues = contextErrorsToIssues(ctx).map(i => ({ ...i, source: 'native' as const }))
+          if (ctxIssues.length > 0) {
+            setIssues(prev => {
+              const nativeIds = new Set(prev.filter(i => i.source === 'native').map(i => i.id))
+              const newIssues = ctxIssues.filter(i => !nativeIds.has(i.id))
+              const agentIssues = prev.filter(i => i.source === 'agent')
+              return [...newIssues, ...agentIssues]
+            })
+          } else {
+            setIssues(prev => prev.filter(i => i.source !== 'native'))
+          }
+        } catch {
+          const ctx = collectWorkflowContext()
+          setWorkflowContext(ctx)
         }
       }
 
@@ -673,12 +807,14 @@ const App: React.FC<AppProps> = () => {
       }
 
       setMessages((prev) => [...prev, userMsg])
-      setInput('')
       setIsProcessing(true)
       setCurrentStatus(null)
       setActivityTimeline([])
+      activityBufferRef.current = []
+      cancelAnimationFrame(activityRafRef.current)
+      setStreamingText('')
+      streamingTextRef.current = ''
 
-      // Create placeholder AI message
       const aiMsgId = (Date.now() + 1).toString()
       const initialAiMsg: ChatMessage = {
           id: aiMsgId,
@@ -691,7 +827,8 @@ const App: React.FC<AppProps> = () => {
       
       let errorLog = overrideErrorLog;
       if (!errorLog) {
-          const activeErrors = issues
+          const currentIssues = issuesRef.current
+          const activeErrors = currentIssues
             .filter(i => i.severity === 'error')
             .map(i => `Node ${i.nodeId}: ${i.message}`)
             .join('\n');
@@ -711,8 +848,16 @@ const App: React.FC<AppProps> = () => {
 
       let accumulatedText = "";
 
+      const scheduleStreamingUpdate = () => {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = requestAnimationFrame(() => {
+          setStreamingText(streamingTextRef.current)
+        })
+      }
+
       try {
-        const historyText = messages
+        const currentMessages = messagesRef.current
+        const historyText = currentMessages
           .slice(-5)
           .map((m) => `${m.sender}: ${m.text}`)
 
@@ -726,11 +871,8 @@ const App: React.FC<AppProps> = () => {
           _workflowContext ? formatWorkflowContextForPrompt(_workflowContext) : null,
           (chunk) => {
               accumulatedText += chunk;
-              setMessages((prev) => prev.map((m) => 
-                  m.id === aiMsgId 
-                  ? { ...m, text: accumulatedText, metadata: { ...m.metadata, thinking: false } }
-                  : m
-              ));
+              streamingTextRef.current = accumulatedText;
+              scheduleStreamingUpdate();
           },
           (status) => {
              setCurrentStatus(status);
@@ -758,32 +900,19 @@ const App: React.FC<AppProps> = () => {
              ));
           },
           (activity) => {
-             setActivityTimeline(prev => {
-                 const updated = [...prev]
-
-                 if (activity.type === 'tool_start') {
-                     const existingIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
-                     if (existingIdx !== -1) {
-                         return updated
-                     }
-                     const prevProcessing = updated.findIndex(a => a.status === 'processing' && (a.type === 'status' || a.type === 'thinking'))
-                     if (prevProcessing !== -1) {
-                         updated[prevProcessing] = { ...updated[prevProcessing], status: 'done', duration: activity.timestamp - updated[prevProcessing].timestamp }
-                     }
-                 }
-
-                 if (activity.type === 'tool_result') {
-                     const startIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
-                     if (startIdx !== -1) {
-                         updated[startIdx] = { ...updated[startIdx], status: 'done', duration: activity.timestamp - updated[startIdx].timestamp }
-                     }
-                 }
-
-                 return [...updated, activity]
-             })
+             bufferActivity(activity)
           },
           (usage) => {
              setTokenUsage(usage)
+          },
+          (workflowJson: string, _actionType: string) => {
+             try {
+                 const parsed = JSON.parse(workflowJson)
+                 setWorkflow(parsed)
+                 applyToCanvas(parsed)
+             } catch {
+                 // skip invalid JSON
+             }
           }
         )
 
@@ -831,26 +960,26 @@ const App: React.FC<AppProps> = () => {
         setMessages((prev) => [...prev, errorMsg])
         setMessages((prev) => prev.filter(m => m.id !== aiMsgId || m.text.length > 0))
       } finally {
+        cancelAnimationFrame(rafIdRef.current)
         setIsProcessing(false)
         setCurrentStatus(null)
         setActiveToolCalls([])
+        setStreamingText('')
+        streamingTextRef.current = ''
       }
     },
     [
-      input,
       isProcessing,
-      messages,
       workflow,
       appSettings,
       app,
-      issues,
       getWorkflowId
     ]
   )
 
-  const handleActionClick = (action: string) => handleSendMessage(action)
+  const handleActionClick = useCallback((action: string) => handleSendMessage(action), [handleSendMessage])
   
-  const handleSendErrorsToAi = (selectedIssues: WorkflowIssue[]) => {
+  const handleSendErrorsToAi = useCallback((selectedIssues: WorkflowIssue[]) => {
       const errorDetails = selectedIssues.map(issue => {
           let detail = `- Error: ${issue.message}`
           if (issue.nodeType) detail += `\n  Node Type: ${issue.nodeType}`
@@ -863,9 +992,9 @@ const App: React.FC<AppProps> = () => {
 
       const prompt = `Please fix the following runtime error(s):\n\n${errorDetails}`
       handleSendMessage(prompt, errorDetails)
-  }
+  }, [handleSendMessage])
 
-  const handleResolveIssue = (issue: WorkflowIssue) => {
+  const handleResolveIssue = useCallback((issue: WorkflowIssue) => {
       let prompt = `Please fix this issue: ${issue.message}`
       if (issue.nodeType) prompt += `\nNode Type: ${issue.nodeType}`
       if (issue.nodeId != null) prompt += `\nNode ID: ${issue.nodeId}`
@@ -874,17 +1003,19 @@ const App: React.FC<AppProps> = () => {
       if (issue.currentInputs) prompt += `\nCurrent Inputs: ${JSON.stringify(issue.currentInputs, null, 2)}`
       if (issue.fixSuggestion) prompt += `\nSuggested Fix: ${issue.fixSuggestion}`
       handleSendMessage(prompt)
-  }
+  }, [handleSendMessage])
 
-  const handleDownloadModel = (modelName: string, modelFolder?: string) => {
+  const handleDownloadModel = useCallback((modelName: string, modelFolder?: string) => {
       let prompt = `The model "${modelName}" is missing. Please help me download it.`
       if (modelFolder) {
           prompt += ` It should be placed in the "${modelFolder}" folder.`
       }
       prompt += ` Try using huggingface-cli or wget from https://hf-mirror.com/ to download it to the correct ComfyUI models directory.`
       handleSendMessage(prompt)
-  }
-  
+  }, [handleSendMessage])
+
+  const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), [])
+
   const isConfigured = appSettings.usePythonBackend 
     ? !!appSettings.pythonBackendUrl && !!appSettings.activeBackendConfigId
     : (appSettings.provider === 'google' || !!appSettings.apiKey);
@@ -900,8 +1031,8 @@ const App: React.FC<AppProps> = () => {
             position: 'fixed',
             left: windowPos.x,
             top: windowPos.y,
-            width: isMinimized ? '300px' : `${windowSize.width}px`,
-            height: isMinimized ? 'auto' : `${windowSize.height}px`,
+            width: `${windowSize.width}px`,
+            height: `${windowSize.height}px`,
             zIndex: 10001,
             pointerEvents: 'auto'
         }}
@@ -943,45 +1074,34 @@ const App: React.FC<AppProps> = () => {
                 </div>
             </div>
             <div className="flex items-center gap-2 text-slate-400">
-                {!isMinimized && (
+                {appSettings.usePythonBackend && (
                     <>
-                        {appSettings.usePythonBackend && (
-                            <>
-                                <button
-                                    onClick={handleAnalyzeWorkflow}
-                                    className={`p-1 hover:text-cyan-400 transition-colors ${isAnalyzing ? 'animate-pulse text-cyan-400' : ''}`}
-                                    title="Analyze Workflow"
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    disabled={isAnalyzing}
-                                >
-                                    <SearchCheck size={14} />
-                                </button>
-                                <button
-                                    onClick={handleUndoAction}
-                                    className="p-1 hover:text-amber-400 transition-colors"
-                                    title="Undo Last Action"
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                >
-                                    <Undo2 size={14} />
-                                </button>
-                            </>
-                        )}
                         <button
-                            onClick={syncFromCanvas}
-                            className="p-1 hover:text-indigo-400 transition-colors"
-                            title="Sync from Canvas"
+                            onClick={handleAnalyzeWorkflow}
+                            className={`p-1 hover:text-cyan-400 transition-colors ${isAnalyzing ? 'animate-pulse text-cyan-400' : ''}`}
+                            title="Analyze Workflow"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            disabled={isAnalyzing}
+                        >
+                            <SearchCheck size={14} />
+                        </button>
+                        <button
+                            onClick={handleUndoAction}
+                            className="p-1 hover:text-amber-400 transition-colors"
+                            title="Undo Last Action"
                             onMouseDown={(e) => e.stopPropagation()}
                         >
-                            <RefreshCw size={14} />
+                            <Undo2 size={14} />
                         </button>
                     </>
                 )}
                 <button
-                    onClick={() => setIsMinimized(!isMinimized)}
-                    className="p-1 hover:text-white transition-colors"
+                    onClick={syncFromCanvas}
+                    className="p-1 hover:text-indigo-400 transition-colors"
+                    title="Sync from Canvas"
                     onMouseDown={(e) => e.stopPropagation()}
                 >
-                    {isMinimized ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
+                    <RefreshCw size={14} />
                 </button>
                 <button
                     onClick={() => setIsVisible(false)}
@@ -993,8 +1113,7 @@ const App: React.FC<AppProps> = () => {
             </div>
         </div>
 
-        {!isMinimized && (
-            <>
+        <>
                 <div className="flex-1 flex flex-col overflow-hidden relative">
                     <SettingsModal
                         isOpen={isSettingsOpen}
@@ -1008,10 +1127,9 @@ const App: React.FC<AppProps> = () => {
                         <div className="w-[35%] min-w-[300px] border-r border-slate-800 flex flex-col bg-slate-950">
                             <ChatPanel
                                 messages={messages}
-                                input={input}
-                                setInput={setInput}
-                                onSend={() => handleSendMessage()}
+                                onSend={(text) => handleSendMessage(text)}
                                 isProcessing={isProcessing}
+                                streamingText={streamingText}
                                 currentStatus={currentStatus}
                                 activityTimeline={activityTimeline}
                                 onActionClick={handleActionClick}
@@ -1041,7 +1159,7 @@ const App: React.FC<AppProps> = () => {
                             <WorkflowVisualizer
                                 workflow={workflow}
                                 language={appSettings.language}
-                                onOpenSettings={() => setIsSettingsOpen(true)}
+                                onOpenSettings={handleOpenSettings}
                                 isConfigured={isConfigured}
                                 onUpdateWorkflow={handleManualUpdateWorkflow}
                                 onAskAi={handleSendMessage}
@@ -1066,7 +1184,6 @@ const App: React.FC<AppProps> = () => {
                     <Scaling size={12} className="transform rotate-90" />
                 </div>
             </>
-        )}
     </div>
   )
 }

@@ -140,6 +140,7 @@ export type AgentStreamEvent =
   | { type: 'task_progress'; taskId: string; description: string; usage: { totalTokens: number; toolUses: number; durationMs: number }; lastToolName?: string; summary?: string }
   | { type: 'task_notification'; taskId: string; toolUseId?: string; status: 'completed' | 'failed' | 'stopped'; summary: string }
   | { type: 'recovery'; error: Error; attempt: number }
+  | { type: 'workflow_updated'; workflowJson: string; actionType: string }
   | { type: 'stop'; reason: StopReason }
   | { type: 'done'; data: { content: string; usage: UsageMetrics } | null }
   | { type: 'error'; data: string }
