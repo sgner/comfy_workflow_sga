@@ -26,6 +26,85 @@ export interface ProviderValidationResult {
   warnings: string[]
 }
 
+export function isStoredProviderConfig(value: unknown): value is StoredProviderConfig {
+  if (typeof value !== 'object' || value === null) return false
+  const obj = value as Record<string, unknown>
+  return typeof obj.name === 'string' && typeof obj.apiKey === 'string'
+}
+
+export function normalizeProviderConfig(raw: Record<string, unknown>): StoredProviderConfig {
+  const name = (raw.name ?? raw.provider ?? '') as string
+  const apiKey = (raw.apiKey ?? raw.api_key ?? '') as string
+  const baseUrl = (raw.baseUrl ?? raw.base_url) as string | undefined
+  const defaultModel = (raw.defaultModel ?? raw.default_model) as string | undefined
+  const modelConfigs = (raw.modelConfigs ?? raw.model_configs) as Record<string, ModelConfig> | undefined
+  const headers = (raw.headers ?? raw.custom_config_headers) as Record<string, string> | undefined
+  const extension = raw.extension as ProviderExtension | undefined
+
+  const result: StoredProviderConfig = {
+    name,
+    apiKey,
+    baseUrl,
+    defaultModel,
+    modelConfigs,
+    headers,
+    extra: raw.extra as Record<string, unknown> | undefined,
+    extension,
+  }
+
+  if (raw.defaultMaxTokens ?? raw.default_max_tokens) {
+    result.defaultMaxTokens = (raw.defaultMaxTokens ?? raw.default_max_tokens) as number
+  }
+  if (raw.defaultTemperature ?? raw.default_temperature) {
+    result.defaultTemperature = (raw.defaultTemperature ?? raw.default_temperature) as number
+  }
+  if (raw.retries) {
+    result.retries = raw.retries as number
+  }
+  if (raw.retryDelay ?? raw.retry_delay) {
+    result.retryDelay = (raw.retryDelay ?? raw.retry_delay) as number
+  }
+  if (raw.models) {
+    result.models = raw.models as Record<string, string>
+  }
+
+  const customConfig = raw.custom_config as Record<string, unknown> | undefined
+  if (customConfig) {
+    if (customConfig.endpoint && result.baseUrl) {
+      const endpoint = customConfig.endpoint as string
+      if (endpoint.startsWith('/')) {
+        result.baseUrl = result.baseUrl.replace(/\/+$/, '') + endpoint
+      }
+    }
+
+    if (customConfig.headers) {
+      const rawHeaders = customConfig.headers
+      let parsedHeaders: Record<string, string>
+      if (typeof rawHeaders === 'string') {
+        try {
+          parsedHeaders = JSON.parse(rawHeaders)
+        } catch {
+          parsedHeaders = {}
+        }
+      } else if (typeof rawHeaders === 'object' && rawHeaders !== null) {
+        parsedHeaders = rawHeaders as Record<string, string>
+      } else {
+        parsedHeaders = {}
+      }
+
+      for (const [key, value] of Object.entries(parsedHeaders)) {
+        if (typeof value === 'string' && value.includes('$apiKey')) {
+          parsedHeaders[key] = value.replace(/\$apiKey/g, apiKey)
+        }
+      }
+
+      result.headers = { ...result.headers, ...parsedHeaders }
+    }
+  }
+
+  return result
+}
+
 export function validateProviderConfig(config: Partial<StoredProviderConfig> & { name?: string }): ProviderValidationResult {
   const errors: string[] = []
   const warnings: string[] = []
@@ -229,10 +308,11 @@ export async function loadProvidersFromEnv(): Promise<void> {
   const extraProvidersEnv = process.env.SGA_PROVIDERS
   if (extraProvidersEnv) {
     try {
-      const extraProviders = JSON.parse(extraProvidersEnv) as StoredProviderConfig[]
+      const extraProviders = JSON.parse(extraProvidersEnv) as Array<StoredProviderConfig | Record<string, unknown>>
       for (const p of extraProviders) {
         try {
-          await addProvider(p)
+          const config = isStoredProviderConfig(p) ? p : normalizeProviderConfig(p)
+          await addProvider(config)
         } catch (error) {
           logger.error(`Failed to load provider "${p.name}" from SGA_PROVIDERS: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -243,9 +323,10 @@ export async function loadProvidersFromEnv(): Promise<void> {
   }
 }
 
-export async function loadProvidersFromConfig(configs: StoredProviderConfig[], defaultName?: string): Promise<void> {
-  for (const config of configs) {
+export async function loadProvidersFromConfig(configs: Array<StoredProviderConfig | Record<string, unknown>>, defaultName?: string): Promise<void> {
+  for (const raw of configs) {
     try {
+      const config = isStoredProviderConfig(raw) ? raw : normalizeProviderConfig(raw)
       const setAsDefault = defaultName ? config.name === defaultName : false
       await addProvider(config, setAsDefault)
     } catch (error) {

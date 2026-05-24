@@ -33,6 +33,14 @@ export interface UserApprovalResponse {
   decision: 'allow' | 'deny'
   updatedInput?: Record<string, unknown>
   reason?: string
+  permissionUpdate?: PermissionUpdate
+}
+
+export interface PermissionUpdate {
+  type: 'always_allow' | 'always_deny' | 'allow_pattern'
+  toolName: string
+  pattern?: string
+  reason?: string
 }
 
 export interface UserInputResponse {

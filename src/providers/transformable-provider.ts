@@ -330,6 +330,14 @@ export class TransformableProvider implements LLMProvider {
   private normalizeStreamChunk(raw: Record<string, unknown>): ProviderStreamChunk {
     const chunk: ProviderStreamChunk = { type: 'stream_chunk', raw }
 
+    if (raw.usage) {
+      const rawUsage = raw.usage as Record<string, unknown>
+      chunk.usage = {
+        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
+        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
+      }
+    }
+
     const choices = raw.choices as Array<Record<string, unknown>> | undefined
     if (!choices || choices.length === 0) return chunk
 
@@ -369,14 +377,6 @@ export class TransformableProvider implements LLMProvider {
       chunk.delta = {
         type: 'message_delta',
         stopReason: stopReasonMap[finishReason] ?? finishReason,
-      }
-    }
-
-    if (raw.usage) {
-      const rawUsage = raw.usage as Record<string, unknown>
-      chunk.usage = {
-        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
-        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
       }
     }
 

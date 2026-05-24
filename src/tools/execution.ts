@@ -1,5 +1,8 @@
-import type { Tool, ToolUseContext, ValidationResult, PermissionResult } from './base.js'
+import type { Tool, ToolUseContext, ValidationResult, PermissionResult, ToolProgressCallback } from './base.js'
+import type { ToolProgressData } from '../core/types.js'
 import { createLogger } from '../utils/logger.js'
+import { HookRegistry, HookExecutor, loadHookConfig } from '../hooks/index.js'
+import type { HookDefinition, HookExecutionContext } from '../hooks/index.js'
 
 const logger = createLogger('tool-execution')
 
@@ -18,12 +21,13 @@ export interface ToolExecutionResult {
 
 export interface ToolExecutionPipeline {
   steps: ToolExecutionStep[]
-  execute: (tool: Tool, input: unknown, context: ToolUseContext) => Promise<ToolExecutionResult>
+  execute(tool: Tool, input: unknown, context: ToolUseContext, onProgress?: ToolProgressCallback): Promise<ToolExecutionResult>
 }
 
 export interface ToolExecutionPipelineConfig {
   preHooks?: ToolExecutionStep[]
   postHooks?: ToolExecutionStep[]
+  hookDefinitions?: HookDefinition[]
   logExecution?: boolean
   measureTiming?: boolean
   maxResultSizeChars?: number
@@ -35,15 +39,22 @@ export function createExecutionPipeline(
   const {
     preHooks = [],
     postHooks = [],
+    hookDefinitions = [],
     logExecution = true,
     measureTiming = true,
     maxResultSizeChars,
   } = config
 
+  const hookRegistry = new HookRegistry()
+  for (const hookDef of hookDefinitions) {
+    hookRegistry.register(hookDef)
+  }
+  const hookExecutor = new HookExecutor(hookRegistry)
+
   return {
     steps: [...preHooks, { name: 'execute', execute: async () => {} }, ...postHooks],
 
-    async execute(tool: Tool, input: unknown, context: ToolUseContext): Promise<ToolExecutionResult> {
+    async execute(tool: Tool, input: unknown, context: ToolUseContext, onProgress?: ToolProgressCallback): Promise<ToolExecutionResult> {
       const startTime = measureTiming ? Date.now() : 0
       let currentInput = input
 
@@ -69,30 +80,22 @@ export function createExecutionPipeline(
         }
       }
 
-      const permission = await tool.checkPermissions(currentInput as Record<string, unknown>, context)
-      if (permission.behavior === 'deny') {
-        const error = new ToolExecutionError(
-          `Permission denied for ${tool.name}: ${permission.message}`,
-          'PERMISSION',
-        )
-        if (logExecution) {
-          logger.warn(`[Pipeline] Permission denied for ${tool.name}: ${permission.message}`)
-        }
-        return {
-          toolName: tool.name,
-          input: currentInput,
-          output: null,
-          durationMs: measureTiming ? Date.now() - startTime : 0,
-          error,
-        }
+      const hookContext: HookExecutionContext = {
+        toolName: tool.name,
+        toolInput: currentInput as Record<string, unknown>,
+        cwd: process.cwd(),
+        sessionId: context.agentId,
       }
-      if (permission.behavior === 'ask') {
+
+      const preToolUseResults = await hookExecutor.execute('PreToolUse', hookContext)
+      const blockedByHook = preToolUseResults.find(r => !r.proceed)
+      if (blockedByHook) {
         const error = new ToolExecutionError(
-          `Requires user approval for ${tool.name}: ${permission.message}`,
-          'APPROVAL_REQUIRED',
+          `Blocked by PreToolUse hook: ${blockedByHook.stderr || blockedByHook.stdout}`,
+          'HOOK_BLOCKED',
         )
         if (logExecution) {
-          logger.info(`[Pipeline] Approval required for ${tool.name}: ${permission.message}`)
+          logger.warn(`[Pipeline] Tool ${tool.name} blocked by PreToolUse hook`)
         }
         return {
           toolName: tool.name,
@@ -103,8 +106,63 @@ export function createExecutionPipeline(
         }
       }
 
-      if (permission.behavior === 'allow' && permission.updatedInput) {
-        currentInput = permission.updatedInput
+      for (const hookResult of preToolUseResults) {
+        if (hookResult.modifiedData && typeof hookResult.modifiedData === 'object') {
+          const modified = hookResult.modifiedData as { input?: unknown }
+          if (modified.input !== undefined) {
+            currentInput = modified.input
+          }
+        }
+      }
+
+      const toolPermission = await tool.checkPermissions(currentInput as Record<string, unknown>, context)
+
+      let finalPermission = context.permissionChecker
+        ? context.permissionChecker.resolveWithToolPermission(toolPermission, tool.name, currentInput as Record<string, unknown>)
+        : toolPermission
+
+      if (tool.requiresUserInteraction() && finalPermission.behavior === 'allow') {
+        finalPermission = {
+          behavior: 'ask',
+          message: `${tool.name} requires user interaction`,
+        }
+      }
+
+      if (finalPermission.behavior === 'deny') {
+        const error = new ToolExecutionError(
+          `Permission denied for ${tool.name}: ${finalPermission.message ?? 'No reason provided'}`,
+          'PERMISSION',
+        )
+        if (logExecution) {
+          logger.warn(`[Pipeline] Permission denied for ${tool.name}: ${finalPermission.message}`)
+        }
+        return {
+          toolName: tool.name,
+          input: currentInput,
+          output: null,
+          durationMs: measureTiming ? Date.now() - startTime : 0,
+          error,
+        }
+      }
+      if (finalPermission.behavior === 'ask') {
+        const error = new ToolExecutionError(
+          `Requires user approval for ${tool.name}: ${finalPermission.message}`,
+          'APPROVAL_REQUIRED',
+        )
+        if (logExecution) {
+          logger.info(`[Pipeline] Approval required for ${tool.name}: ${finalPermission.message}`)
+        }
+        return {
+          toolName: tool.name,
+          input: currentInput,
+          output: null,
+          durationMs: measureTiming ? Date.now() - startTime : 0,
+          error,
+        }
+      }
+
+      if (finalPermission.behavior === 'allow' && finalPermission.updatedInput) {
+        currentInput = finalPermission.updatedInput
         if (logExecution) {
           logger.debug(`[Pipeline] Input updated by permission check for ${tool.name}`)
         }
@@ -123,7 +181,7 @@ export function createExecutionPipeline(
 
       let result: unknown
       try {
-        result = await tool.call(currentInput as Record<string, unknown>, context)
+        result = await tool.call(currentInput as Record<string, unknown>, context, onProgress)
       } catch (callError) {
         const error = new ToolExecutionError(
           callError instanceof Error ? callError.message : String(callError),
@@ -149,6 +207,15 @@ export function createExecutionPipeline(
           result = serialized.slice(0, maxResultSizeChars) + `\n...[truncated, original size: ${serialized.length} chars]`
         }
       }
+
+      const postHookContext: HookExecutionContext = {
+        toolName: tool.name,
+        toolInput: currentInput as Record<string, unknown>,
+        toolOutput: result,
+        cwd: process.cwd(),
+        sessionId: context.agentId,
+      }
+      await hookExecutor.execute('PostToolUse', postHookContext)
 
       for (const hook of postHooks) {
         try {
@@ -208,6 +275,7 @@ export async function orchestrateToolCalls(
   context: ToolUseContext,
   pipeline: ToolExecutionPipeline,
   config: ToolOrchestrationConfig = DEFAULT_ORCHESTRATION_CONFIG,
+  onProgress?: (toolUseId: string, data: ToolProgressData) => void,
 ): Promise<OrchestratedResult[]> {
   const readOnly: typeof calls = []
   const write: typeof calls = []
@@ -242,7 +310,10 @@ export async function orchestrateToolCalls(
             },
           }
         }
-        const result = await pipeline.execute(tool, call.input, context)
+        const toolProgress = onProgress
+          ? (data: ToolProgressData) => onProgress(call.id, data)
+          : undefined
+        const result = await pipeline.execute(tool, call.input, context, toolProgress)
         return { id: call.id, name: call.name, result }
       }),
     )
@@ -267,7 +338,10 @@ export async function orchestrateToolCalls(
         })
         continue
       }
-      const result = await pipeline.execute(tool, call.input, context)
+      const toolProgress = onProgress
+        ? (data: ToolProgressData) => onProgress(call.id, data)
+        : undefined
+      const result = await pipeline.execute(tool, call.input, context, toolProgress)
       results.push({ id: call.id, name: call.name, result })
     }
   }
@@ -276,9 +350,18 @@ export async function orchestrateToolCalls(
 }
 
 export function createDefaultPipeline(maxResultSizeChars?: number): ToolExecutionPipeline {
+  let hookDefinitions: HookDefinition[] = []
+  try {
+    const config = loadHookConfig()
+    hookDefinitions = config.hooks
+  } catch {
+    logger.debug('No hook config loaded, using empty hooks')
+  }
+
   return createExecutionPipeline({
     logExecution: true,
     measureTiming: true,
     maxResultSizeChars,
+    hookDefinitions,
   })
 }

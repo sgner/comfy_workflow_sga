@@ -75,10 +75,13 @@ src/
 │   ├── bundled-registry.ts  # 技能注册中心
 │   └── bundled/             # 内置技能
 ├── permissions/    # 权限系统
-│   └── checker.ts      # PermissionChecker 权限检查器
+│   ├── checker.ts      # PermissionChecker 权限检查器（规则匹配 + 分类器 + 模式兜底）
+│   ├── classifier.ts   # DefaultPermissionClassifier 权限分类器（置信度决策）
+│   └── rules.ts        # 权限规则持久化（.sga/permissions.json 读写）
 ├── hooks/          # Hook 钩子系统
-│   ├── types.ts        # Hook 事件类型
-│   └── executor.ts     # Hook 注册与执行
+│   ├── types.ts        # Hook 事件类型（9 种 HookEventType）
+│   ├── executor.ts     # HookRegistry 注册中心 + HookExecutor 执行器
+│   └── config.ts       # Hook 配置持久化（.sga/hooks.json 读写 + 版本迁移）
 ├── mcp/            # MCP 协议集成
 │   ├── types.ts        # MCP 类型定义
 │   ├── client.ts       # MCPClient 完整客户端（JSON-RPC 2.0）
@@ -121,14 +124,75 @@ src/
 | `tools` | `core` | `agents`, `server` |
 | `agents` | `core`, `tools`, `context` | `server` |
 | `context` | `core` | `agents` |
-| `permissions` | `core` | `tools`, `agents` |
-| `hooks` | `core` | `tools`, `agents` |
+| `permissions` | `core` | `tools`, `agents`, `server` |
+| `hooks` | `core` | `tools`, `agents`, `server` |
 | `memory` | `core`, `providers` | `agents`, `server` |
 | `skills` | `core`, `tools` | `server` |
 | `mcp` | `core`, `tools` | `server` |
 | `tasks` | `core` | `agents`, `server` |
 | `teams` | `core` | `agents`, `server` |
 | `server` | 所有模块 | 无 |
+
+## 权限系统架构
+
+权限系统由三层决策组成，按优先级依次执行：
+
+```
+工具调用请求
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ 1. PreToolUse Hook                      │
+│    HookExecutor.execute('PreToolUse')   │
+│    ├─ proceed: false → 阻止执行         │
+│    └─ proceed: true  → 继续             │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────┐
+│ 2. PermissionChecker                    │
+│    ├─ 2a. 规则匹配                      │
+│    │   deny → allow → ask               │
+│    ├─ 2b. PermissionClassifier          │
+│    │   confidence ≥ 0.85 → allow        │
+│    │   confidence ≥ 0.80 → deny         │
+│    │   其他 → ask                       │
+│    └─ 2c. PermissionMode 兜底           │
+│        bypassPermissions → allow        │
+│        auto/dontAsk → allow/deny        │
+│        default → ask                    │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────┐
+│ 3. 敏感路径检测                          │
+│    isSensitivePath / categorizePathRisk │
+│    critical → deny/ask                  │
+│    high → ask                           │
+│    medium → ask                         │
+│    low → 正常权限检查                    │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+┌─ allow ──→ 工具执行 ──→ PostToolUse Hook
+├─ deny ───→ 返回错误
+└─ ask ────→ 人机交互审批
+              ├─ 允许（+ permissionUpdate → 持久化规则）
+              └─ 拒绝
+```
+
+### 关键组件
+
+| 组件 | 源文件 | 职责 |
+|------|--------|------|
+| PermissionChecker | `src/permissions/checker.ts` | 权限检查入口，协调规则/分类器/模式 |
+| DefaultPermissionClassifier | `src/permissions/classifier.ts` | 基于置信度的自动决策 |
+| SensitivePathChecker | `src/tools/built-in/sensitive-paths.ts` | 6 类 40+ 模式的敏感路径检测 |
+| PermissionRule | `src/permissions/rules.ts` | 规则持久化读写 |
+| HookRegistry / HookExecutor | `src/hooks/executor.ts` | Hook 注册与执行 |
+| HookConfig | `src/hooks/config.ts` | Hook 配置持久化与版本迁移 |
+
+详见 [权限控制](permissions.md) 和 [Hook 钩子系统](hooks.md)。
 
 ## 相关文档
 

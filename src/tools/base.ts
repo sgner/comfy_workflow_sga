@@ -1,4 +1,5 @@
-import type { Message, MessageContent } from '../core/types.js'
+import type { Message, MessageContent, ToolProgressData } from '../core/types.js'
+import type { PermissionChecker } from '../permissions/checker.js'
 
 export interface ToolInputSchema {
   type: 'object'
@@ -33,10 +34,13 @@ export interface ToolUseContext {
   agentId?: string
   agentType?: string
   permissionMode?: string
+  permissionChecker?: PermissionChecker
   customSystemPrompt?: string
   appendSystemPrompt?: string
   refreshTools?: () => Tool[]
 }
+
+export type ToolProgressCallback = (data: ToolProgressData) => void
 
 export interface Tool<Input = Record<string, unknown>, Output = unknown> {
   name: string
@@ -48,10 +52,11 @@ export interface Tool<Input = Record<string, unknown>, Output = unknown> {
   isConcurrencySafe(input: Input): boolean
   isReadOnly(input: Input): boolean
   isDestructive(input: Input): boolean
+  requiresUserInteraction(): boolean
 
   validateInput(input: unknown): ValidationResult
   checkPermissions(input: Input, context: ToolUseContext): Promise<PermissionResult>
-  call(input: Input, context: ToolUseContext): Promise<Output>
+  call(input: Input, context: ToolUseContext, onProgress?: ToolProgressCallback): Promise<Output>
 
   getDefinition(): ToolDefinition
   renderToolUseMessage?(input: Input): string
@@ -94,8 +99,12 @@ export abstract class BaseTool<Input = Record<string, unknown>, Output = unknown
     return !this.isReadOnly(_input as Input)
   }
 
+  requiresUserInteraction(): boolean {
+    return false
+  }
+
   abstract validateInput(input: unknown): ValidationResult
-  abstract call(input: Input, context: ToolUseContext): Promise<Output>
+  abstract call(input: Input, context: ToolUseContext, onProgress?: ToolProgressCallback): Promise<Output>
 
   async checkPermissions(input: Input, _context: ToolUseContext): Promise<PermissionResult> {
     return { behavior: 'allow' }

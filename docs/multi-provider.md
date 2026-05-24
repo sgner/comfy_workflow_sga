@@ -10,6 +10,7 @@ SGA-Template 支持多种 LLM 供应商，通过统一的 Provider 接口抽象�
 - **多供应商配置** — 支持 .env、配置文件、API 三种方式配置多个供应商
 - **模型级配置** — 每个模型独立配置上下文窗口、价格、能力等
 - **配置验证** — 启动时自动验证供应商配置，不满足最小配置的供应商会被警告并跳过
+- **配置归一化** — 自动识别 snake_case 字段（`api_key`/`base_url` 等）和 `custom_config` 格式
 - **Provider 扩展** — 支持自定义 Provider 模块动态加载
 - **请求/响应转换器** — 支持中转供应商的 API 格式差异
 
@@ -376,6 +377,48 @@ X-Custom-Header: model-override    (模型级覆盖了供应商级)
 X-Model-Header: model-value        (模型级新增)
 ```
 
+### models 与 modelConfigs 的关系
+
+> 📄 相关源文件：`src/providers/types.ts`（接口定义）、`src/providers/openai.ts`（`resolveModel` 方法）
+
+`models` 和 `modelConfigs` 都能实现模型别名映射，但定位不同：
+
+| | `models` | `modelConfigs` |
+|---|---|---|
+| **用途** | 纯别名映射 | 完整模型配置（含别名） |
+| **类型** | `Record<string, string>` — `{ 别名: 实际ID }` | `Record<string, ModelConfig>` — `{ 键: { id, ... } }` |
+| **是否必填** | 否 | 否 |
+| **解析优先级** | 低（`modelConfigs` 先查） | 高 |
+| **典型场景** | 快速给模型起别名 | 配置模型能力、价格、专属参数 |
+
+**解析流程**（`resolveModel` 方法）：
+
+1. 先查 `modelConfigs[key]` — 如果 key 匹配，返回其 `.id` 字段
+2. 再查 `models[key]` — 如果 key 匹配，返回映射值
+3. 都没有 — 返回原始字符串
+
+**示例**：
+
+```json
+{
+  "models": {
+    "gpt5": "gpt-5.4"
+  },
+  "modelConfigs": {
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "contextWindow": 128000,
+      "supportsToolUse": true
+    }
+  }
+}
+```
+
+- `model: "gpt5"` → 查 `modelConfigs`（无 "gpt5"）→ 查 `models`（有）→ 返回 `"gpt-5.4"`
+- `model: "gpt-5.4"` → 查 `modelConfigs`（有）→ 返回 `.id = "gpt-5.4"`
+
+> 💡 如果已配置 `modelConfigs`，通常不需要再配 `models`，因为 `modelConfigs` 的 key 本身就是别名。`models` 主要用于兼容只有简单映射需求的场景，或为 `modelConfigs` 中未配置的模型提供别名。
+
 ### 内置模型配置
 
 框架为以下供应商提供了内置模型配置（包含上下文窗口、价格、能力等信息）：
@@ -538,6 +581,25 @@ export interface LLMProvider {
 | `getModelConfig()` | 获取模型配置（上下文窗口、价格、能力等） |
 | `validateConfig()` | 验证配置 |
 
+### 流式模式 Usage 采集
+
+> 📄 相关源文件：`src/providers/openai.ts`（`normalizeStreamChunk`）、`src/providers/anthropic.ts`（`normalizeStreamChunk`）、`src/agents/runner.ts`（`consumeStream`）
+
+流式模式下，不同供应商的 usage 数据采集时机不同：
+
+**Anthropic**：分散在多个事件中
+- `message_start` 事件 → `inputTokens`
+- `message_delta` 事件 → `outputTokens`
+
+**OpenAI 兼容**：集中在最后一个 chunk
+- 启用 `stream_options: { include_usage: true }` 后，最后一个 chunk（`choices: []`）包含完整 usage
+- 框架在 `normalizeStreamChunk()` 中优先处理 `raw.usage`，确保空 `choices` 时 usage 不丢失
+
+**自定义供应商注意事项**：
+- 如果实现 `createStreamingMessage()`，需在 `ProviderStreamChunk` 中正确设置 `usage` 字段
+- `usage.inputTokens` 和 `usage.outputTokens` 可在任意 chunk 中提供，框架会在 `consumeStream()` 中累积
+- 使用 `!= null` 而非 truthy 检查，避免 `0` 值被跳过
+
 ## ProviderConfig
 
 ```typescript
@@ -558,6 +620,97 @@ export interface ProviderConfig {
   extension?: ProviderExtension              // 扩展配置
 }
 ```
+
+## 配置归一化
+
+> 📄 相关源文件：`src/providers/provider-store.ts`（`normalizeProviderConfig` 函数）
+
+框架在加载供应商配置时，会自动通过 `normalizeProviderConfig()` 将各种格式的配置归一化为标准的 `StoredProviderConfig`。这意味着你可以使用多种格式配置供应商，框架都能正确识别。
+
+### snake_case 字段支持
+
+框架同时接受 camelCase 和 snake_case 字段名：
+
+| camelCase（标准） | snake_case（兼容） | 说明 |
+|---|---|---|
+| `apiKey` | `api_key` | API 密钥 |
+| `baseUrl` | `base_url` | API 基础 URL |
+| `defaultModel` | `default_model` | 默认模型 |
+| `modelConfigs` | `model_configs` | 模型配置 |
+| `defaultMaxTokens` | `default_max_tokens` | 默认最大输出 |
+| `defaultTemperature` | `default_temperature` | 默认温度 |
+| `retryDelay` | `retry_delay` | 重试间隔 |
+
+### provider 字段回退
+
+当 `name` 字段缺失时，框架会使用 `provider` 字段作为供应商名称：
+
+```json
+{
+  "provider": "custom",
+  "api_key": "sk-xxx",
+  "base_url": "https://api.example.com/v1"
+}
+```
+
+等价于：
+
+```json
+{
+  "name": "custom",
+  "apiKey": "sk-xxx",
+  "baseUrl": "https://api.example.com/v1"
+}
+```
+
+### custom_config 支持
+
+部分第三方客户端使用 `custom_config` 对象封装端点和请求头，框架支持自动解析：
+
+```json
+{
+  "name": "zz",
+  "api_key": "sk-xxx",
+  "base_url": "https://ai.t8star.org",
+  "default_model": "gpt-5.4",
+  "is_default": true,
+  "custom_config": {
+    "endpoint": "/v1/chat/completions",
+    "headers": "{\"Content-Type\": \"application/json\", \"Authorization\": \"Bearer $apiKey\"}"
+  },
+  "model_configs": {
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "displayName": "gpt-5.4",
+      "supportsVision": true,
+      "supportsToolUse": true,
+      "supportsStreaming": true
+    }
+  }
+}
+```
+
+归一化处理逻辑：
+
+| `custom_config` 字段 | 处理方式 |
+|---|---|
+| `endpoint` | 拼接到 `baseUrl` 末尾（如 `https://ai.t8star.org` + `/v1/chat/completions` → `https://ai.t8star.org/v1/chat/completions`） |
+| `headers` | 支持 JSON 字符串或对象，自动合并到供应商级 `headers` |
+| `headers` 中的 `$apiKey` | 自动替换为实际的 `apiKey` 值 |
+
+### is_default 支持
+
+`is_default: true` 等同于 `setAsDefault: true`，会将该供应商设为默认供应商。
+
+### 归一化应用范围
+
+归一化在以下三个入口自动生效：
+
+| 入口 | 说明 |
+|---|---|
+| API 路由 `POST /api/v1/providers` | 请求体自动归一化 |
+| 配置文件 `sga-providers.json` | 每个配置项自动归一化 |
+| 环境变量 `SGA_PROVIDERS` | JSON 数组中每项自动归一化 |
 
 ## 中转供应商与扩展机制
 

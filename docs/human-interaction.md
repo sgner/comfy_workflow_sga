@@ -48,6 +48,7 @@ export interface InputRequestAction {
 event: approval_required
 data: {
   "type": "approval_required",
+  "actionId": "approval-1700000000-abc123",
   "data": {
     "toolName": "Bash",
     "toolInput": { "command": "rm -rf node_modules" },
@@ -64,6 +65,7 @@ data: {
 event: human_input_required
 data: {
   "type": "human_input_required",
+  "actionId": "input-1700000000-def456",
   "data": {
     "message": "请选择部署环境",
     "options": [
@@ -76,6 +78,8 @@ data: {
 }
 ```
 
+> ⚠️ `actionId` 是交互请求的唯一标识，客户端提交响应时必须使用此 ID。`actionId` 具有时效性，过期后提交会返回 `{"error": "Invalid or expired action ID"}`。
+
 ## 用户输入 API
 
 ### 提交审批/输入
@@ -85,43 +89,93 @@ data: {
 curl -X POST http://localhost:3000/api/v1/sessions/{sessionId}/input \
   -H "Content-Type: application/json" \
   -d '{
-    "type": "approval",
-    "response": "allow"
+    "actionId": "approval-1700000000-abc123",
+    "decision": "allow"
   }'
 
 # 审批：拒绝执行
 curl -X POST http://localhost:3000/api/v1/sessions/{sessionId}/input \
   -H "Content-Type: application/json" \
   -d '{
-    "type": "approval",
-    "response": "deny"
+    "actionId": "approval-1700000000-abc123",
+    "decision": "deny",
+    "reason": "危险操作"
+  }'
+
+# 审批：允许并设置"总是允许"
+curl -X POST http://localhost:3000/api/v1/sessions/{sessionId}/input \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actionId": "approval-1700000000-abc123",
+    "decision": "allow",
+    "permissionUpdate": {
+      "type": "always_allow",
+      "toolName": "Write"
+    }
+  }'
+
+# 审批：允许并设置模式匹配
+curl -X POST http://localhost:3000/api/v1/sessions/{sessionId}/input \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actionId": "approval-1700000000-abc123",
+    "decision": "allow",
+    "permissionUpdate": {
+      "type": "allow_pattern",
+      "toolName": "Write",
+      "pattern": "*.md"
+    }
   }'
 
 # 提供输入
 curl -X POST http://localhost:3000/api/v1/sessions/{sessionId}/input \
   -H "Content-Type: application/json" \
   -d '{
-    "type": "human_input",
-    "response": "prod"
+    "actionId": "input-1700000000-def456",
+    "value": "prod"
   }'
 ```
 
 ### UserInputRequest 类型
 
 ```typescript
-// src/server/interaction.ts
+// src/server/session.ts
 export interface UserInputRequest {
-  type: 'approval' | 'human_input'
-  response: string | boolean
-  modifiedInput?: Record<string, unknown>
+  actionId: string
+  decision?: 'allow' | 'deny'
+  value?: string
+  optionValue?: string
+  updatedInput?: Record<string, unknown>
+  reason?: string
+  permissionUpdate?: {
+    type: 'always_allow' | 'always_deny' | 'allow_pattern'
+    toolName: string
+    pattern?: string
+  }
 }
 ```
 
 | 字段 | 说明 |
 |------|------|
-| `type` | 输入类型 |
-| `response` | 用户响应（字符串或布尔值） |
-| `modifiedInput` | 修改后的工具输入（审批时使用） |
+| `actionId` | 交互请求 ID（来自 SSE 事件的 `actionId` 字段） |
+| `decision` | 审批决定：`allow` / `deny` |
+| `value` | 自由文本输入值 |
+| `optionValue` | 选项值 |
+| `updatedInput` | 修改后的工具输入（审批时使用） |
+| `reason` | 拒绝原因 |
+| `permissionUpdate` | 持久化审批规则（详见下方） |
+
+### PermissionUpdate（持久化审批规则）
+
+当用户审批时附带 `permissionUpdate`，系统会自动创建持久化规则，后续同类操作不再需要审批。
+
+| 类型 | 说明 |
+|------|------|
+| `always_allow` | 总是允许该工具的所有操作 |
+| `always_deny` | 总是拒绝该工具的所有操作 |
+| `allow_pattern` | 允许该工具匹配指定模式的操作 |
+
+规则持久化到 `.sga/permissions.json`，详见 [权限控制](permissions.md)。
 
 ## 会话状态
 
@@ -155,8 +209,11 @@ eventSource.addEventListener('approval_required', (event) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'approval',
-        response: response.approved ? 'allow' : 'deny',
+        actionId: data.actionId,
+        decision: response.approved ? 'allow' : 'deny',
+        permissionUpdate: response.alwaysAllow
+          ? { type: 'always_allow', toolName: data.data.toolName }
+          : undefined,
       }),
     })
   })
@@ -169,8 +226,8 @@ eventSource.addEventListener('human_input_required', (event) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'human_input',
-        response: value,
+        actionId: data.actionId,
+        value: value,
       }),
     })
   })
