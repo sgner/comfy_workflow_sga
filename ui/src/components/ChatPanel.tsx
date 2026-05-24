@@ -15,13 +15,20 @@ import {
   AlertCircle,
   Lightbulb,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Brain,
+  Wrench,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  MessageCircle,
+  Shield
 } from 'lucide-react'
 import React, { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { ChatMessage, Language, Sender, AgentStatus, WorkflowIssue } from '../types'
+import { ChatMessage, Language, Sender, AgentStatus, AgentActivity, WorkflowIssue, ApprovalRequest, HumanInputRequest, TokenUsage } from '../types'
 import { t } from '../utils/i18n'
 
 interface ChatPanelProps {
@@ -31,8 +38,14 @@ interface ChatPanelProps {
   onSend: () => void
   isProcessing: boolean
   currentStatus: AgentStatus | null
+  activityTimeline: AgentActivity[]
   onActionClick: (action: string) => void
   language: Language
+  pendingApproval: ApprovalRequest | null
+  pendingHumanInput: HumanInputRequest | null
+  onApprovalResponse: (decision: 'allow' | 'deny') => void
+  onHumanInputResponse: (value: string, optionValue?: string) => void
+  tokenUsage: TokenUsage | null
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -42,10 +55,17 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   onSend,
   isProcessing,
   currentStatus,
+  activityTimeline,
   onActionClick,
-  language
+  language,
+  pendingApproval,
+  pendingHumanInput,
+  onApprovalResponse,
+  onHumanInputResponse,
+  tokenUsage
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [humanInputValue, setHumanInputValue] = useState('')
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -114,7 +134,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             <div
               className={`flex flex-col max-w-[85%] min-w-0 ${msg.sender === Sender.USER ? 'items-end' : 'items-start'}`}
             >
-              {(msg.sender === Sender.AI && msg.metadata?.thinking && !msg.text) || (msg.text && msg.text.trim()) ? (
+              {msg.text && msg.text.trim() ? (
               <div
                 className={`
                                 p-2.5 rounded-2xl text-sm leading-normal shadow-sm break-words max-w-full
@@ -125,18 +145,39 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                                 }
                             `}
               >
-                {msg.sender === Sender.AI && msg.metadata?.thinking && !msg.text ? (
-                  <div className="flex items-center gap-2 text-slate-400">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>{t(language, 'thinking')}</span>
-                  </div>
-                ) : (
                     <div className="markdown-content">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                                code({ className, children, ...props }: { className?: string; children?: React.ReactNode } & React.HTMLAttributes<HTMLElement>) {
+                                    const match = /language-(\w+)/.exec(className || '')
+                                    const isInline = !match && !className?.includes('language-')
+                                    if (isInline) {
+                                        return <code className={className} {...props}>{children}</code>
+                                    }
+                                    const codeString = String(children).replace(/\n$/, '')
+                                    const lines = codeString.split('\n')
+                                    return (
+                                        <div className="code-block-wrapper">
+                                            <div className="code-block-header">
+                                                <span className="code-lang">{match ? match[1] : 'text'}</span>
+                                            </div>
+                                            <div className="code-block-body">
+                                                <div className="line-numbers">
+                                                    {lines.map((_, i) => (
+                                                        <span key={i} className="line-number">{i + 1}</span>
+                                                    ))}
+                                                </div>
+                                                <pre className="code-pre"><code className={className} {...props}>{children}</code></pre>
+                                            </div>
+                                        </div>
+                                    )
+                                }
+                            }}
+                        >
                             {msg.text}
                         </ReactMarkdown>
                     </div>
-                )}
               </div>
               ) : null}
 
@@ -234,23 +275,152 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           </div>
         ))}
         
-        {/* Real-time Status Indicator (Centered Pill) */}
-        {isProcessing && currentStatus && (
+        {/* Agent Activity Timeline */}
+        {isProcessing && activityTimeline.length > 0 && (
+            <div className="mx-3 my-3 rounded-lg bg-slate-800/60 border border-slate-700/40 overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-slate-700/30 flex items-center gap-2">
+                <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
+                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Agent 活动</span>
+              </div>
+              <div className="px-3 py-2 space-y-0 max-h-48 overflow-y-auto">
+                {activityTimeline.slice(-12).map((activity, idx) => {
+                  const isLast = idx === activityTimeline.slice(-12).length - 1
+                  return (
+                    <div key={activity.id} className="flex items-start gap-2 py-0.5">
+                      <div className="flex flex-col items-center flex-shrink-0 mt-0.5">
+                        <ActivityIcon type={activity.type} status={activity.status} />
+                        {!isLast && <div className="w-px h-3 bg-slate-700/50 mt-0.5" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-[11px] ${activity.status === 'error' ? 'text-red-300' : activity.status === 'done' ? 'text-slate-400' : 'text-slate-200'} truncate`}>
+                            {activity.label}
+                          </span>
+                          {activity.duration != null && (
+                            <span className="text-[9px] text-slate-500 flex-shrink-0">
+                              {(activity.duration / 1000).toFixed(1)}s
+                            </span>
+                          )}
+                        </div>
+                        {activity.toolInput && Object.keys(activity.toolInput).length > 0 && (
+                          <ToolInputPreview input={activity.toolInput} />
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+        )}
+        {isProcessing && !activityTimeline.length && currentStatus && (
             <div className="flex justify-center w-full my-4 animate-in fade-in zoom-in-95 duration-300">
                  <div className="bg-slate-800/80 backdrop-blur-md border border-indigo-500/30 rounded-full px-5 py-2 flex items-center gap-3 shadow-lg max-w-[90%]">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400 flex-shrink-0" />
-                    <div className="flex flex-col items-start min-w-0">
-                        <span className="text-xs font-medium text-indigo-100 truncate w-full">{currentStatus.displayText}</span>
-                        {currentStatus.node && (
-                            <span className="text-[9px] text-indigo-300/70 uppercase tracking-widest truncate w-full">
-                                {currentStatus.node.replace(/_/g, ' ')}
-                            </span>
-                        )}
-                    </div>
+                    <span className="text-xs font-medium text-indigo-100 truncate">{currentStatus.displayText}</span>
                  </div>
             </div>
         )}
+
+        {pendingApproval && (
+            <div className="mx-3 my-3 rounded-lg border border-amber-500/30 bg-amber-950/20 overflow-hidden">
+              <div className="px-3 py-2 border-b border-amber-500/20 flex items-center gap-2">
+                <Shield className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-[11px] font-semibold text-amber-300">{t(language, 'approvalRequired')}</span>
+              </div>
+              <div className="px-3 py-2 space-y-2">
+                <p className="text-xs text-slate-300">{pendingApproval.message}</p>
+                <p className="text-[10px] text-slate-500">{t(language, 'approvalTool')}: {pendingApproval.toolName}</p>
+                {pendingApproval.suggestions && pendingApproval.suggestions.length > 0 && (
+                  <div className="text-[10px] text-slate-400">
+                    <span className="font-medium">{t(language, 'approvalSuggestions')}:</span>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {pendingApproval.suggestions.map((s, i) => (
+                        <li key={i} className="pl-2 border-l border-slate-700">• {s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={() => onApprovalResponse('deny')}
+                    className="flex-1 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    {t(language, 'approvalDeny')}
+                  </button>
+                  <button
+                    onClick={() => onApprovalResponse('allow')}
+                    className="flex-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors"
+                  >
+                    {t(language, 'approvalAllow')}
+                  </button>
+                </div>
+              </div>
+            </div>
+        )}
+
+        {pendingHumanInput && (
+            <div className="mx-3 my-3 rounded-lg border border-blue-500/30 bg-blue-950/20 overflow-hidden">
+              <div className="px-3 py-2 border-b border-blue-500/20 flex items-center gap-2">
+                <MessageCircle className="w-3.5 h-3.5 text-blue-400" />
+                <span className="text-[11px] font-semibold text-blue-300">{t(language, 'inputRequired')}</span>
+              </div>
+              <div className="px-3 py-2 space-y-2">
+                <p className="text-xs text-slate-300">{pendingHumanInput.message}</p>
+                {pendingHumanInput.context && (
+                  <p className="text-[10px] text-slate-500">{pendingHumanInput.context}</p>
+                )}
+                {pendingHumanInput.options && pendingHumanInput.options.length > 0 && (
+                  <div className="space-y-1.5">
+                    {pendingHumanInput.options.map((opt, i) => (
+                      <button
+                        key={i}
+                        onClick={() => onHumanInputResponse(opt.value, opt.value)}
+                        className="w-full text-left px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs text-slate-200 transition-colors"
+                      >
+                        <span className="font-medium">{opt.label}</span>
+                        {opt.description && <span className="text-slate-500 ml-2">- {opt.description}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {pendingHumanInput.allowFreeText && (
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={humanInputValue}
+                      onChange={e => setHumanInputValue(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && humanInputValue.trim()) { onHumanInputResponse(humanInputValue.trim()); setHumanInputValue('') } }}
+                      placeholder={t(language, 'humanInputPlaceholder')}
+                      className="flex-1 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => { if (humanInputValue.trim()) { onHumanInputResponse(humanInputValue.trim()); setHumanInputValue('') } }}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors"
+                    >
+                      {t(language, 'inputSend')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+        )}
       </div>
+
+      {tokenUsage && (tokenUsage.totalTokens > 0 || tokenUsage.totalCostUsd > 0) && (
+        <div className="px-4 py-1.5 bg-slate-900/80 border-t border-slate-800/50 flex items-center justify-between text-[10px] text-slate-500">
+          <div className="flex items-center gap-3">
+            <span>{t(language, 'usageInput')}: {tokenUsage.inputTokens.toLocaleString()}</span>
+            <span>{t(language, 'usageOutput')}: {tokenUsage.outputTokens.toLocaleString()}</span>
+            {tokenUsage.cacheReadInputTokens > 0 && <span>{t(language, 'usageCacheRead')}: {tokenUsage.cacheReadInputTokens.toLocaleString()}</span>}
+            {tokenUsage.cacheCreationInputTokens > 0 && <span>{t(language, 'usageCacheWrite')}: {tokenUsage.cacheCreationInputTokens.toLocaleString()}</span>}
+          </div>
+          <div className="flex items-center gap-3">
+            <span>{t(language, 'usageTotal')}: {tokenUsage.totalTokens.toLocaleString()}</span>
+            {tokenUsage.totalCostUsd > 0 && <span className="text-emerald-500/70">${tokenUsage.totalCostUsd.toFixed(4)}</span>}
+          </div>
+        </div>
+      )}
 
       {/* Input Area */}
       <div className="p-4 bg-slate-900 border-t border-slate-700/50 flex-shrink-0 z-10">
@@ -283,6 +453,53 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           {t(language, 'aiDisclaimer')}
         </p>
       </div>
+    </div>
+  )
+}
+
+function ActivityIcon({ type, status }: { type: AgentActivity['type']; status?: AgentActivity['status'] }) {
+  const size = 'w-3 h-3'
+  if (status === 'error') return <XCircle className={`${size} text-red-400`} />
+  switch (type) {
+    case 'thinking':
+      return status === 'processing' ? <Brain className={`${size} text-purple-400 animate-pulse`} /> : <Brain className={`${size} text-purple-400/60`} />
+    case 'status':
+      return status === 'processing' ? <Clock className={`${size} text-indigo-400 animate-pulse`} /> : <CheckCircle2 className={`${size} text-emerald-400/60`} />
+    case 'tool_start':
+      return status === 'processing' ? <Wrench className={`${size} text-amber-400 animate-pulse`} /> : <CheckCircle2 className={`${size} text-emerald-400/60`} />
+    case 'tool_result':
+      return <CheckCircle2 className={`${size} text-emerald-400/60`} />
+    case 'content':
+      return <Sparkles className={`${size} text-sky-400/60`} />
+    case 'error':
+      return <XCircle className={`${size} text-red-400`} />
+    default:
+      return <div className={`${size} rounded-full bg-slate-600`} />
+  }
+}
+
+function ToolInputPreview({ input }: { input: Record<string, unknown> }) {
+  const [expanded, setExpanded] = useState(false)
+  const entries = Object.entries(input).slice(0, 5)
+  if (entries.length === 0) return null
+  return (
+    <div className="mt-0.5">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-[9px] text-slate-500 hover:text-slate-400 transition-colors flex items-center gap-0.5"
+      >
+        {expanded ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
+        参数
+      </button>
+      {expanded && (
+        <div className="mt-0.5 text-[9px] text-slate-500 bg-slate-900/50 rounded px-1.5 py-0.5 font-mono overflow-x-auto max-w-full">
+          {entries.map(([k, v]) => (
+            <div key={k} className="truncate">
+              <span className="text-slate-400">{k}</span>: {typeof v === 'string' ? v : JSON.stringify(v)}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -346,14 +563,14 @@ function AgentIssuesCard({ issues, language }: { issues: WorkflowIssue[]; langua
       </button>
 
       {expanded && (
-        <div className="px-3 pb-2 space-y-1.5">
+        <div className="px-3 pb-2 space-y-1.5 overflow-hidden">
           {issues.map((issue, idx) => (
             <div
               key={issue.id || idx}
-              className="flex items-start gap-2 p-2 rounded-md bg-slate-900/50 border border-slate-700/30"
+              className="flex items-start gap-2 p-2 rounded-md bg-slate-900/50 border border-slate-700/30 min-w-0"
             >
               <SeverityIcon severity={issue.severity} />
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 overflow-hidden">
                 <div className="flex items-center gap-2 flex-wrap">
                   <SeverityBadge severity={issue.severity} />
                   {issue.category && (
@@ -374,13 +591,13 @@ function AgentIssuesCard({ issues, language }: { issues: WorkflowIssue[]; langua
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-slate-200 mt-1 break-words">
+                <p className="text-xs text-slate-200 mt-1 break-words overflow-wrap-anywhere">
                   {issue.message}
                 </p>
                 {issue.impact && (
                   <div className="flex items-start gap-1.5 mt-1.5">
                     <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0 mt-0.5" />
-                    <p className="text-[11px] text-amber-300/70 break-words">
+                    <p className="text-[11px] text-amber-300/70 break-words overflow-wrap-anywhere">
                       {issue.impact}
                     </p>
                   </div>
@@ -388,7 +605,7 @@ function AgentIssuesCard({ issues, language }: { issues: WorkflowIssue[]; langua
                 {issue.fixSuggestion && (
                   <div className="flex items-start gap-1.5 mt-1.5">
                     <Lightbulb className="w-3 h-3 text-emerald-400 flex-shrink-0 mt-0.5" />
-                    <p className="text-[11px] text-emerald-300/80 break-words">
+                    <p className="text-[11px] text-emerald-300/80 break-words overflow-wrap-anywhere">
                       {issue.fixSuggestion}
                     </p>
                   </div>

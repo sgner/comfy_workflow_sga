@@ -1,6 +1,6 @@
 
 
-import { GripHorizontal, Maximize2, Minimize2, RefreshCw, X, Scaling, AlertTriangle, MessageCircle, Undo2, SearchCheck } from 'lucide-react'
+import { GripHorizontal, Maximize2, Minimize2, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ChatPanel from './components/ChatPanel'
@@ -9,35 +9,12 @@ import WorkflowVisualizer from './components/WorkflowVisualizer'
 import { DEFAULT_WORKFLOW } from './constants'
 import { sendMessageToComfyAgent, fetchChatHistory } from './services/aiService'
 import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs } from './services/configService'
-import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, ApprovalRequest, HumanInputRequest, ToolCallInfo } from './types'
+import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, AgentActivity, ApprovalRequest, HumanInputRequest, ToolCallInfo, TokenUsage } from './types'
 import { t } from './utils/i18n'
-import { collectWorkflowContext, collectWorkflowContextAsync, contextErrorsToIssues } from './services/workflowContextCollector'
+import { collectWorkflowContext, collectWorkflowContextAsync, contextErrorsToIssues, formatWorkflowContextForPrompt } from './services/workflowContextCollector'
 
 interface AppProps {
   displayMode?: 'floating' | 'sidebar'
-}
-
-function HumanInputField({ onSubmit, placeholder }: { onSubmit: (value: string) => void; placeholder?: string }) {
-  const [value, setValue] = useState('')
-  return (
-    <div className="flex gap-2">
-      <input
-        type="text"
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter' && value.trim()) { onSubmit(value.trim()); setValue('') } }}
-        placeholder={placeholder ?? 'Type your response...'}
-        className="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-        autoFocus
-      />
-      <button
-        onClick={() => { if (value.trim()) { onSubmit(value.trim()); setValue('') } }}
-        className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors"
-      >
-        Send
-      </button>
-    </div>
-  )
 }
 
 const App: React.FC<AppProps> = () => {
@@ -111,14 +88,133 @@ const App: React.FC<AppProps> = () => {
   const [input, setInput] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentStatus, setCurrentStatus] = useState<AgentStatus | null>(null)
+  const [activityTimeline, setActivityTimeline] = useState<AgentActivity[]>([])
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null)
   const [pendingHumanInput, setPendingHumanInput] = useState<HumanInputRequest | null>(null)
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([])
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null)
 
   // --- ComfyUI Integration Hooks ---
   const app = (window as any).app;
+
+  // --- Drag & Drop State ---
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [dragError, setDragError] = useState<string | null>(null)
+  const dragCounterRef = useRef(0)
+
+  const isValidComfyWorkflow = (data: any): boolean => {
+    if (!data || typeof data !== 'object') return false
+    if (data.nodes && Array.isArray(data.nodes)) return true
+    if (data.workflow && data.workflow.nodes && Array.isArray(data.workflow.nodes)) return true
+    if (data.prompt && typeof data.prompt === 'object') return true
+    return false
+  }
+
+  const normalizeWorkflowData = (data: any): any => {
+    if (data.workflow && data.workflow.nodes) return data.workflow
+    if (data.prompt) {
+      const nodes: any[] = []
+      const prompt = data.prompt
+      for (const [id, nodeData] of Object.entries(prompt)) {
+        const nd = nodeData as any
+        nodes.push({
+          id: parseInt(id, 10) || id,
+          type: nd.class_type ?? nd.type ?? 'Unknown',
+          pos: nd.pos ?? [nodes.length * 200, 0],
+          widgets_values: nd.inputs ? Object.values(nd.inputs) : [],
+        })
+      }
+      return { ...data, nodes, links: [] }
+    }
+    return data
+  }
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current++
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragOver(true)
+      setDragError(null)
+    }
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current--
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0
+      setIsDragOver(false)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current = 0
+    setIsDragOver(false)
+
+    const files = e.dataTransfer.files
+    if (!files || files.length === 0) return
+
+    const file = files[0]
+    if (!file.name.endsWith('.json') && file.type !== 'application/json') {
+      setDragError(t(appSettings.language, 'dragDropInvalidFile'))
+      setTimeout(() => setDragError(null), 3000)
+      return
+    }
+
+    try {
+      const text = await file.text()
+      let data = JSON.parse(text)
+
+      if (!isValidComfyWorkflow(data)) {
+        setDragError(t(appSettings.language, 'dragDropInvalidFormat'))
+        setTimeout(() => setDragError(null), 3000)
+        return
+      }
+
+      data = normalizeWorkflowData(data)
+
+      if (app) {
+        app.loadGraphData(data)
+        if (app.canvas && data.nodes && data.nodes.length > 0) {
+          const node = app.graph.getNodeById
+            ? app.graph.getNodeById(Number(data.nodes[0].id))
+            : null
+          if (node) app.canvas.centerOnNode(node)
+        }
+        const graphData = app.graph.serialize()
+        setWorkflow(graphData as unknown as ComfyWorkflow)
+        const ctx = collectWorkflowContext()
+        setWorkflowContext(ctx)
+        collectWorkflowContextAsync().then(asyncCtx => {
+          setWorkflowContext(asyncCtx)
+        }).catch(() => {})
+      } else {
+        setWorkflow(data as unknown as ComfyWorkflow)
+      }
+
+      const sysMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: Sender.SYSTEM,
+        text: t(appSettings.language, 'dragDropSuccess').replace('{name}', file.name),
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, sysMsg])
+    } catch (err) {
+      setDragError(t(appSettings.language, 'dragDropParseError'))
+      setTimeout(() => setDragError(null), 3000)
+    }
+  }, [app, appSettings.language])
 
   // Helper to extract ID
   const getWorkflowId = useCallback((wf: any): string | null => {
@@ -580,6 +676,7 @@ const App: React.FC<AppProps> = () => {
       setInput('')
       setIsProcessing(true)
       setCurrentStatus(null)
+      setActivityTimeline([])
 
       // Create placeholder AI message
       const aiMsgId = (Date.now() + 1).toString()
@@ -626,6 +723,7 @@ const App: React.FC<AppProps> = () => {
           historyText,
           effectiveSessionId,
           errorLog,
+          _workflowContext ? formatWorkflowContextForPrompt(_workflowContext) : null,
           (chunk) => {
               accumulatedText += chunk;
               setMessages((prev) => prev.map((m) => 
@@ -644,12 +742,48 @@ const App: React.FC<AppProps> = () => {
              setPendingHumanInput(inputReq);
           },
           (toolInfo) => {
-             setActiveToolCalls(prev => [...prev, toolInfo]);
+             setActiveToolCalls(prev => {
+                 const existing = prev.findIndex(tc => tc.toolUseId === toolInfo.toolUseId)
+                 if (existing !== -1) {
+                     const updated = [...prev]
+                     updated[existing] = { ...updated[existing], ...toolInfo }
+                     return updated
+                 }
+                 return [...prev, toolInfo]
+             });
           },
           (toolInfo) => {
              setActiveToolCalls(prev => prev.map(tc => 
-               tc.toolUseId === toolInfo.toolName ? { ...tc, status: 'completed' as const } : tc
+               tc.toolUseId === toolInfo.toolUseId ? { ...tc, status: 'completed' as const } : tc
              ));
+          },
+          (activity) => {
+             setActivityTimeline(prev => {
+                 const updated = [...prev]
+
+                 if (activity.type === 'tool_start') {
+                     const existingIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
+                     if (existingIdx !== -1) {
+                         return updated
+                     }
+                     const prevProcessing = updated.findIndex(a => a.status === 'processing' && (a.type === 'status' || a.type === 'thinking'))
+                     if (prevProcessing !== -1) {
+                         updated[prevProcessing] = { ...updated[prevProcessing], status: 'done', duration: activity.timestamp - updated[prevProcessing].timestamp }
+                     }
+                 }
+
+                 if (activity.type === 'tool_result') {
+                     const startIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
+                     if (startIdx !== -1) {
+                         updated[startIdx] = { ...updated[startIdx], status: 'done', duration: activity.timestamp - updated[startIdx].timestamp }
+                     }
+                 }
+
+                 return [...updated, activity]
+             })
+          },
+          (usage) => {
+             setTokenUsage(usage)
           }
         )
 
@@ -730,6 +864,26 @@ const App: React.FC<AppProps> = () => {
       const prompt = `Please fix the following runtime error(s):\n\n${errorDetails}`
       handleSendMessage(prompt, errorDetails)
   }
+
+  const handleResolveIssue = (issue: WorkflowIssue) => {
+      let prompt = `Please fix this issue: ${issue.message}`
+      if (issue.nodeType) prompt += `\nNode Type: ${issue.nodeType}`
+      if (issue.nodeId != null) prompt += `\nNode ID: ${issue.nodeId}`
+      if (issue.exceptionType) prompt += `\nException Type: ${issue.exceptionType}`
+      if (issue.traceback) prompt += `\nTraceback:\n${issue.traceback}`
+      if (issue.currentInputs) prompt += `\nCurrent Inputs: ${JSON.stringify(issue.currentInputs, null, 2)}`
+      if (issue.fixSuggestion) prompt += `\nSuggested Fix: ${issue.fixSuggestion}`
+      handleSendMessage(prompt)
+  }
+
+  const handleDownloadModel = (modelName: string, modelFolder?: string) => {
+      let prompt = `The model "${modelName}" is missing. Please help me download it.`
+      if (modelFolder) {
+          prompt += ` It should be placed in the "${modelFolder}" folder.`
+      }
+      prompt += ` Try using huggingface-cli or wget from https://hf-mirror.com/ to download it to the correct ComfyUI models directory.`
+      handleSendMessage(prompt)
+  }
   
   const isConfigured = appSettings.usePythonBackend 
     ? !!appSettings.pythonBackendUrl && !!appSettings.activeBackendConfigId
@@ -751,7 +905,25 @@ const App: React.FC<AppProps> = () => {
             zIndex: 10001,
             pointerEvents: 'auto'
         }}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
     >
+        {isDragOver && (
+            <div className="absolute inset-0 z-[60] bg-indigo-500/20 backdrop-blur-sm border-2 border-dashed border-indigo-400 rounded-xl flex flex-col items-center justify-center gap-3 pointer-events-none">
+                <div className="w-16 h-16 bg-indigo-500/30 rounded-2xl flex items-center justify-center">
+                    <FileJson size={32} className="text-indigo-300" />
+                </div>
+                <div className="text-indigo-200 font-bold text-sm">{t(appSettings.language, 'dragDropHint')}</div>
+                <div className="text-indigo-400/70 text-xs">{t(appSettings.language, 'dragDropHintSub')}</div>
+            </div>
+        )}
+        {dragError && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-red-500/90 text-white text-xs font-medium rounded-lg shadow-lg">
+                {dragError}
+            </div>
+        )}
         {/* Window Header */}
         <div
             onMouseDown={handleMouseDown}
@@ -841,8 +1013,14 @@ const App: React.FC<AppProps> = () => {
                                 onSend={() => handleSendMessage()}
                                 isProcessing={isProcessing}
                                 currentStatus={currentStatus}
+                                activityTimeline={activityTimeline}
                                 onActionClick={handleActionClick}
                                 language={appSettings.language}
+                                pendingApproval={pendingApproval}
+                                pendingHumanInput={pendingHumanInput}
+                                onApprovalResponse={handleApprovalResponse}
+                                onHumanInputResponse={handleHumanInputResponse}
+                                tokenUsage={tokenUsage}
                             />
 
                             {activeToolCalls.length > 0 && (
@@ -854,79 +1032,6 @@ const App: React.FC<AppProps> = () => {
                                             <span className="text-slate-600">{tc.status === 'running' ? '...' : '✓'}</span>
                                         </div>
                                     ))}
-                                </div>
-                            )}
-
-                            {pendingApproval && (
-                                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
-                                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 max-w-sm w-full shadow-2xl">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <div className="w-8 h-8 bg-amber-500/20 rounded-lg flex items-center justify-center">
-                                                <AlertTriangle className="w-4 h-4 text-amber-400" />
-                                            </div>
-                                            <h3 className="text-sm font-bold text-amber-200">Approval Required</h3>
-                                        </div>
-                                        <p className="text-xs text-slate-300 mb-2">{pendingApproval.message}</p>
-                                        <p className="text-xs text-slate-500 mb-4">Tool: {pendingApproval.toolName}</p>
-                                        {pendingApproval.suggestions && pendingApproval.suggestions.length > 0 && (
-                                            <div className="mb-3 text-xs text-slate-400">
-                                                <span className="font-medium">Suggestions:</span>
-                                                <ul className="mt-1 space-y-1">
-                                                    {pendingApproval.suggestions.map((s, i) => (
-                                                        <li key={i} className="pl-2 border-l border-slate-700">• {s}</li>
-                                                    ))}
-                                                </ul>
-                                            </div>
-                                        )}
-                                        <div className="flex gap-2">
-                                            <button
-                                                onClick={() => handleApprovalResponse('deny')}
-                                                className="flex-1 px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded-lg transition-colors"
-                                            >
-                                                Deny
-                                            </button>
-                                            <button
-                                                onClick={() => handleApprovalResponse('allow')}
-                                                className="flex-1 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors"
-                                            >
-                                                Allow
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {pendingHumanInput && (
-                                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
-                                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 max-w-sm w-full shadow-2xl">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <div className="w-8 h-8 bg-blue-500/20 rounded-lg flex items-center justify-center">
-                                                <MessageCircle className="w-4 h-4 text-blue-400" />
-                                            </div>
-                                            <h3 className="text-sm font-bold text-blue-200">Input Required</h3>
-                                        </div>
-                                        <p className="text-xs text-slate-300 mb-2">{pendingHumanInput.message}</p>
-                                        {pendingHumanInput.context && (
-                                            <p className="text-xs text-slate-500 mb-3">{pendingHumanInput.context}</p>
-                                        )}
-                                        {pendingHumanInput.options && pendingHumanInput.options.length > 0 ? (
-                                            <div className="space-y-2 mb-3">
-                                                {pendingHumanInput.options.map((opt, i) => (
-                                                    <button
-                                                        key={i}
-                                                        onClick={() => handleHumanInputResponse(opt.value, opt.value)}
-                                                        className="w-full text-left px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs text-slate-200 transition-colors"
-                                                    >
-                                                        <span className="font-medium">{opt.label}</span>
-                                                        {opt.description && <span className="text-slate-500 ml-2">- {opt.description}</span>}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        ) : null}
-                                        {pendingHumanInput.allowFreeText && (
-                                            <HumanInputField onSubmit={handleHumanInputResponse} placeholder={pendingHumanInput.placeholder} />
-                                        )}
-                                    </div>
                                 </div>
                             )}
                         </div>
@@ -945,6 +1050,9 @@ const App: React.FC<AppProps> = () => {
                                 activeTab={visualizerTab}
                                 onTabChange={setVisualizerTab}
                                 onSendErrorsToAi={handleSendErrorsToAi}
+                                onResolveIssue={handleResolveIssue}
+                                onDownloadModel={handleDownloadModel}
+                                backendUrl={appSettings.pythonBackendUrl}
                             />
                         </div>
                     </div>

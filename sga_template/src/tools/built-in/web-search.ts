@@ -1,5 +1,7 @@
 import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult, type PermissionResult } from '../base.js'
 
+const FETCH_TIMEOUT_MS = 30_000
+
 export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: string[]; blocked_domains?: string[] }, string> {
   name = 'WebSearch'
   description = 'Search the web for current information using a search query'
@@ -48,13 +50,17 @@ export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: s
 
     if (apiKey) {
       try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
         const response = await fetch(searchUrl.toString(), {
           headers: {
             'Accept': 'application/json',
             'Accept-Encoding': 'gzip',
             'X-Subscription-Token': apiKey,
           },
+          signal: controller.signal,
         })
+        clearTimeout(timeout)
         if (response.ok) {
           const data = await response.json() as { web?: { results?: Array<{ title?: string; url?: string; description?: string }> } }
           const results = data.web?.results ?? []
@@ -70,9 +76,13 @@ export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: s
 
     try {
       const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(input.query)}`
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
       const response = await fetch(ddgUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CC-Contron/1.0)' },
+        signal: controller.signal,
       })
+      clearTimeout(timeout)
       if (response.ok) {
         const html = await response.text()
         const results: Array<{ title: string; url: string; snippet: string }> = []

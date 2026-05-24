@@ -222,6 +222,8 @@ async function executeAgentLoop(
     turnCount++
     logger.debug(`Turn ${turnCount} starting`)
 
+    const turnStartUsage = { ...usage }
+
     const providerMessages = allMessages.map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content.map(c => {
@@ -309,6 +311,17 @@ async function executeAgentLoop(
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use')
     if (toolUseBlocks.length === 0) {
       logger.info(`No tool calls, ending loop at turn ${turnCount}`)
+      if (options.onProgress) {
+        const turnDelta = {
+          inputTokens: usage.inputTokens - turnStartUsage.inputTokens,
+          outputTokens: usage.outputTokens - turnStartUsage.outputTokens,
+          cacheReadInputTokens: usage.cacheReadInputTokens - turnStartUsage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens - turnStartUsage.cacheCreationInputTokens,
+          totalTokens: usage.totalTokens - turnStartUsage.totalTokens,
+          totalCostUsd: usage.totalCostUsd - turnStartUsage.totalCostUsd,
+        }
+        options.onProgress({ type: 'turn_end', turnCount, usage: turnDelta })
+      }
       break
     }
 
@@ -382,7 +395,7 @@ async function executeAgentLoop(
                 timestamp: Date.now(),
               })
               if (options.onProgress) {
-                options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: resultStr, isError: false } })
+                options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: resultStr, isError: false } })
               }
             } catch (callError) {
               const msg = callError instanceof Error ? callError.message : String(callError)
@@ -393,7 +406,7 @@ async function executeAgentLoop(
                 timestamp: Date.now(),
               })
               if (options.onProgress) {
-                options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: msg, isError: true } })
+                options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: msg, isError: true } })
               }
             }
           } else {
@@ -405,7 +418,7 @@ async function executeAgentLoop(
               timestamp: Date.now(),
             })
             if (options.onProgress) {
-              options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: denyMsg, isError: true } })
+              options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: denyMsg, isError: true } })
             }
           }
         } catch (approvalError) {
@@ -435,6 +448,9 @@ async function executeAgentLoop(
           }],
           timestamp: Date.now(),
         })
+        if (options.onProgress) {
+          options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: errMsg, isError: true } })
+        }
       } else {
         const resultStr = typeof execResult.output === 'string'
           ? execResult.output
@@ -451,7 +467,22 @@ async function executeAgentLoop(
           }],
           timestamp: Date.now(),
         })
+        if (options.onProgress) {
+          options.onProgress({ type: 'tool_use_result', toolName: name, toolUseId: id, result: { toolUseId: id, content: resultStr, isError: false } })
+        }
       }
+    }
+
+    if (options.onProgress) {
+      const turnDelta = {
+        inputTokens: usage.inputTokens - turnStartUsage.inputTokens,
+        outputTokens: usage.outputTokens - turnStartUsage.outputTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens - turnStartUsage.cacheReadInputTokens,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens - turnStartUsage.cacheCreationInputTokens,
+        totalTokens: usage.totalTokens - turnStartUsage.totalTokens,
+        totalCostUsd: usage.totalCostUsd - turnStartUsage.totalCostUsd,
+      }
+      options.onProgress({ type: 'turn_end', turnCount, usage: turnDelta })
     }
   }
 
@@ -514,6 +545,28 @@ async function consumeStream(
       case 'stream_chunk': {
         if (chunk.contentBlock) {
           if (chunk.contentBlock.type === 'tool_use') {
+            if (currentToolUseBlock) {
+              let parsedInput: Record<string, unknown> = {}
+              try {
+                parsedInput = JSON.parse(currentToolUseBlock.input) as Record<string, unknown>
+              } catch {
+                parsedInput = {}
+              }
+              contentBlocks.push({
+                type: 'tool_use',
+                id: currentToolUseBlock.id,
+                name: currentToolUseBlock.name,
+                input: parsedInput,
+              })
+              if (onProgress) {
+                onProgress({
+                  type: 'tool_use_input_complete',
+                  toolName: currentToolUseBlock.name,
+                  toolUseId: currentToolUseBlock.id,
+                  toolInput: parsedInput,
+                })
+              }
+            }
             currentToolUseBlock = {
               type: 'tool_use',
               id: chunk.contentBlock.id ?? '',
@@ -527,6 +580,8 @@ async function consumeStream(
                 toolUseId: chunk.contentBlock.id,
               })
             }
+          } else if (chunk.contentBlock.type === 'text' && !currentTextBlock) {
+            currentTextBlock = { type: 'text', text: chunk.contentBlock.text ?? '' }
           }
         }
 
@@ -546,6 +601,9 @@ async function consumeStream(
           } else if (chunk.delta.type === 'input_json_delta') {
             if (currentToolUseBlock) {
               currentToolUseBlock.input += chunk.delta.partialJson ?? ''
+            }
+            if (chunk.delta.stopReason) {
+              stopReason = chunk.delta.stopReason
             }
           } else if (chunk.delta.type === 'message_delta') {
             if (chunk.delta.stopReason) {
@@ -628,6 +686,14 @@ async function consumeStream(
             name: currentToolUseBlock.name,
             input: parsedInput,
           })
+          if (onProgress) {
+            onProgress({
+              type: 'tool_use_input_complete',
+              toolName: currentToolUseBlock.name,
+              toolUseId: currentToolUseBlock.id,
+              toolInput: parsedInput,
+            })
+          }
           currentToolUseBlock = null
         }
         break
@@ -663,6 +729,14 @@ async function consumeStream(
       name: currentToolUseBlock.name,
       input: parsedInput,
     })
+    if (onProgress) {
+      onProgress({
+        type: 'tool_use_input_complete',
+        toolName: currentToolUseBlock.name,
+        toolUseId: currentToolUseBlock.id,
+        toolInput: parsedInput,
+      })
+    }
     currentToolUseBlock = null
   }
 

@@ -1,6 +1,6 @@
 import type { AgentDefinition, AgentFrontmatter } from './definition.js'
 import { BaseAgentDefinition } from './definition.js'
-import { GeneralPurposeAgent, ExploreAgent, PlanAgent, VerificationAgent } from './built-in/index.js'
+import { GeneralPurposeAgent, ExploreAgent, PlanAgent, VerificationAgent, ComfyUIWorkflowAgent } from './built-in/index.js'
 import { loadCustomAgents, createAgentFromConfig, isCustomAgent, agentDefinitionToJSON, type CustomAgentDefinition, type AgentSource } from './loader.js'
 
 export type { AgentDefinition, AgentDefinitionFile, AgentFrontmatter } from './definition.js'
@@ -13,6 +13,7 @@ export { Coordinator, getCoordinatorSystemPrompt, createCoordinatorPlanFromUserQ
 
 export function getBuiltinAgentDefinitions(): AgentDefinition[] {
   return [
+    new ComfyUIWorkflowAgent(),
     new GeneralPurposeAgent(),
     new ExploreAgent(),
     new PlanAgent(),

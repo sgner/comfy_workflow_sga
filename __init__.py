@@ -374,6 +374,49 @@ def _build_if_needed(sga_dir):
             raise
 
 
+def _ensure_ui_dependencies(ui_dir):
+    node_modules = os.path.join(ui_dir, "node_modules")
+    if not os.path.exists(node_modules):
+        print("📦 Installing dependencies for UI...")
+        try:
+            subprocess.run(
+                ["npm", "install"],
+                cwd=ui_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            print("✅ UI dependencies installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install UI dependencies: {e.stderr}")
+            raise
+        except FileNotFoundError:
+            print("❌ npm not found. Please install Node.js first.")
+            raise
+
+
+def _build_ui_if_needed(ui_dir):
+    web_dir = os.path.join(current_dir, "web")
+    if not os.path.exists(web_dir) or not os.listdir(web_dir):
+        print("🔨 Building UI (web folder not found or empty)...")
+        try:
+            _ensure_ui_dependencies(ui_dir)
+            subprocess.run(
+                ["npm", "run", "build"],
+                cwd=ui_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            print("✅ UI build completed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to build UI: {e.stderr}")
+            raise
+        except FileNotFoundError:
+            print("❌ npm not found. Please install Node.js first.")
+            raise
+
+
 def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
     global _backend_process, _backend_server
 
@@ -392,6 +435,7 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
             return None
 
     sga_dir = os.path.join(current_dir, "sga_template")
+    ui_dir = os.path.join(current_dir, "ui")
 
     if not os.path.isdir(sga_dir):
         print(f"❌ sga_template directory not found: {sga_dir}")
@@ -403,6 +447,13 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
     except Exception as e:
         print(f"❌ Failed to prepare sga_template: {e}")
         return None
+
+    if os.path.isdir(ui_dir):
+        try:
+            _build_ui_if_needed(ui_dir)
+        except Exception as e:
+            print(f"❌ Failed to build UI: {e}")
+            print("⚠️  The backend will still start, but the web UI may not be available.")
 
     print("=" * 60)
     print("🚀 Starting ComfyUI Workflow Agent Backend Server (SGA)")
@@ -419,6 +470,12 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
             env = os.environ.copy()
             env["PORT"] = str(port)
             env["HOST"] = host
+
+            comfyui_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+            if os.path.isfile(os.path.join(comfyui_root, "main.py")):
+                env["COMFYUI_BASE_DIR"] = comfyui_root
+            else:
+                env["COMFYUI_BASE_DIR"] = current_dir
 
             _backend_process = subprocess.Popen(
                 [node_path, "dist/server/comfyui-main.js"],

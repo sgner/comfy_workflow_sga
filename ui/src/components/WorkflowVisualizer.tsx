@@ -14,6 +14,7 @@ import {
   Database,
   Download,
   Edit3,
+  ExternalLink,
   FileJson,
   History,
   Maximize,
@@ -22,6 +23,7 @@ import {
   RotateCcw,
   Save,
   Settings,
+  Wrench,
   ZoomIn,
   ZoomOut
 } from 'lucide-react'
@@ -34,10 +36,29 @@ import {
   WorkflowCheckpoint,
   WorkflowIssue,
   VisualizerTab,
-  WorkflowContextData
+  WorkflowContextData,
+  MCPServerInfo,
+  SkillInfo
 } from '../types'
+
+function getModelSearchKeyword(issue: WorkflowIssue): string {
+  let name = ''
+  if (issue.modelName) {
+    name = issue.modelName
+  } else {
+    const match = issue.message.match(/Missing model:\s*(.+?)(?:\s+in\s+|$)/i)
+    if (match) name = match[1].trim()
+    else {
+      const match2 = issue.message.match(/model[\s:]*(.+?)(?:\s+in\s+|$)/i)
+      if (match2) name = match2[1].trim()
+    }
+  }
+  if (!name) name = issue.message
+  return name.replace(/\.(safetensors|ckpt|pt|bin|pth|onnx|gguf|fp16|bf16)$/i, '').replace(/[_-]?(fp16|bf16)$/, '')
+}
 import { t } from '../utils/i18n'
 import { collectWorkflowContext, collectWorkflowContextAsync, formatWorkflowContextForPrompt } from '../services/workflowContextCollector'
+import { fetchMCPServers, fetchSkills, connectMCPServer, disconnectMCPServer, deleteMCPServer, deleteSkill, addMCPServer, addSkill } from '../services/configService'
 
 interface WorkflowVisualizerProps {
   workflow: ComfyWorkflow
@@ -51,6 +72,9 @@ interface WorkflowVisualizerProps {
   activeTab: VisualizerTab
   onTabChange: (tab: VisualizerTab) => void
   onSendErrorsToAi?: (selectedIssues: WorkflowIssue[]) => void
+  onResolveIssue?: (issue: WorkflowIssue) => void
+  onDownloadModel?: (modelName: string, modelFolder?: string) => void
+  backendUrl?: string
 }
 
 // Constants for Node Rendering
@@ -71,10 +95,23 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
   resolveWidgetNames,
   activeTab,
   onTabChange,
-  onSendErrorsToAi
+  onSendErrorsToAi,
+  onResolveIssue,
+  onDownloadModel,
+  backendUrl
 }) => {
   const [copied, setCopied] = useState(false)
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set())
+
+  // MCP & Skills State
+  const [mcpServers, setMcpServers] = useState<MCPServerInfo[]>([])
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [mcpLoading, setMcpLoading] = useState(false)
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [showAddMcpForm, setShowAddMcpForm] = useState(false)
+  const [showAddSkillForm, setShowAddSkillForm] = useState(false)
+  const [mcpForm, setMcpForm] = useState({ name: '', transport: 'stdio', command: '', url: '', args: '' })
+  const [skillForm, setSkillForm] = useState({ name: '', description: '', whenToUse: '', userInvocable: true })
 
   // Graph View State
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
@@ -407,6 +444,20 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
     }
   }, [workflow, activeTab])
 
+  useEffect(() => {
+    if (activeTab === 'mcp' && backendUrl) {
+      setMcpLoading(true)
+      fetchMCPServers(backendUrl).then(setMcpServers).catch(() => setMcpServers([])).finally(() => setMcpLoading(false))
+    }
+  }, [activeTab, backendUrl])
+
+  useEffect(() => {
+    if (activeTab === 'skills' && backendUrl) {
+      setSkillsLoading(true)
+      fetchSkills(backendUrl).then(setSkills).catch(() => setSkills([])).finally(() => setSkillsLoading(false))
+    }
+  }, [activeTab, backendUrl])
+
   // --- Helpers ---
 
   // Calculates the EXACT center of the connection dot visually
@@ -723,7 +774,10 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
             </div>
           </div>
           <div className="space-y-2">
-            {runtimeErrors.map((issue) => (
+            {runtimeErrors.map((issue) => {
+              const isMissingModel = issue.category === 'missing_model' || issue.modelName || /missing\s+model/i.test(issue.message)
+              const isMissingNode = issue.category === 'missing_node' || /missing\s+node/i.test(issue.message)
+              return (
               <div
                 key={issue.id}
                 className={`p-2.5 rounded-lg border flex gap-2.5 items-start transition-colors ${
@@ -761,9 +815,72 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                       <span className="font-semibold">{t(language, 'tip')}:</span> {issue.fixSuggestion}
                     </p>
                   )}
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {isMissingModel && onDownloadModel && (
+                      <button
+                        onClick={() => onDownloadModel(getModelSearchKeyword(issue), issue.modelFolder)}
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
+                      >
+                        <Download size={10} />
+                        {t(language, 'downloadModel') || 'Download Model'}
+                      </button>
+                    )}
+                    {isMissingModel && (
+                      <a
+                        href={`https://hf-mirror.com/models?search=${encodeURIComponent(getModelSearchKeyword(issue))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        HF Mirror
+                      </a>
+                    )}
+                    {isMissingModel && (
+                      <a
+                        href={`https://huggingface.co/models?search=${encodeURIComponent(getModelSearchKeyword(issue))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        HuggingFace
+                      </a>
+                    )}
+                    {isMissingNode && (
+                      <a
+                        href={`https://github.com/search?q=${encodeURIComponent(`comfyui ${issue.nodeType} node`)}&type=repositories`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        GitHub
+                      </a>
+                    )}
+                    {!isMissingModel && !isMissingNode && (
+                      <a
+                        href={`https://github.com/comfyanonymous/ComfyUI/issues?q=${encodeURIComponent(issue.message)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        GitHub Issues
+                      </a>
+                    )}
+                    <button
+                      onClick={() => onResolveIssue ? onResolveIssue(issue) : onAskAi(`Please fix this error: ${issue.message}${issue.nodeType ? ` (node type: ${issue.nodeType})` : ''}${issue.traceback ? `\nTraceback:\n${issue.traceback}` : ''}`)}
+                      className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded transition-colors"
+                    >
+                      <Wrench size={10} />
+                      {t(language, 'resolveIssue') || 'Resolve'}
+                    </button>
+                  </div>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
@@ -792,15 +909,81 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
           </div>
         ) : runtimeErrors.length === 0 ? (
           <div className="space-y-2">
-            {analysis.issues.map((issue) => (
+            {analysis.issues.map((issue) => {
+              const isMissingModel = issue.category === 'missing_model' || issue.modelName || /missing\s+model/i.test(issue.message)
+              const isMissingNode = issue.category === 'missing_node' || /missing\s+node/i.test(issue.message)
+              return (
               <div key={issue.id} className={`p-3 rounded-lg border flex gap-3 items-start ${issue.severity === 'warning' ? 'bg-amber-950/20 border-amber-900/30' : 'bg-red-950/20 border-red-900/30'}`}>
                 <AlertTriangle size={16} className={issue.severity === 'warning' ? 'text-amber-500' : 'text-red-500'} />
-                <div>
+                <div className="flex-1 min-w-0">
                   <p className={`text-sm font-medium ${issue.severity === 'warning' ? 'text-amber-200' : 'text-red-200'}`}>{issue.message}</p>
                   {issue.fixSuggestion && <p className="text-xs text-slate-400 mt-1"><span className="font-semibold">{t(language, 'tip')}:</span> {issue.fixSuggestion}</p>}
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {isMissingModel && onDownloadModel && (
+                      <button
+                        onClick={() => onDownloadModel(getModelSearchKeyword(issue), issue.modelFolder)}
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
+                      >
+                        <Download size={10} />
+                        {t(language, 'downloadModel') || 'Download Model'}
+                      </button>
+                    )}
+                    {isMissingModel && (
+                      <a
+                        href={`https://hf-mirror.com/models?search=${encodeURIComponent(getModelSearchKeyword(issue))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        HF Mirror
+                      </a>
+                    )}
+                    {isMissingModel && (
+                      <a
+                        href={`https://huggingface.co/models?search=${encodeURIComponent(getModelSearchKeyword(issue))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        HuggingFace
+                      </a>
+                    )}
+                    {isMissingNode && (
+                      <a
+                        href={`https://github.com/search?q=${encodeURIComponent(`comfyui ${issue.nodeType} node`)}&type=repositories`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        GitHub
+                      </a>
+                    )}
+                    {!isMissingModel && !isMissingNode && (
+                      <a
+                        href={`https://github.com/comfyanonymous/ComfyUI/issues?q=${encodeURIComponent(issue.message)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        GitHub Issues
+                      </a>
+                    )}
+                    <button
+                      onClick={() => onResolveIssue ? onResolveIssue(issue) : onAskAi(`Please fix this issue: ${issue.message}${issue.nodeType ? ` (node type: ${issue.nodeType})` : ''}`)}
+                      className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded transition-colors"
+                    >
+                      <Wrench size={10} />
+                      {t(language, 'resolveIssue') || 'Resolve'}
+                    </button>
+                  </div>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         ) : null}
       </div>
@@ -958,7 +1141,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                 <p className="text-xs text-slate-500">{t(language, 'noParameters') || 'No parameters collected'}</p>
               ) : (
                 <div className="space-y-1 max-h-64 overflow-y-auto">
-                  {contextData.parameters.slice(0, 20).map((p, i) => (
+                  {contextData.parameters.map((p, i) => (
                     <div key={i} className="text-[11px] bg-slate-800/50 rounded px-2 py-1">
                       <span className="font-mono text-indigo-400">Node #{p.nodeId}</span> <span className="text-slate-300">({p.nodeType})</span> <span className="text-slate-400">"{p.nodeTitle}"</span>
                       {p.widgets.length > 0 && (
@@ -968,9 +1151,6 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                       )}
                     </div>
                   ))}
-                  {contextData.parameters.length > 20 && (
-                    <p className="text-[10px] text-slate-500">... and {contextData.parameters.length - 20} more</p>
-                  )}
                 </div>
               )
             )}
@@ -1022,7 +1202,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                 <p className="text-xs text-slate-500">{t(language, 'noNodeDefs') || 'No node definitions collected'}</p>
               ) : (
                 <div className="space-y-1 max-h-64 overflow-y-auto">
-                  {contextData.nodeDefs.slice(0, 15).map((d, i) => (
+                  {contextData.nodeDefs.map((d, i) => (
                     <div key={i} className="text-[11px] bg-slate-800/50 rounded px-2 py-1">
                       <span className="text-indigo-400">{d.name}</span> <span className="text-slate-500">[{d.category}]</span>
                       {d.deprecated && <span className="text-red-400 ml-1">[DEPRECATED]</span>}
@@ -1035,9 +1215,6 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                       )}
                     </div>
                   ))}
-                  {contextData.nodeDefs.length > 15 && (
-                    <p className="text-[10px] text-slate-500">... and {contextData.nodeDefs.length - 15} more</p>
-                  )}
                 </div>
               )
             )}
@@ -1064,10 +1241,299 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
             <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-300 uppercase tracking-wider font-semibold">
               {t(language, 'formattedPromptPreview') || 'Formatted Prompt Preview'}
             </summary>
-            <pre className="mt-2 text-[10px] font-mono text-slate-400 bg-slate-950/50 rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap">{contextFormatted}</pre>
+            <pre className="mt-2 text-[10px] font-mono text-slate-400 bg-slate-950/50 rounded p-2 max-h-[600px] overflow-auto whitespace-pre-wrap">{contextFormatted}</pre>
           </details>
         </div>
       )}
+    </div>
+  )
+
+  const renderMCP = () => (
+    <div className="flex flex-col h-full bg-slate-950 min-w-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
+        <div className="flex items-center gap-2 text-slate-400">
+          <Wrench size={14} />
+          <span className="text-xs font-mono">{t(language, 'mcpServers')}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddMcpForm(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition-colors"
+          >
+            + {t(language, 'mcpServerAdd')}
+          </button>
+          <button
+            onClick={() => {
+              if (backendUrl) {
+                setMcpLoading(true)
+                fetchMCPServers(backendUrl).then(setMcpServers).catch(() => setMcpServers([])).finally(() => setMcpLoading(false))
+              }
+            }}
+            disabled={mcpLoading}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={mcpLoading ? 'animate-spin' : ''} />
+            {t(language, 'refresh') || 'Refresh'}
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
+        {showAddMcpForm && (
+          <div className="border border-indigo-700/50 rounded-lg p-3 bg-slate-800/50 space-y-2">
+            <div className="text-xs font-semibold text-indigo-300">{t(language, 'addMcpServerTitle')}</div>
+            <div className="space-y-1.5">
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpServerNameLabel')} *</label>
+                <input value={mcpForm.name} onChange={e => setMcpForm(f => ({ ...f, name: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpTransportType')}</label>
+                <select value={mcpForm.transport} onChange={e => setMcpForm(f => ({ ...f, transport: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none">
+                  <option value="stdio">stdio</option>
+                  <option value="sse">sse</option>
+                  <option value="streamable-http">streamable-http</option>
+                </select>
+              </div>
+              {mcpForm.transport === 'stdio' ? (
+                <div>
+                  <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpCommand')} *</label>
+                  <input value={mcpForm.command} onChange={e => setMcpForm(f => ({ ...f, command: e.target.value }))} placeholder="npx -y @modelcontextprotocol/server-xxx" className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+                </div>
+              ) : (
+                <div>
+                  <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpUrl')} *</label>
+                  <input value={mcpForm.url} onChange={e => setMcpForm(f => ({ ...f, url: e.target.value }))} placeholder="http://localhost:3000/sse" className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+                </div>
+              )}
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpArgs')}</label>
+                <input value={mcpForm.args} onChange={e => setMcpForm(f => ({ ...f, args: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => { setShowAddMcpForm(false); setMcpForm({ name: '', transport: 'stdio', command: '', url: '', args: '' }) }} className="px-3 py-1 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">{t(language, 'cancel')}</button>
+              <button onClick={() => {
+                if (!backendUrl || !mcpForm.name) return
+                const args = mcpForm.args ? mcpForm.args.split(',').map(a => a.trim()).filter(Boolean) : undefined
+                addMCPServer(backendUrl, { name: mcpForm.name, transport: mcpForm.transport, command: mcpForm.command || undefined, url: mcpForm.url || undefined, args }).then(() => {
+                  setShowAddMcpForm(false)
+                  setMcpForm({ name: '', transport: 'stdio', command: '', url: '', args: '' })
+                  setMcpLoading(true)
+                  fetchMCPServers(backendUrl).then(setMcpServers).catch(() => setMcpServers([])).finally(() => setMcpLoading(false))
+                })
+              }} disabled={!mcpForm.name || (mcpForm.transport === 'stdio' && !mcpForm.command) || (mcpForm.transport !== 'stdio' && !mcpForm.url)} className="px-3 py-1 rounded text-xs bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50">{t(language, 'confirm')}</button>
+            </div>
+          </div>
+        )}
+        {mcpLoading && mcpServers.length === 0 ? (
+          <div className="flex items-center justify-center h-32 text-slate-500 text-xs">{t(language, 'loading') || 'Loading...'}</div>
+        ) : mcpServers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
+            <Wrench size={32} className="opacity-20" />
+            <p className="text-xs">{t(language, 'mcpNoServers')}</p>
+          </div>
+        ) : (
+          mcpServers.map((server) => (
+            <div key={server.name} className="border border-slate-700/50 rounded-lg px-3 py-2.5 bg-slate-800/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${server.status === 'connected' ? 'bg-emerald-400' : server.status === 'error' ? 'bg-red-400' : 'bg-slate-500'}`} />
+                  <span className="text-xs font-mono text-slate-200">{server.name}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {server.status === 'connected' ? (
+                    <button
+                      onClick={() => {
+                        if (backendUrl) {
+                          disconnectMCPServer(backendUrl, server.name).then(() => {
+                            setMcpServers(prev => prev.map(s => s.name === server.name ? { ...s, status: 'disconnected' } : s))
+                          })
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    >
+                      {t(language, 'mcpServerDisconnect')}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (backendUrl) {
+                          connectMCPServer(backendUrl, server.name).then(() => {
+                            setMcpServers(prev => prev.map(s => s.name === server.name ? { ...s, status: 'connected' } : s))
+                          }).catch(() => {
+                            setMcpServers(prev => prev.map(s => s.name === server.name ? { ...s, status: 'error' } : s))
+                          })
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+                    >
+                      {t(language, 'mcpServerConnect')}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (backendUrl) {
+                        deleteMCPServer(backendUrl, server.name).then(() => {
+                          setMcpServers(prev => prev.filter(s => s.name !== server.name))
+                        })
+                      }
+                    }}
+                    className="px-2 py-0.5 rounded text-[10px] bg-red-900/50 hover:bg-red-800/50 text-red-300 transition-colors"
+                  >
+                    {t(language, 'mcpServerDelete')}
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                <div>
+                  <span className="text-slate-500">{t(language, 'mcpServerStatus')}:</span>{' '}
+                  <span className={server.status === 'connected' ? 'text-emerald-400' : server.status === 'error' ? 'text-red-400' : 'text-slate-400'}>
+                    {server.status === 'connected' ? t(language, 'mcpServerConnected') : server.status === 'error' ? t(language, 'mcpServerError') : t(language, 'mcpServerDisconnected')}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500">{t(language, 'mcpServerTransport')}:</span>{' '}
+                  <span className="text-slate-300">{server.transport}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">{t(language, 'mcpServerTools')}:</span>{' '}
+                  <span className="text-indigo-400">{server.toolCount}</span>
+                </div>
+                {server.command && (
+                  <div className="col-span-2">
+                    <span className="text-slate-500">Command:</span>{' '}
+                    <span className="text-slate-300 font-mono text-[10px]">{server.command}</span>
+                  </div>
+                )}
+                {server.url && (
+                  <div className="col-span-2">
+                    <span className="text-slate-500">URL:</span>{' '}
+                    <span className="text-slate-300 font-mono text-[10px]">{server.url}</span>
+                  </div>
+                )}
+                {server.error && (
+                  <div className="col-span-2 text-red-400 text-[10px]">{server.error}</div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+
+  const renderSkills = () => (
+    <div className="flex flex-col h-full bg-slate-950 min-w-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
+        <div className="flex items-center gap-2 text-slate-400">
+          <Bot size={14} />
+          <span className="text-xs font-mono">{t(language, 'tabSkills')}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddSkillForm(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition-colors"
+          >
+            + {t(language, 'addSkillTitle')}
+          </button>
+          <button
+            onClick={() => {
+              if (backendUrl) {
+                setSkillsLoading(true)
+                fetchSkills(backendUrl).then(setSkills).catch(() => setSkills([])).finally(() => setSkillsLoading(false))
+              }
+            }}
+            disabled={skillsLoading}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={skillsLoading ? 'animate-spin' : ''} />
+            {t(language, 'refresh') || 'Refresh'}
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
+        {showAddSkillForm && (
+          <div className="border border-indigo-700/50 rounded-lg p-3 bg-slate-800/50 space-y-2">
+            <div className="text-xs font-semibold text-indigo-300">{t(language, 'addSkillTitle')}</div>
+            <div className="space-y-1.5">
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'skillNameLabel')} *</label>
+                <input value={skillForm.name} onChange={e => setSkillForm(f => ({ ...f, name: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'skillDescriptionLabel')} *</label>
+                <textarea value={skillForm.description} onChange={e => setSkillForm(f => ({ ...f, description: e.target.value }))} rows={2} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none resize-none" />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'skillWhenToUse')}</label>
+                <input value={skillForm.whenToUse} onChange={e => setSkillForm(f => ({ ...f, whenToUse: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" checked={skillForm.userInvocable} onChange={e => setSkillForm(f => ({ ...f, userInvocable: e.target.checked }))} className="rounded border-slate-700" />
+                <label className="text-[10px] text-slate-400">{t(language, 'skillUserInvocable')}</label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => { setShowAddSkillForm(false); setSkillForm({ name: '', description: '', whenToUse: '', userInvocable: true }) }} className="px-3 py-1 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">{t(language, 'cancel')}</button>
+              <button onClick={() => {
+                if (!backendUrl || !skillForm.name || !skillForm.description) return
+                addSkill(backendUrl, { name: skillForm.name, description: skillForm.description, whenToUse: skillForm.whenToUse || undefined, userInvocable: skillForm.userInvocable }).then(() => {
+                  setShowAddSkillForm(false)
+                  setSkillForm({ name: '', description: '', whenToUse: '', userInvocable: true })
+                  setSkillsLoading(true)
+                  fetchSkills(backendUrl).then(setSkills).catch(() => setSkills([])).finally(() => setSkillsLoading(false))
+                })
+              }} disabled={!skillForm.name || !skillForm.description} className="px-3 py-1 rounded text-xs bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50">{t(language, 'confirm')}</button>
+            </div>
+          </div>
+        )}
+        {skillsLoading && skills.length === 0 ? (
+          <div className="flex items-center justify-center h-32 text-slate-500 text-xs">{t(language, 'loading') || 'Loading...'}</div>
+        ) : skills.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
+            <Bot size={32} className="opacity-20" />
+            <p className="text-xs">{t(language, 'skillNoSkills')}</p>
+          </div>
+        ) : (
+          skills.map((skill) => (
+            <div key={skill.name} className="border border-slate-700/50 rounded-lg px-3 py-2.5 bg-slate-800/30 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono text-slate-200">{skill.name}</span>
+                  {skill.userInvocable && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] bg-indigo-900/50 text-indigo-300 border border-indigo-700/30">
+                      {t(language, 'skillUserInvocable')}
+                    </span>
+                  )}
+                </div>
+                {skill.source !== 'bundled' && (
+                  <button
+                    onClick={() => {
+                      if (backendUrl) {
+                        deleteSkill(backendUrl, skill.name).then(() => {
+                          setSkills(prev => prev.filter(s => s.name !== skill.name))
+                        })
+                      }
+                    }}
+                    className="px-2 py-0.5 rounded text-[10px] bg-red-900/50 hover:bg-red-800/50 text-red-300 transition-colors"
+                  >
+                    {t(language, 'mcpServerDelete')}
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400">{skill.description}</p>
+              {skill.whenToUse && (
+                <p className="text-[10px] text-slate-500 italic">{skill.whenToUse}</p>
+              )}
+              {skill.source && (
+                <div className="text-[10px] text-slate-600">
+                  {t(language, 'skillSource')}: <span className="text-slate-400">{skill.source}</span>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
     </div>
   )
 
@@ -1159,6 +1625,8 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
           <button onClick={() => onTabChange('analysis')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'analysis' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabDiagnostics')}</button>
           <button onClick={() => onTabChange('json')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'json' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabJson')}</button>
           <button onClick={() => onTabChange('context')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'context' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabContext') || 'Context'}</button>
+          <button onClick={() => onTabChange('mcp')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'mcp' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabMCP')}</button>
+          <button onClick={() => onTabChange('skills')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'skills' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabSkills')}</button>
         </div>
       </div>
       <div className="flex-1 overflow-hidden relative">
@@ -1166,6 +1634,8 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
         {activeTab === 'analysis' && renderAnalysis()}
         {activeTab === 'json' && renderJson()}
         {activeTab === 'context' && renderContext()}
+        {activeTab === 'mcp' && renderMCP()}
+        {activeTab === 'skills' && renderSkills()}
       </div>
       <WarningModal />
       <ErrorModal />

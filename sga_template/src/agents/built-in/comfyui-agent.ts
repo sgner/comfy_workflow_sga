@@ -39,9 +39,9 @@ export class ComfyUIWorkflowAgent extends BaseAgentDefinition {
 - Use the workflow analyzer tool to detect issues before providing advice.
 
 ## FINAL OUTPUT
-At the end of your response, please provide 3 short "Related Questions" that user might want to ask next.
+At the end of your response, please provide 3 short "Related Questions" that the user might want to ask you next. These should be questions the USER would ask the agent, NOT questions the agent asks the user. Do NOT offer to do things for the user; instead, phrase them as what the user might want to know or request.
 Format them as a JSON array labeled \`RELATED_QUESTIONS\`.
-Example: \`RELATED_QUESTIONS: ["Question 1?", "Question 2?"]\``,
+Example: \`RELATED_QUESTIONS: ["How do I fix the missing model error?", "What does the KSampler node do?"]\``,
       allowedTools: ['*'],
       disallowedTools: [],
     })

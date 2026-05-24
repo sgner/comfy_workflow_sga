@@ -23,6 +23,20 @@ import {
   handleComfyUIDeleteGitHubToken,
   handleComfyUIUserInput,
 } from './comfyui-routes.js'
+import {
+  handleListMCPServers,
+  handleGetMCPServer,
+  handleAddMCPServer,
+  handleDeleteMCPServer,
+  handleConnectMCPServer,
+  handleDisconnectMCPServer,
+  handleListMCPTools,
+  handleListSkills,
+  handleDiscoverSkills,
+  handleGetSkill,
+  handleAddSkill,
+  handleDeleteSkill,
+} from './skills-mcp-routes.js'
 import { ComfyUIConfigStore } from './comfyui-config-store.js'
 
 dotenvConfig({ path: resolve(process.cwd(), '.env'), override: true })
@@ -176,6 +190,22 @@ export async function createComfyUIApp(config: ComfyUIServerConfig = {}): Promis
   app.get('/api/github-token', handleComfyUIGetGitHubToken)
   app.put('/api/github-token', handleComfyUIUpdateGitHubToken)
   app.delete('/api/github-token', handleComfyUIDeleteGitHubToken)
+
+  // MCP Server Routes
+  app.get('/api/mcp/servers', handleListMCPServers)
+  app.get('/api/mcp/servers/:name', handleGetMCPServer)
+  app.post('/api/mcp/servers', handleAddMCPServer)
+  app.delete('/api/mcp/servers/:name', handleDeleteMCPServer)
+  app.post('/api/mcp/servers/:name/connect', handleConnectMCPServer)
+  app.post('/api/mcp/servers/:name/disconnect', handleDisconnectMCPServer)
+  app.get('/api/mcp/tools', handleListMCPTools)
+
+  // Skills Routes
+  app.get('/api/skills', handleListSkills)
+  app.get('/api/skills/discover', handleDiscoverSkills)
+  app.get('/api/skills/:name', handleGetSkill)
+  app.post('/api/skills', handleAddSkill)
+  app.delete('/api/skills/:name', handleDeleteSkill)
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', service: 'comfyui-workflow-agent', version: '2.0.0' })

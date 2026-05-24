@@ -134,6 +134,13 @@ export async function addProvider(config: StoredProviderConfig, setAsDefault?: b
   return instance
 }
 
+export function replaceProviderInstance(name: string, instance: LLMProvider): boolean {
+  const entry = providerStore.get(name)
+  if (!entry) return false
+  entry.instance = instance
+  return true
+}
+
 export function removeProvider(name: string): boolean {
   if (!providerStore.has(name)) return false
   providerStore.delete(name)

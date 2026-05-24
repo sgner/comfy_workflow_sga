@@ -9,8 +9,8 @@ import { createAllMCPToolAdapters } from '../mcp/adapter.js'
 import { getBuiltinAgentDefinitions, runAgent } from '../agents/index.js'
 import { resolveProvider, addProvider, removeProvider, getAllProviderNames } from '../providers/provider-store.js'
 import type { LLMProvider, StoredProviderConfig } from '../providers/index.js'
-import type { Message } from '../core/types.js'
-import { ComfyUIConfigStore, type ComfyUIProviderConfig } from './comfyui-config-store.js'
+import type { Message, UsageMetrics } from '../core/types.js'
+import { ComfyUIConfigStore, type ComfyUIProviderConfig, type ComfyUIModelConfig } from './comfyui-config-store.js'
 import { undoLastAction } from '../tools/built-in/workflow-action.js'
 import { getMemoryManager } from '../memory/manager.js'
 import { MemoryExtractor } from '../memory/extractor.js'
@@ -33,6 +33,43 @@ const pendingResolvers: Map<string, {
 
 const workflowCache: Map<string, { hash: string; summary: string; fullJson: string }> = new Map()
 
+function extractBalancedJsonArray(text: string, startIndex: number): string | null {
+  if (text[startIndex] !== '[') return null
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (let i = startIndex; i < text.length; i++) {
+    const ch = text[i]
+    if (escape) { escape = false; continue }
+    if (ch === '\\' && inString) { escape = true; continue }
+    if (ch === '"') { inString = !inString; continue }
+    if (inString) continue
+    if (ch === '[') depth++
+    else if (ch === ']') { depth--; if (depth === 0) return text.slice(startIndex, i + 1) }
+  }
+  return null
+}
+
+function findJsonArrayAfterMarker(text: string, marker: string): string | null {
+  const markerIdx = text.indexOf(marker)
+  if (markerIdx === -1) return null
+  const afterMarker = text.slice(markerIdx + marker.length)
+  const skipMatch = afterMarker.match(/^\s*(?:```(?:json)?\s*)?/)
+  const arrayStart = skipMatch ? skipMatch[0].length : 0
+  if (afterMarker[arrayStart] !== '[') return null
+  return extractBalancedJsonArray(afterMarker, arrayStart)
+}
+
+function removeMarkerAndJson(text: string, marker: string): string {
+  const jsonStr = findJsonArrayAfterMarker(text, marker)
+  if (!jsonStr) return text
+  const markerIdx = text.indexOf(marker)
+  const afterMarker = text.slice(markerIdx + marker.length)
+  const jsonStartInAfter = afterMarker.indexOf(jsonStr)
+  const endIdx = markerIdx + marker.length + jsonStartInAfter + jsonStr.length
+  return text.slice(0, markerIdx) + text.slice(endIdx)
+}
+
 function parseStructuredResponse(text: string): {
   cleanText: string
   updatedWorkflow: Record<string, unknown> | null
@@ -40,42 +77,51 @@ function parseStructuredResponse(text: string): {
   relatedQuestions: string[]
 } {
   let updatedWorkflow: Record<string, unknown> | null = null
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/)
-  if (jsonMatch?.[1]) {
-    try {
-      updatedWorkflow = JSON.parse(jsonMatch[1])
-    } catch { /* ignore */ }
+  const allJsonMatches = text.matchAll(/```json\s*([\s\S]*?)\s*```/g)
+  for (const jsonMatch of allJsonMatches) {
+    if (jsonMatch[1]) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1])
+        if (parsed && parsed.nodes && parsed.links && !Array.isArray(parsed)) {
+          updatedWorkflow = parsed
+          break
+        }
+      } catch { /* ignore */ }
+    }
   }
 
   let issues: Array<{ nodeId: string | null; severity: string; message: string; fixSuggestion?: string }> = []
-  const issuesMatch = text.match(/ISSUES_JSON:\s*(?:```(?:json)?\s*)?(\[[\s\S]*?\])(?:\s*```)?/)
-  if (issuesMatch?.[1]) {
+  const issuesJsonStr = findJsonArrayAfterMarker(text, 'ISSUES_JSON:')
+  if (issuesJsonStr) {
     try {
-      const parsed = JSON.parse(issuesMatch[1])
+      const parsed = JSON.parse(issuesJsonStr)
       if (Array.isArray(parsed)) {
         issues = parsed.map((issue: Record<string, unknown>, idx: number) => ({
           nodeId: (issue.nodeId as string) ?? (issue.node_id as string) ?? null,
           severity: (issue.severity as string) ?? 'warning',
           message: (issue.message as string) ?? (issue.issue as string) ?? (issue.details as string) ?? 'Unknown issue',
-          fixSuggestion: (issue.fixSuggestion as string) ?? (issue.fix_suggestion as string) ?? undefined,
+          fixSuggestion: (issue.fixSuggestion as string) ?? (issue.fix_suggestion as string) ?? (issue.recommendation as string) ?? undefined,
         }))
       }
     } catch { /* ignore */ }
   }
 
   let relatedQuestions: string[] = []
-  const relatedMatch = text.match(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?(\[[\s\S]*?\])(?:\s*```)?/)
-  if (relatedMatch?.[1]) {
+  const relatedJsonStr = findJsonArrayAfterMarker(text, 'RELATED_QUESTIONS:')
+  if (relatedJsonStr) {
     try {
-      relatedQuestions = JSON.parse(relatedMatch[1])
+      relatedQuestions = JSON.parse(relatedJsonStr)
     } catch { /* ignore */ }
   }
 
-  const cleanText = text
-    .replace(/```json\s*[\s\S]*?\s*```/, '[Workflow updated]')
-    .replace(/ISSUES_JSON:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/, '')
+  let cleanText = text
+  if (updatedWorkflow) {
+    cleanText = cleanText.replace(/```json\s*[\s\S]*?\s*```/, '[Workflow updated]')
+  }
+  cleanText = removeMarkerAndJson(cleanText, 'ISSUES_JSON:')
+  cleanText = removeMarkerAndJson(cleanText, 'RELATED_QUESTIONS:')
+  cleanText = cleanText
     .replace(/SUGGESTED_ACTIONS:\s*\[.*?\]/, '')
-    .replace(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/, '')
     .trim()
 
   return { cleanText, updatedWorkflow, issues, relatedQuestions }
@@ -117,13 +163,15 @@ function buildWorkflowSummary(nodes: Array<Record<string, unknown>>): string {
   return `Nodes: ${nodes.length} | Types: ${summaryParts.join(', ')} | Links: ${nodeLinks.length}`
 }
 
-const NODE_DESCRIPTIONS: Record<string, string> = {
-  classify_request: '正在分析您的意图...',
-  search_solutions: '正在检索知识库和 GitHub...',
-  analyze_workflow: '正在深入分析 ComfyUI 工作流结构...',
-  prepare_action: '正在规划修复方案...',
-  execute_action: '正在执行修复指令...',
-  generate_response: '正在整理最终回复...',
+const TOOL_LABELS: Record<string, string> = {
+  github_search: '搜索 GitHub 和知识库',
+  workflow_analyzer: '分析工作流结构',
+  workflow_action: '执行工作流操作',
+  ask_user: '等待用户输入',
+}
+
+function getToolLabel(toolName: string): string {
+  return TOOL_LABELS[toolName] || `调用工具: ${toolName}`
 }
 
 function buildToolPool() {
@@ -141,29 +189,29 @@ async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProv
     removeProvider(providerName)
   }
 
-  let extension: import('../providers/types.js').ProviderExtension | undefined
   let effectiveBaseUrl = config.base_url
+  let resolvedHeaders: Record<string, string> = { ...config.headers }
 
   if (config.provider === 'custom' && config.custom_config) {
     const customConfig = config.custom_config
     const endpoint = (customConfig.endpoint as string) || '/chat/completions'
     const headersTemplate = customConfig.headers as string | undefined
-    const bodyTemplate = customConfig.body as string | undefined
 
     const endpointWithoutChatCompletions = endpoint.replace(/\/chat\/completions$/, '').replace(/\/$/, '')
     if (effectiveBaseUrl && endpointWithoutChatCompletions) {
       effectiveBaseUrl = effectiveBaseUrl.replace(/\/$/, '') + endpointWithoutChatCompletions
     }
 
-    if (bodyTemplate || headersTemplate) {
-      const requestTransformerSrc = `(body, headers) => {
-  const result = { body: { ...body }, headers: { ...headers } };
-  ${bodyTemplate ? `try { const tpl = ${JSON.stringify(bodyTemplate)}; const parsed = JSON.parse(tpl); const skipKeys = ['messages','tools','tool_choice','stream']; for (const [k,v] of Object.entries(parsed)) { if (skipKeys.includes(k)) continue; if (typeof v === 'string' && v.startsWith('$')) continue; result.body[k] = v; } } catch(e) {}` : ''}
-  ${headersTemplate ? `try { const tpl = ${JSON.stringify(headersTemplate)}; const parsed = JSON.parse(tpl.replace(/\\$apiKey/g, result.headers['Authorization']?.replace('Bearer ', '') || '')); for (const [k,v] of Object.entries(parsed)) { if (typeof v === 'string' && v.startsWith('$')) continue; result.headers[k] = v; } } catch(e) {}` : ''}
-  return result;
-}`
-      extension = {
-        requestTransformer: requestTransformerSrc,
+    if (headersTemplate) {
+      try {
+        const resolved = headersTemplate.replace(/\$apiKey/g, config.api_key)
+        const parsed = JSON.parse(resolved) as Record<string, unknown>
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'string' && v.startsWith('$')) continue
+          resolvedHeaders[k] = String(v)
+        }
+      } catch (e) {
+        console.warn('[SGA] Failed to parse headers template:', e)
       }
     }
   }
@@ -177,9 +225,9 @@ async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProv
     defaultTemperature: config.default_temperature,
     retries: config.retries,
     retryDelay: config.retry_delay,
-    headers: config.headers,
+    headers: Object.keys(resolvedHeaders).length > 0 ? resolvedHeaders : undefined,
+    modelConfigs: config.model_configs as Record<string, import('../providers/types.js').ModelConfig> | undefined,
     extra: config.custom_config as Record<string, unknown> | undefined,
-    extension,
   }
 
   await addProvider(storedConfig)
@@ -200,9 +248,9 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
   res.setHeader('Connection', 'keep-alive')
   res.setHeader('X-Accel-Buffering', 'no')
 
-  const sendEvent = (data: Record<string, unknown>) => {
+  const sendEvent = (eventType: string, data: Record<string, unknown>) => {
     try {
-      res.write(`data: ${JSON.stringify(data)}\n\n`)
+      res.write(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`)
     } catch {
       // connection closed
     }
@@ -212,8 +260,8 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
     const config = configId ? configStore.getConfigById(configId) : configStore.getDefaultConfig()
 
     if (!config) {
-      sendEvent({ chunk: 'Error: No provider configuration found. Please configure a provider in settings.', type: 'content', metadata: { node: 'generate_response' } })
-      sendEvent({ chunk: '', is_complete: true, type: 'end' })
+      sendEvent('content', { chunk: 'Error: No provider configuration found. Please configure a provider in settings.', metadata: { node: 'generate_response' } })
+      sendEvent('end', { chunk: '', is_complete: true })
       res.end()
       return
     }
@@ -281,7 +329,7 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
       workflowContext += `\n[WORKFLOW PANEL CONTEXT (from ComfyUI RightSidePanel data sources)]\n${workflowContextText}\n`
     }
 
-    const fullPrompt = `${workflowContext}\n[USER REQUEST]\n"${userMessage}"\n\n[INSTRUCTIONS]\n- If the user wants to change the workflow, output the NEW JSON in a \`\`\`json block.\n- If the user asks to DIAGNOSE, ANALYZE, or CHECK the workflow, output the issues in \`ISSUES_JSON: [...] \`.\n- If the user asks to EXPLAIN, provide a detailed summary of the logic and data flow.\n- Use the WORKFLOW PANEL CONTEXT to understand current errors, node parameters, and settings when diagnosing issues.\n- Provide 3 Related Questions in the format \`RELATED_QUESTIONS: ["Q1", "Q2"]\`.\n${languageInstruction}`
+    const fullPrompt = `${workflowContext}\n[USER REQUEST]\n"${userMessage}"\n\n[INSTRUCTIONS]\n- If the user wants to change the workflow, output the NEW JSON in a \`\`\`json block.\n- If the user asks to DIAGNOSE, ANALYZE, or CHECK the workflow, output the issues in \`ISSUES_JSON: [...] \`.\n- If the user asks to EXPLAIN, provide a detailed summary of the logic and data flow.\n- Use the WORKFLOW PANEL CONTEXT to understand current errors, node parameters, and settings when diagnosing issues.\n- Provide 3 Related Questions in the format \`RELATED_QUESTIONS: ["Q1", "Q2"]\`. These must be questions the USER would ask the agent, NOT questions the agent asks the user. Do NOT phrase them as offers or suggestions from the agent (e.g. avoid "Do you want me to..."); instead phrase them as what the user might want to know or request next.\n${languageInstruction}`
 
     if (shouldPinFullWorkflow && workflow) {
       const workflowStr = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
@@ -297,21 +345,17 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
       )
     }
 
-    sendEvent({
-      chunk: '',
-      type: 'status_update',
-      metadata: { node: 'classify_request', display_text: NODE_DESCRIPTIONS.classify_request, status: 'processing' },
-    })
-
     const provider = await ensureSgaProvider(config)
     const model = config.default_model ?? provider.config.defaultModel ?? 'sonnet'
+    const modelConfig = provider.getModelConfig(model)
+    const useStream = modelConfig?.supportsStreaming !== false
     const tools = buildToolPool()
     const agentDefs = getBuiltinAgentDefinitions()
     const agentDef = agentDefs.find(a => a.name === 'comfyui-workflow') ?? agentDefs[0]
 
     if (!agentDef) {
-      sendEvent({ chunk: 'Error: No agent definition available', type: 'content', metadata: { node: 'generate_response' } })
-      sendEvent({ chunk: '', is_complete: true, type: 'end' })
+      sendEvent('error', { chunk: 'Error: No agent definition available', is_complete: true })
+      sendEvent('end', { chunk: '', is_complete: true })
       res.end()
       return
     }
@@ -337,12 +381,10 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
     }
     store.appendMessage(session.id, userMsg)
 
-    sendEvent({
-      chunk: '',
-      type: 'status_update',
-      metadata: { node: 'analyze_workflow', display_text: NODE_DESCRIPTIONS.analyze_workflow, status: 'processing' },
-    })
+    sendEvent('agent_start', { sessionId, model })
 
+    let hasStartedGenerating = false
+    let toolHeartbeat: ReturnType<typeof setInterval> | null = null
     const result = await runAgent({
       agentDefinition: agentDef,
       prompt: '',
@@ -350,161 +392,172 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
       tools,
       model,
       provider,
+      stream: useStream,
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
       onProgress: async (event: unknown) => {
-        const e = event as { type: string; text?: string; toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; toolCallId?: string; message?: string; suggestions?: string[]; context?: string; options?: Array<{ label: string; value: string; description?: string }> }
+        const e = event as { type: string; text?: string; toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; toolCallId?: string; message?: string; suggestions?: string[]; context?: string; options?: Array<{ label: string; value: string; description?: string }>; usage?: UsageMetrics }
         switch (e.type) {
+          case 'thinking_delta':
+            if (e.text) {
+              sendEvent('thinking', { text: e.text })
+            }
+            break
           case 'stream_delta':
             if (e.text) {
-              sendEvent({ chunk: e.text, type: 'content', metadata: { node: 'generate_response' } })
+              if (!hasStartedGenerating) {
+                hasStartedGenerating = true
+                sendEvent('status_update', {
+                  metadata: { node: 'generating', display_text: '正在生成回复...', status: 'processing' },
+                })
+              }
+              sendEvent('content', { chunk: e.text })
             }
             break
           case 'tool_use_start':
-            sendEvent({
-              type: 'tool_use_start',
-              data: { toolName: e.toolName, toolUseId: e.toolUseId },
+            hasStartedGenerating = false
+            if (toolHeartbeat) clearInterval(toolHeartbeat)
+            toolHeartbeat = setInterval(() => {
+              sendEvent('heartbeat', { timestamp: Date.now() })
+            }, 15000)
+            sendEvent('tool_use_start', {
+              data: { toolName: e.toolName, toolUseId: e.toolUseId, toolInput: e.toolInput },
             })
-            if (e.toolName === 'github_search') {
-              sendEvent({
-                chunk: '',
-                type: 'status_update',
-                metadata: { node: 'search_solutions', display_text: NODE_DESCRIPTIONS.search_solutions, status: 'processing' },
-              })
-            } else if (e.toolName === 'workflow_analyzer') {
-              sendEvent({
-                chunk: '',
-                type: 'status_update',
-                metadata: { node: 'analyze_workflow', display_text: NODE_DESCRIPTIONS.analyze_workflow, status: 'processing' },
-              })
-            } else if (e.toolName === 'workflow_action') {
-              sendEvent({
-                chunk: '',
-                type: 'status_update',
-                metadata: { node: 'execute_action', display_text: NODE_DESCRIPTIONS.execute_action, status: 'processing' },
-              })
-            }
+            sendEvent('status_update', {
+              metadata: { node: `tool_${e.toolName}`, display_text: getToolLabel(e.toolName ?? 'unknown'), status: 'processing' },
+            })
             break
           case 'tool_use_result':
-            sendEvent({
-              type: 'tool_use_result',
-              data: { toolName: e.toolName },
+            if (toolHeartbeat) {
+              clearInterval(toolHeartbeat)
+              toolHeartbeat = null
+            }
+            sendEvent('tool_use_result', {
+              data: { toolName: e.toolName, toolUseId: e.toolUseId },
             })
-            if (e.toolName === 'github_search') {
-              sendEvent({
-                chunk: '',
-                type: 'meta_update',
-                metadata: { node: 'search_solutions', step_data: { search_previews: ['GitHub search completed'] } },
-              })
+            break
+          case 'tool_use_input_complete':
+            sendEvent('tool_use_input_complete', {
+              data: { toolName: e.toolName, toolUseId: e.toolUseId, toolInput: e.toolInput },
+            })
+            break
+          case 'turn_end':
+            if (e.usage) {
+              store.appendUsage(session.id, e.usage)
+              sendEvent('usage', { usage: session.usage })
             }
             break
-          case 'approval_required': {
-            const approvalReq = createApprovalRequest({
-              toolName: e.toolName ?? 'unknown',
-              toolInput: e.toolInput ?? {},
-              message: e.message ?? `Tool "${e.toolName}" requires approval.`,
-              sessionId,
-              suggestions: e.suggestions,
-              isDestructive: true,
-              isReadOnly: false,
-            })
+        }
+      },
+      requestApproval: async (event) => {
+        const approvalReq = createApprovalRequest({
+          toolName: event.toolName,
+          toolInput: event.toolInput,
+          message: event.message,
+          sessionId,
+          suggestions: event.suggestions,
+          isDestructive: true,
+          isReadOnly: false,
+        })
 
-            sendEvent({
-              type: 'approval_required',
-              data: approvalReq,
-            })
+        sendEvent('approval_required', {
+          data: approvalReq,
+        })
 
-            const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
-              pendingResolvers.set(approvalReq.id, { resolve: resolve as (resp: unknown) => void, reject })
-            })
+        setSessionWaitingInput(session!, {
+          type: 'approval',
+          request: approvalReq,
+          resolve: (resp: unknown) => {
+            pendingResolvers.get(approvalReq.id)?.resolve(resp as UserApprovalResponse)
+          },
+          reject: (error: Error) => {
+            pendingResolvers.get(approvalReq.id)?.reject(error)
+          },
+        } as PendingAction, {
+          actionId: approvalReq.id,
+          sessionId,
+          messages: session!.messages,
+          toolCalls: [],
+          pendingToolCallIndex: 0,
+          turnCount: 0,
+          usage: session!.usage,
+          model: model,
+          systemPromptContent: '',
+        } as SuspendedContext)
 
-            setSessionWaitingInput(session!, {
-              type: 'approval',
-              request: approvalReq,
-              resolve: (resp: unknown) => {
-                pendingResolvers.get(approvalReq.id)?.resolve(resp as UserApprovalResponse)
-              },
-              reject: (error: Error) => {
-                pendingResolvers.get(approvalReq.id)?.reject(error)
-              },
-            } as PendingAction, {
-              actionId: approvalReq.id,
-              sessionId,
-              messages: session!.messages,
-              toolCalls: [],
-              pendingToolCallIndex: 0,
-              turnCount: 0,
-              usage: session!.usage,
-              model: model,
-              systemPromptContent: '',
-            } as SuspendedContext)
+        const heartbeat = setInterval(() => {
+          sendEvent('heartbeat', { timestamp: Date.now() })
+        }, 15000)
 
-            try {
-              const userResponse = await approvalPromise
-              clearSessionWaitingInput(session!)
-              pendingResolvers.delete(approvalReq.id)
+        try {
+          const userResponse = await new Promise<UserApprovalResponse>((resolve, reject) => {
+            pendingResolvers.set(approvalReq.id, { resolve: resolve as (resp: unknown) => void, reject })
+          })
+          clearInterval(heartbeat)
+          clearSessionWaitingInput(session!)
+          pendingResolvers.delete(approvalReq.id)
 
-              const permissionResult = userResponse.decision === 'allow'
-                ? { behavior: 'allow' as const, updatedInput: userResponse.updatedInput }
-                : { behavior: 'deny' as const, message: userResponse.reason ?? 'User denied' }
+          return userResponse.decision === 'allow'
+            ? { decision: 'allow' as const, updatedInput: userResponse.updatedInput }
+            : { decision: 'deny' as const, reason: userResponse.reason ?? 'User denied' }
+        } catch {
+          clearInterval(heartbeat)
+          clearSessionWaitingInput(session!)
+          pendingResolvers.delete(approvalReq.id)
+          return { decision: 'deny' as const, reason: 'Approval request cancelled' }
+        }
+      },
+      requestHumanInput: async (event) => {
+        const inputReq = createHumanInputRequest({
+          message: event.message,
+          sessionId,
+          context: event.context,
+          options: event.options,
+          allowFreeText: true,
+        })
 
-              return permissionResult
-            } catch {
-              clearSessionWaitingInput(session!)
-              pendingResolvers.delete(approvalReq.id)
-              return { behavior: 'deny' as const, message: 'Approval request cancelled' }
-            }
-          }
-          case 'human_input_required': {
-            const inputReq = createHumanInputRequest({
-              message: e.message ?? 'Input required',
-              sessionId,
-              context: e.context,
-              options: e.options,
-              allowFreeText: true,
-            })
+        sendEvent('human_input_required', {
+          data: inputReq,
+        })
 
-            sendEvent({
-              type: 'human_input_required',
-              data: inputReq,
-            })
+        setSessionWaitingInput(session!, {
+          type: 'human_input',
+          request: inputReq,
+          resolve: (resp: unknown) => {
+            pendingResolvers.get(inputReq.id)?.resolve(resp as UserInputResponse)
+          },
+          reject: (error: Error) => {
+            pendingResolvers.get(inputReq.id)?.reject(error)
+          },
+        } as PendingAction, {
+          actionId: inputReq.id,
+          sessionId,
+          messages: session!.messages,
+          toolCalls: [],
+          pendingToolCallIndex: 0,
+          turnCount: 0,
+          usage: session!.usage,
+          model: model,
+          systemPromptContent: '',
+        } as SuspendedContext)
 
-            const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
-              pendingResolvers.set(inputReq.id, { resolve: resolve as (resp: unknown) => void, reject })
-            })
+        const inputHeartbeat = setInterval(() => {
+          sendEvent('heartbeat', { timestamp: Date.now() })
+        }, 15000)
 
-            setSessionWaitingInput(session!, {
-              type: 'human_input',
-              request: inputReq,
-              resolve: (resp: unknown) => {
-                pendingResolvers.get(inputReq.id)?.resolve(resp as UserInputResponse)
-              },
-              reject: (error: Error) => {
-                pendingResolvers.get(inputReq.id)?.reject(error)
-              },
-            } as PendingAction, {
-              actionId: inputReq.id,
-              sessionId,
-              messages: session!.messages,
-              toolCalls: [],
-              pendingToolCallIndex: 0,
-              turnCount: 0,
-              usage: session!.usage,
-              model: model,
-              systemPromptContent: '',
-            } as SuspendedContext)
-
-            try {
-              const userInput = await inputPromise
-              clearSessionWaitingInput(session!)
-              pendingResolvers.delete(inputReq.id)
-              return userInput.value
-            } catch {
-              clearSessionWaitingInput(session!)
-              pendingResolvers.delete(inputReq.id)
-              return ''
-            }
-          }
+        try {
+          const userInput = await new Promise<UserInputResponse>((resolve, reject) => {
+            pendingResolvers.set(inputReq.id, { resolve: resolve as (resp: unknown) => void, reject })
+          })
+          clearInterval(inputHeartbeat)
+          clearSessionWaitingInput(session!)
+          pendingResolvers.delete(inputReq.id)
+          return userInput.value
+        } catch {
+          clearInterval(inputHeartbeat)
+          clearSessionWaitingInput(session!)
+          pendingResolvers.delete(inputReq.id)
+          return ''
         }
       },
     })
@@ -516,13 +569,13 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
       timestamp: Date.now(),
     }
     store.appendMessage(session.id, assistantMessage)
-    store.appendUsage(session.id, result.usage)
+
+    sendEvent('usage', { usage: session.usage })
 
     triggerMemoryExtraction(session.messages, provider, model)
 
     const structured = parseStructuredResponse(result.content)
-    sendEvent({
-      type: 'result',
+    sendEvent('result', {
       data: {
         chatResponse: structured.cleanText,
         updatedWorkflow: structured.updatedWorkflow,
@@ -533,10 +586,10 @@ Nodes Summary: ${JSON.stringify(nodesSummary)}
       },
     })
 
-    sendEvent({ chunk: '', is_complete: true, type: 'end' })
+    sendEvent('end', { chunk: '', is_complete: true })
   } catch (error) {
     logger.error(`Chat stream error: ${error instanceof Error ? error.message : String(error)}`)
-    sendEvent({
+    sendEvent('error', {
       chunk: `Error: ${error instanceof Error ? error.message : String(error)}`,
       is_complete: true,
       metadata: { error: true },
@@ -705,6 +758,7 @@ function toFrontendConfig(config: ComfyUIProviderConfig): Record<string, unknown
     retry_delay: config.retry_delay,
     headers: config.headers,
     custom_config: config.custom_config,
+    model_configs: config.model_configs,
     extension: config.provider === 'custom' && config.custom_config
       ? { providerModule: undefined }
       : undefined,
@@ -733,7 +787,7 @@ export function handleComfyUICreateConfig(req: Request, res: Response): void {
       provider,
       name: body.name as string,
       api_key: body.api_key as string,
-      default_model: body.default_model as string,
+      default_model: body.default_model as string | undefined,
       base_url: body.base_url as string | undefined,
       is_default: (body.is_default as boolean) ?? false,
       default_max_tokens: body.default_max_tokens as number | undefined,
@@ -742,6 +796,7 @@ export function handleComfyUICreateConfig(req: Request, res: Response): void {
       retry_delay: body.retry_delay as number | undefined,
       headers: body.headers as Record<string, string> | undefined,
       custom_config,
+      model_configs: body.model_configs as Record<string, ComfyUIModelConfig> | undefined,
     })
 
     res.json(toFrontendConfig(config))
@@ -778,6 +833,10 @@ export function handleComfyUIUpdateConfig(req: Request, res: Response): void {
     if (body.retry_delay !== undefined) updates.retry_delay = body.retry_delay as number | undefined
     if (body.headers !== undefined) updates.headers = body.headers as Record<string, string> | undefined
     if (body.custom_config !== undefined) updates.custom_config = body.custom_config as Record<string, unknown> | undefined
+    if (body.model_configs !== undefined) updates.model_configs = body.model_configs as Record<string, ComfyUIModelConfig> | undefined
+
+    console.log('[DEBUG] handleComfyUIUpdateConfig - body.model_configs:', JSON.stringify(body.model_configs))
+    console.log('[DEBUG] handleComfyUIUpdateConfig - updates.model_configs:', JSON.stringify(updates.model_configs))
 
     const config = configStore.updateConfig(configId, updates)
     if (!config) {

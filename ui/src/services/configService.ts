@@ -1,5 +1,5 @@
 
-import { BackendConfig, BackendConfigCreate, GitHubTokenStatus } from '../types';
+import { BackendConfig, BackendConfigCreate, GitHubTokenStatus, MCPServerInfo, SkillInfo } from '../types';
 
 const getBaseUrl = (url: string) => url.replace(/\/$/, '');
 
@@ -147,4 +147,78 @@ export const analyzeWorkflow = async (backendUrl: string, workflow: Record<strin
     });
     if (!res.ok) throw new Error('Failed to analyze workflow');
     return res.json();
+};
+
+// --- MCP Server Endpoints ---
+
+export const fetchMCPServers = async (backendUrl: string): Promise<MCPServerInfo[]> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers`);
+    if (!res.ok) throw new Error('Failed to fetch MCP servers');
+    return res.json();
+};
+
+export const fetchMCPServer = async (backendUrl: string, name: string): Promise<MCPServerInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error('Failed to fetch MCP server');
+    return res.json();
+};
+
+export const addMCPServer = async (backendUrl: string, config: { name: string; transport: string; command?: string; url?: string; args?: string[]; env?: Record<string, string> }): Promise<MCPServerInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+    });
+    if (!res.ok) throw new Error('Failed to add MCP server');
+    return res.json();
+};
+
+export const deleteMCPServer = async (backendUrl: string, name: string): Promise<void> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete MCP server');
+};
+
+export const connectMCPServer = async (backendUrl: string, name: string): Promise<void> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}/connect`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to connect MCP server');
+};
+
+export const disconnectMCPServer = async (backendUrl: string, name: string): Promise<void> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/servers/${encodeURIComponent(name)}/disconnect`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to disconnect MCP server');
+};
+
+export const fetchMCPTools = async (backendUrl: string): Promise<Array<{ name: string; description: string; serverName: string }>> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/mcp/tools`);
+    if (!res.ok) throw new Error('Failed to fetch MCP tools');
+    return res.json();
+};
+
+// --- Skills Endpoints ---
+
+export const fetchSkills = async (backendUrl: string): Promise<SkillInfo[]> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills`);
+    if (!res.ok) throw new Error('Failed to fetch skills');
+    return res.json();
+};
+
+export const fetchSkill = async (backendUrl: string, name: string): Promise<SkillInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error('Failed to fetch skill');
+    return res.json();
+};
+
+export const addSkill = async (backendUrl: string, config: { name: string; description: string; whenToUse?: string; userInvocable?: boolean; source?: string }): Promise<SkillInfo> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+    });
+    if (!res.ok) throw new Error('Failed to add skill');
+    return res.json();
+};
+
+export const deleteSkill = async (backendUrl: string, name: string): Promise<void> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete skill');
 };

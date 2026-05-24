@@ -1,4 +1,4 @@
-import { BaseTool, type ToolInputSchema, type ValidationResult, type ToolUseContext } from '../../tools/base.js'
+import { BaseTool, type ToolInputSchema, type ValidationResult, type ToolUseContext, type PermissionResult } from '../base.js'
 
 interface GitHubIssue {
   title: string
@@ -13,6 +13,18 @@ interface GitHubIssue {
 export class GitHubSearchTool extends BaseTool {
   name = 'github_search'
   description = 'Search GitHub for ComfyUI related issues and solutions'
+
+  isReadOnly(): boolean {
+    return true
+  }
+
+  isConcurrencySafe(): boolean {
+    return true
+  }
+
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: 'allow' }
+  }
 
   protected getInputSchema(): ToolInputSchema {
     return {

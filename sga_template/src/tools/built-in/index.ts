@@ -12,6 +12,8 @@ export { NotebookEditTool } from './notebook-edit.js'
 export { SkillTool } from './skill.js'
 export { LSPTool } from './lsp.js'
 export { AgentTool, getRunningTask, getAllRunningTasks, killRunningTask, waitForTask, cleanupCompletedTasks, type AgentToolInput, type AgentToolOutput, type AgentSpawnMode } from './agent.js'
+export { HuggingFaceDownloadTool } from './huggingface-download.js'
+export { GitHubSearchTool } from './github-search.js'
 
 import { BashTool } from './bash.js'
 import { FileReadTool } from './file-read.js'
@@ -27,6 +29,8 @@ import { NotebookEditTool } from './notebook-edit.js'
 import { SkillTool } from './skill.js'
 import { LSPTool } from './lsp.js'
 import { AgentTool } from './agent.js'
+import { HuggingFaceDownloadTool } from './huggingface-download.js'
+import { GitHubSearchTool } from './github-search.js'
 import type { Tool } from '../base.js'
 import type { AgentDefinition } from '../../agents/definition.js'
 
@@ -46,5 +50,7 @@ export function createBuiltinTools(agentDefinitions?: AgentDefinition[]): Tool[]
     new SkillTool(),
     new LSPTool(),
     new AgentTool(agentDefinitions ?? []),
+    new HuggingFaceDownloadTool(),
+    new GitHubSearchTool(),
   ]
 }

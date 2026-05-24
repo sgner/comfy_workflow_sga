@@ -5,6 +5,29 @@ import { getSgaHome } from '../memory/paths.js'
 
 const logger = createLogger('comfyui-config-store')
 
+export interface ComfyUIModelConfig {
+  id: string
+  displayName?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  inputPricePerMToken?: number
+  outputPricePerMToken?: number
+  supportsVision?: boolean
+  supportsToolUse?: boolean
+  supportsStreaming?: boolean
+  supportsThinking?: boolean
+  supportsReasoningEffort?: boolean
+  defaultMaxTokens?: number
+  defaultTemperature?: number
+  maxTemperature?: number
+  thinkingBudget?: number
+  baseUrl?: string
+  streamingBaseUrl?: string
+  apiKey?: string
+  headers?: Record<string, string>
+  extra?: Record<string, unknown>
+}
+
 export interface ComfyUIProviderConfig {
   id: string
   provider: string
@@ -19,6 +42,7 @@ export interface ComfyUIProviderConfig {
   retry_delay?: number
   headers?: Record<string, string>
   custom_config?: Record<string, unknown>
+  model_configs?: Record<string, ComfyUIModelConfig>
   created_at: number
   updated_at: number
 }
@@ -67,6 +91,7 @@ export class ComfyUIConfigStore {
 
   private saveConfigs(configs: ComfyUIProviderConfig[]): void {
     try {
+      console.log('[DEBUG] saveConfigs - configs[0].model_configs:', JSON.stringify(configs[0]?.model_configs))
       writeFileSync(this.configFile, JSON.stringify(configs, null, 2), 'utf-8')
     } catch (e) {
       logger.error(`Error saving configs: ${e instanceof Error ? e.message : String(e)}`)
@@ -93,7 +118,7 @@ export class ComfyUIConfigStore {
     provider: string
     name: string
     api_key: string
-    default_model: string
+    default_model?: string
     base_url?: string
     is_default: boolean
     default_max_tokens?: number
@@ -102,6 +127,7 @@ export class ComfyUIConfigStore {
     retry_delay?: number
     headers?: Record<string, string>
     custom_config?: Record<string, unknown>
+    model_configs?: Record<string, ComfyUIModelConfig>
   }): ComfyUIProviderConfig {
     const configs = this.loadConfigs()
     const now = Date.now() / 1000
@@ -113,12 +139,20 @@ export class ComfyUIConfigStore {
       }
     }
 
+    let resolvedDefaultModel = input.default_model || ''
+    if (!resolvedDefaultModel && input.model_configs) {
+      const firstKey = Object.keys(input.model_configs)[0]
+      if (firstKey) {
+        resolvedDefaultModel = input.model_configs[firstKey].id
+      }
+    }
+
     const newConfig: ComfyUIProviderConfig = {
       id,
       provider: input.provider,
       name: input.name,
       api_key: input.api_key,
-      default_model: input.default_model,
+      default_model: resolvedDefaultModel,
       base_url: input.base_url,
       is_default: input.is_default,
       default_max_tokens: input.default_max_tokens,
@@ -127,6 +161,7 @@ export class ComfyUIConfigStore {
       retry_delay: input.retry_delay,
       headers: input.headers,
       custom_config: input.custom_config,
+      model_configs: input.model_configs,
       created_at: now,
       updated_at: now,
     }
@@ -161,6 +196,9 @@ export class ComfyUIConfigStore {
         config.custom_config = undefined
       }
     }
+    if (updates.model_configs !== undefined) config.model_configs = updates.model_configs
+
+    console.log('[DEBUG] updateConfig - config.model_configs after update:', JSON.stringify(config.model_configs))
 
     if (updates.is_default !== undefined) {
       if (updates.is_default) {
