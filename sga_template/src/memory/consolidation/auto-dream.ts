@@ -13,6 +13,7 @@ export interface AutoDreamConfig {
   enabled: boolean
   maxOutputTokens: number
   model: string
+  customPromptBuilder?: (memoryRoot: string, extra: string) => string
 }
 
 export function getAutoDreamConfig(): AutoDreamConfig {
@@ -117,7 +118,9 @@ export async function executeAutoDream(
   try {
     const extra = `\nSessions since last consolidation (${sessionCount}):\n${Array.from({ length: Math.min(sessionCount, 20) }, (_, i) => `- session-${i + 1}`).join('\n')}`
 
-    const prompt = buildConsolidationPrompt(memoryDir, extra)
+    const prompt = config.customPromptBuilder
+      ? config.customPromptBuilder(memoryDir, extra)
+      : buildConsolidationPrompt(memoryDir, extra)
 
     const resolvedModel = provider.resolveModel(config.model)
     const modelConfig = provider.getModelConfig(config.model)

@@ -5,10 +5,22 @@ export const COMFYUI_AGENT_EXTENSIONS: ComfyUIAdapterConfig = {
   enableFork: true,
   enableCoordinator: true,
   enableAutoDream: true,
+  autoDreamConfig: {
+    minHours: 12,
+    minSessions: 3,
+    maxOutputTokens: 12_000,
+    model: 'haiku',
+  },
   autoInjectWorkflowContext: true,
   autoInitWorkingSet: true,
   enableRetry: true,
   enableAdvisorOnFailure: true,
+  enableTeamSync: true,
+  teamSyncConfig: {
+    syncIntervalMs: 30_000,
+    conflictResolution: 'last_write_wins',
+    broadcastToAgents: ['comfyui-workflow', 'comfyui-debug', 'comfyui-research'],
+  },
 }
 
 const agentExtensionMap: Map<string, ComfyUIAdapterConfig> = new Map([

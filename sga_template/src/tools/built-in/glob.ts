@@ -117,13 +117,14 @@ export class GlobTool extends BaseTool<{ pattern: string; path?: string }, strin
     let dirToSearch: string
     let filePattern: string
 
-    const lastSlash = input.pattern.lastIndexOf('/')
+    const normalizedPattern = input.pattern.replace(/\\/g, '/')
+    const lastSlash = normalizedPattern.lastIndexOf('/')
     if (lastSlash >= 0) {
-      const dirPart = input.pattern.slice(0, lastSlash)
-      filePattern = input.pattern.slice(lastSlash + 1)
+      const dirPart = normalizedPattern.slice(0, lastSlash)
+      filePattern = normalizedPattern.slice(lastSlash + 1)
       dirToSearch = resolve(searchPath, dirPart)
     } else {
-      filePattern = input.pattern
+      filePattern = normalizedPattern
       dirToSearch = searchPath
     }
 

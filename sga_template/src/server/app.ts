@@ -333,6 +333,23 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     }
   }
 
+  try {
+    const { registerMCPServer } = await import('../mcp/index.js')
+    const comfyuiMcpConfig: import('../mcp/index.js').MCPServerConfig = {
+      name: 'comfyui',
+      command: 'npx',
+      args: ['tsx', join(process.cwd(), 'src', 'comfyui', 'mcp-server', 'index.ts')],
+      transport: 'stdio',
+      restartOnFailure: true,
+      maxRestartAttempts: 3,
+      disabled: false,
+      alwaysAllow: ['comfyui_list_models', 'comfyui_get_queue', 'comfyui_get_history', 'comfyui_get_system_stats', 'comfyui_list_nodes'],
+    }
+    registerMCPServer(comfyuiMcpConfig)
+  } catch {
+    // ComfyUI MCP server registration is optional
+  }
+
   const { connectAllMCPServers } = await import('../mcp/index.js')
   try {
     const connectedServers = await connectAllMCPServers()
@@ -342,6 +359,23 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     }
   } catch {
     // MCP connection failures are non-fatal
+  }
+
+  try {
+    const { initTelemetry } = await import('../telemetry/index.js')
+    const { FeatureGateManager } = await import('../feature-gate/index.js')
+    const gate = FeatureGateManager.getInstance()
+    gate.override('telemetry', true)
+    initTelemetry({ enabled: true })
+  } catch {
+    // telemetry initialization is optional
+  }
+
+  try {
+    const { ensureComfyUITeam } = await import('../comfyui/team-config.js')
+    await ensureComfyUITeam(process.cwd())
+  } catch {
+    // ComfyUI team initialization is optional
   }
 
   const { getDefaultProvider } = await import('../providers/provider-store.js')

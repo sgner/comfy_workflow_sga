@@ -205,7 +205,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       if (agentContextConfig.enableSgaMd) {
         try {
           const { loadSgaMd } = await import('../context/claudemd.js')
-          const sgaMdContent = await loadSgaMd()
+          const comfyuiBaseDir = process.env.COMFYUI_BASE_DIR
+          const projectPaths = comfyuiBaseDir ? [process.cwd(), comfyuiBaseDir] : [process.cwd()]
+          const sgaMdContent = await loadSgaMd({ projectPaths })
           if (sgaMdContent.trim()) {
             systemPromptContent = systemPromptContent + '\n\n## Project Context (SGA.md)\n' + sgaMdContent
           }
@@ -521,10 +523,15 @@ async function executeAgentLoop(
       providerCircuitBreaker.recordFailure(error instanceof Error ? error : undefined)
       logger.error(`Provider call failed: ${errMsg}`)
       providerCircuitBreaker.recordFailure(error instanceof Error ? error : new Error(errMsg))
+      const errorText = `[Error] Failed to get response from provider: ${errMsg}`
+      if (options.onProgress) {
+        options.onProgress({ type: 'stream_delta', text: errorText })
+        options.onProgress({ type: 'error', data: errMsg })
+      }
       allMessages.push({
         id: `msg-${Date.now()}`,
         role: 'assistant',
-        content: [{ type: 'text', text: `[Error] Failed to get response from provider: ${errMsg}` }],
+        content: [{ type: 'text', text: errorText }],
         timestamp: Date.now(),
       })
       break
@@ -694,6 +701,31 @@ async function executeAgentLoop(
               if (options.onProgress) {
                 options.onProgress({ type: 'tool_use_result', toolName: name, result: { toolUseId: id, content: msg, isError: true } })
               }
+              if (hookExecutor) {
+                try {
+                  const failureResults = await hookExecutor.executeFailureHooks(
+                    name,
+                    effectiveInput,
+                    msg,
+                    {
+                      sessionId: options.parentContext?.agentId,
+                      cwd: process.cwd(),
+                    },
+                  )
+                  for (const fr of failureResults) {
+                    if (fr.additionalContext) {
+                      allMessages.push({
+                        id: `hook-ctx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                        role: 'user',
+                        content: [{ type: 'text', text: `[Hook Context] ${fr.additionalContext}` }],
+                        timestamp: Date.now(),
+                      })
+                    }
+                  }
+                } catch (hookErr) {
+                  logger.debug(`PostToolUseFailure hook failed for ${name}: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`)
+                }
+              }
             }
           } else {
             const denyMsg = userDecision.reason ?? 'User denied this operation.'
@@ -828,6 +860,32 @@ async function executeAgentLoop(
             }],
             timestamp: Date.now(),
           })
+
+          if (hookExecutor) {
+            try {
+              const failureResults = await hookExecutor.executeFailureHooks(
+                name,
+                execResult.input as Record<string, unknown>,
+                didRetry ? finalErrorMsg : formattedError,
+                {
+                  sessionId: options.parentContext?.agentId,
+                  cwd: process.cwd(),
+                },
+              )
+              for (const fr of failureResults) {
+                if (fr.additionalContext) {
+                  allMessages.push({
+                    id: `hook-ctx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    role: 'user',
+                    content: [{ type: 'text', text: `[Hook Context] ${fr.additionalContext}` }],
+                    timestamp: Date.now(),
+                  })
+                }
+              }
+            } catch (hookErr) {
+              logger.debug(`PostToolUseFailure hook failed for ${name}: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`)
+            }
+          }
         }
       } else {
         const resultStr = typeof execResult.output === 'string'

@@ -225,12 +225,15 @@ const App: React.FC<AppProps> = () => {
       data = normalizeWorkflowData(data)
 
       if (app) {
-        app.loadGraphData(data)
-        if (app.canvas && data.nodes && data.nodes.length > 0) {
-          const node = app.graph.getNodeById
-            ? app.graph.getNodeById(Number(data.nodes[0].id))
-            : null
-          if (node) app.canvas.centerOnNode(node)
+        try {
+          if (app.graph && typeof app.graph.configure === 'function') {
+            app.graph.configure(data)
+            if (app.canvas) app.canvas.setDirty(true, true)
+          } else {
+            app.loadGraphData(data)
+          }
+        } catch {
+          try { app.loadGraphData(data) } catch {}
         }
         const graphData = app.graph.serialize()
         setWorkflow(graphData as unknown as ComfyWorkflow)
@@ -652,20 +655,25 @@ const App: React.FC<AppProps> = () => {
 
   const applyToCanvas = (newWorkflow: any) => {
     if (app) {
-      app.loadGraphData(newWorkflow)
-      if (
-        app.canvas &&
-        newWorkflow.nodes &&
-        newWorkflow.nodes.length > 0
-      ) {
-        const nodeId = newWorkflow.nodes[0].id
-        const node = app.graph.getNodeById
-          ? app.graph.getNodeById(Number(nodeId))
-          : null
-        if (node) {
-          app.canvas.centerOnNode(node)
+      try {
+        if (app.graph && typeof app.graph.configure === 'function') {
+          app.graph.configure(newWorkflow)
+          if (app.canvas) {
+            app.canvas.setDirty(true, true)
+          }
+        } else {
+          app.loadGraphData(newWorkflow)
         }
+      } catch {
+        try { app.loadGraphData(newWorkflow) } catch {}
       }
+      setTimeout(() => {
+        if (app.canvas && app.graph && newWorkflow.nodes && newWorkflow.nodes.length > 0) {
+          try {
+            app.canvas.fitGraphToView?.() ?? app.canvas.zoomFit()
+          } catch {}
+        }
+      }, 100)
     }
   }
 

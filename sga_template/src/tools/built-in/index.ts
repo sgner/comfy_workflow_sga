@@ -14,6 +14,10 @@ export { LSPTool } from './lsp.js'
 export { AgentTool, getRunningTask, getAllRunningTasks, killRunningTask, waitForTask, cleanupCompletedTasks, type AgentToolInput, type AgentToolOutput, type AgentSpawnMode } from './agent.js'
 export { HuggingFaceDownloadTool } from './huggingface-download.js'
 export { GitHubSearchTool } from './github-search.js'
+export { ComfyUIModelListTool } from './comfyui-model-list.js'
+export { ComfyUINodeSearchTool } from './comfyui-node-search.js'
+export { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
+export { ComfyUIAPITool } from './comfyui-api.js'
 
 import { BashTool } from './bash.js'
 import { FileReadTool } from './file-read.js'
@@ -31,6 +35,10 @@ import { LSPTool } from './lsp.js'
 import { AgentTool } from './agent.js'
 import { HuggingFaceDownloadTool } from './huggingface-download.js'
 import { GitHubSearchTool } from './github-search.js'
+import { ComfyUIModelListTool } from './comfyui-model-list.js'
+import { ComfyUINodeSearchTool } from './comfyui-node-search.js'
+import { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
+import { ComfyUIAPITool } from './comfyui-api.js'
 import type { Tool } from '../base.js'
 import type { AgentDefinition } from '../../agents/definition.js'
 
@@ -52,5 +60,9 @@ export function createBuiltinTools(agentDefinitions?: AgentDefinition[]): Tool[]
     new AgentTool(agentDefinitions ?? []),
     new HuggingFaceDownloadTool(),
     new GitHubSearchTool(),
+    new ComfyUIModelListTool(),
+    new ComfyUINodeSearchTool(),
+    new ComfyUIWorkflowValidateTool(),
+    new ComfyUIAPITool(),
   ]
 }

@@ -53,10 +53,6 @@ export async function runComfyUIAgent(options: ComfyUIRunOptions): Promise<Agent
     await contextInjector.onSessionStart(messages)
   }
 
-  if (adapterConfig.autoInjectWorkflowContext && messages.length > 0) {
-    contextInjector.injectWorkflowSummary(messages)
-  }
-
   const sessionId = options.parentContext?.agentId ?? `comfyui-${Date.now()}`
   const costManager = getOrCreateCostManager(sessionId, adapterConfig.maxBudgetUsd)
 

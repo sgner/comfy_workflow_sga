@@ -261,20 +261,6 @@ async function callGoogleGemini(
 }
 
 // --- Helper for Python Backend Calls (SSE Streaming) ---
-const workflowToSessionMap = new Map<string, string>()
-
-export function getSgaSessionId(workflowId: string): string | undefined {
-    return workflowToSessionMap.get(workflowId)
-}
-
-export function setSgaSessionId(workflowId: string, sgaSessionId: string): void {
-    workflowToSessionMap.set(workflowId, sgaSessionId)
-}
-
-export function clearSgaSessionMapping(workflowId: string): void {
-    workflowToSessionMap.delete(workflowId)
-}
-
 async function callPythonBackendStream(
     settings: AppSettings,
     prompt: string,
@@ -308,87 +294,24 @@ async function callPythonBackendStream(
     const baseUrl = settings.pythonBackendUrl.replace(/\/$/, '');
     const configId = settings.activeBackendConfigId || undefined;
 
-    let effectiveSessionId = workflowToSessionMap.get(workflowId) || '';
-
-    if (!effectiveSessionId) {
-        try {
-            const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    providerName: configId ? `comfyui-${configId}` : undefined,
-                    agentType: 'comfyui-workflow',
-                }),
-            });
-            if (sessionRes.ok) {
-                const sessionData = await sessionRes.json();
-                effectiveSessionId = sessionData.session?.id || '';
-                if (effectiveSessionId) {
-                    workflowToSessionMap.set(workflowId, effectiveSessionId);
-                }
-            }
-        } catch {
-            // failed to create session
-        }
-    } else {
-        try {
-            const checkRes = await fetch(`${baseUrl}/api/v1/sessions/${effectiveSessionId}`);
-            if (!checkRes.ok) {
-                workflowToSessionMap.delete(workflowId);
-                const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        providerName: configId ? `comfyui-${configId}` : undefined,
-                        agentType: 'comfyui-workflow',
-                    }),
-                });
-                if (sessionRes.ok) {
-                    const sessionData = await sessionRes.json();
-                    effectiveSessionId = sessionData.session?.id || '';
-                    if (effectiveSessionId) {
-                        workflowToSessionMap.set(workflowId, effectiveSessionId);
-                    }
-                }
-            }
-        } catch {
-            // session check failed, try to use existing mapping
-        }
-    }
-
-    if (!effectiveSessionId) {
-        throw new Error("Failed to create or retrieve SGA session");
-    }
+    const effectiveSessionId = workflowId;
 
     const workflowContext = await collectWorkflowContextAsync().catch(() => collectWorkflowContext());
-    const contextParts: string[] = [];
-    if (workflow) {
-        contextParts.push(`[CURRENT WORKFLOW STATE]\nNode Count: ${workflow?.nodes?.length || 0}\nNodes Summary: ${JSON.stringify(workflow?.nodes?.map((n: any) => ({id: n.id, type: n.type, title: n.properties?.['Node name for S&R']})) || [])}\n\n[FULL WORKFLOW JSON]\n${JSON.stringify(workflow)}`);
-    }
     const workflowContextText = formatWorkflowContextForPrompt(workflowContext);
-    if (workflowContextText) {
-        contextParts.push(`[WORKFLOW PANEL CONTEXT (from ComfyUI RightSidePanel data sources)]\n${workflowContextText}`);
-    }
-    if (errorLog) {
-        contextParts.push(`[RUNTIME ERRORS]\nThe user encountered the following errors during execution:\n${errorLog}`);
-    }
-    if (settings.language && settings.language !== 'en') {
-        contextParts.push(`IMPORTANT: You MUST respond in the following language code: "${settings.language}". Translate your advice and interface text accordingly.`);
-    }
-    const fullContent = contextParts.length > 0
-        ? `${contextParts.join('\n\n')}\n\n${prompt}`
-        : prompt;
 
-    const response = await fetch(`${baseUrl}/api/v1/sessions/${effectiveSessionId}/messages`, {
+    const response = await fetch(`${baseUrl}/api/chat/stream`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-            content: fullContent,
-            stream: true,
-            agentType: 'comfyui-workflow',
-            providerName: configId ? `comfyui-${configId}` : undefined,
+            message: prompt,
+            workflow,
+            session_id: effectiveSessionId,
+            error_log: errorLog || undefined,
+            language: settings.language || 'en',
+            config_id: configId || undefined,
+            workflow_context_text: workflowContextText || undefined,
         })
     });
 
@@ -639,6 +562,11 @@ async function callPythonBackendStream(
                                     status: 'error',
                                 });
                             }
+                            if (!fullText && onStream) {
+                                const errText = data.data || '发生错误';
+                                fullText += errText;
+                                onStream(errText);
+                            }
                             break;
                         case 'turn_start':
                             if (onActivity) {
@@ -775,6 +703,129 @@ async function callPythonBackendStream(
                                 });
                             }
                             break;
+                        case 'coordinator_start':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-coord-start-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `多Agent编排启动 (${data.phaseCount || 0} 阶段, 策略: ${data.strategy || 'sequential'})`,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'coordinator_phase_change':
+                            if (onActivity) {
+                                const phaseLabels: Record<string, string> = {
+                                    research: '研究',
+                                    synthesis: '规划',
+                                    implementation: '实现',
+                                    verification: '验证',
+                                };
+                                onActivity({
+                                    id: `act-coord-phase-${data.taskId || Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `[${phaseLabels[data.phase] || data.phase}] ${data.description || ''}`,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'coordinator_task_complete':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-coord-done-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `阶段完成: ${data.description || ''}`,
+                                    status: 'done',
+                                });
+                            }
+                            break;
+                        case 'coordinator_task_failed':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-coord-fail-${Date.now()}`,
+                                    type: 'error',
+                                    timestamp: Date.now(),
+                                    label: `阶段失败: ${data.description || ''} - ${data.error || '未知错误'}`,
+                                    status: 'error',
+                                });
+                            }
+                            break;
+                        case 'coordinator_complete':
+                            if (data.synthesis) {
+                                fullText += data.synthesis;
+                                if (onStream) onStream(data.synthesis);
+                            }
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-coord-complete-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `多Agent编排完成 (${data.totalDurationMs ? Math.round(data.totalDurationMs / 1000) + 's' : ''})`,
+                                    status: 'done',
+                                });
+                            }
+                            break;
+                        case 'verification_result':
+                            if (onActivity) {
+                                const verdict = data.verdict || 'UNKNOWN';
+                                const verdictLabels: Record<string, string> = {
+                                    PASS: '验证通过',
+                                    FAIL: '验证失败',
+                                    PARTIAL: '部分通过',
+                                };
+                                const verdictStatus: Record<string, 'done' | 'error' | 'processing'> = {
+                                    PASS: 'done',
+                                    FAIL: 'error',
+                                    PARTIAL: 'processing',
+                                };
+                                onActivity({
+                                    id: `act-verify-${Date.now()}`,
+                                    type: verdict === 'FAIL' ? 'error' : 'status',
+                                    timestamp: Date.now(),
+                                    label: `工作流验证: ${verdictLabels[verdict] || verdict}${data.summary ? ' - ' + data.summary.split('\n')[0] : ''}`,
+                                    status: verdictStatus[verdict] || 'processing',
+                                });
+                            }
+                            break;
+                        case 'task_created':
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-task-created-${Date.now()}`,
+                                    type: 'status',
+                                    timestamp: Date.now(),
+                                    label: `任务创建: ${data.name || data.taskId || ''}`,
+                                    status: 'processing',
+                                });
+                            }
+                            break;
+                        case 'task_status_update':
+                            if (onActivity) {
+                                const taskStatusLabels: Record<string, string> = {
+                                    running: '运行中',
+                                    completed: '已完成',
+                                    failed: '失败',
+                                    killed: '已终止',
+                                    pending: '等待中',
+                                };
+                                const taskStatusMap: Record<string, 'processing' | 'done' | 'error'> = {
+                                    running: 'processing',
+                                    completed: 'done',
+                                    failed: 'error',
+                                    killed: 'error',
+                                    pending: 'processing',
+                                };
+                                onActivity({
+                                    id: `act-task-status-${data.taskId || Date.now()}`,
+                                    type: taskStatusMap[data.status] === 'error' ? 'error' : 'status',
+                                    timestamp: Date.now(),
+                                    label: `任务${taskStatusLabels[data.status] || data.status}${data.summary ? ': ' + data.summary : ''}${data.usage ? ` (${data.usage.totalTokens} tokens, $${data.usage.totalCostUsd?.toFixed(4)})` : ''}`,
+                                    status: taskStatusMap[data.status] || 'processing',
+                                });
+                            }
+                            break;
                     }
                     
                 } catch (e) {
@@ -790,14 +841,42 @@ async function callPythonBackendStream(
     return { text: fullText, sources: [], structuredResult };
 }
 
+function cleanHistoryText(text: string, isAssistant: boolean): string {
+    if (isAssistant) {
+        text = text
+            .replace(/=== TASK PLANNING GUIDANCE ===[\s\S]*?(=== END TASK PLANNING ===|\n\n[A-Z])/g, '')
+            .replace(/=== TASK PLANNING GUIDANCE ===[\s\S]*$/,'')
+            .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/g, '')
+            .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/g, '')
+            .replace(/SUGGESTED_ACTIONS:\s*\[.*?\]/g, '')
+            .replace(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/g, '')
+        const issuesJsonInHist = findJsonArrayAfterMarker(text, 'ISSUES_JSON:');
+        if (issuesJsonInHist) {
+            const markerIdx = text.indexOf('ISSUES_JSON:');
+            const endIdx = markerIdx + 'ISSUES_JSON:'.length + text.slice(markerIdx + 'ISSUES_JSON:'.length).indexOf(issuesJsonInHist) + issuesJsonInHist.length;
+            text = (text.slice(0, markerIdx) + text.slice(endIdx));
+        }
+    } else {
+        text = text
+            .replace(/\[FULL WORKFLOW JSON\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[WORKFLOW PANEL CONTEXT[^\]]*\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[RUNTIME ERRORS\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[Current Workflow Context\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/IMPORTANT: You MUST respond in the following language code: "[^"]*"\.[^\n]*\n?/g, '')
+            .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[USER REQUEST\]\s*"?/g, '')
+    }
+    return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export const fetchChatHistory = async (
     settings: AppSettings,
     workflowId: string
 ): Promise<ChatMessage[]> => {
     if (!settings.usePythonBackend || !settings.pythonBackendUrl) return [];
 
-    const sgaSessionId = workflowToSessionMap.get(workflowId);
-    if (!sgaSessionId) return [];
+    const sgaSessionId = workflowId;
 
     try {
         const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/v1/sessions/${sgaSessionId}/messages`);
@@ -817,14 +896,7 @@ export const fetchChatHistory = async (
             }
             const agentIssues = isAi ? parseIssuesFromText(text) : undefined;
 
-            if (isAi) {
-                const issuesJsonInHist = findJsonArrayAfterMarker(text, 'ISSUES_JSON:');
-                if (issuesJsonInHist) {
-                    const markerIdx = text.indexOf('ISSUES_JSON:');
-                    const endIdx = markerIdx + 'ISSUES_JSON:'.length + text.slice(markerIdx + 'ISSUES_JSON:'.length).indexOf(issuesJsonInHist) + issuesJsonInHist.length;
-                    text = (text.slice(0, markerIdx) + text.slice(endIdx)).trim();
-                }
-            }
+            text = cleanHistoryText(text, isAi);
 
             return {
                 id: `hist-${idx}-${Date.now()}`,
@@ -850,7 +922,7 @@ export const analyzeWorkflowWithBackend = async (
 ): Promise<WorkflowIssue[]> => {
     if (!settings.pythonBackendUrl) return [];
 
-    const sgaSessionId = workflowToSessionMap.get(workflowId) || workflowId;
+    const sgaSessionId = workflowId;
 
     try {
         const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/workflow/analyze`, {

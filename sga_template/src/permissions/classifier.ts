@@ -65,7 +65,9 @@ const SAFE_WRITE_PATTERNS: Array<{
     toolName: 'Bash',
     pattern: (input) => {
       const command = (input as { command?: string }).command ?? ''
-      const readOnlyPrefixes = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'pwd', 'which', 'where', 'type', 'git status', 'git log', 'git diff', 'git branch', 'git remote', 'node --version', 'npm --version', 'python --version', 'pip --version']
+      const readOnlyPrefixes = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'pwd', 'which', 'where', 'type', 'git status', 'git log', 'git diff', 'git branch', 'git remote', 'node --version', 'npm --version', 'python --version', 'pip --version',
+        'dir', 'Get-Content', 'Get-ChildItem', 'Select-String', 'Get-Process', 'Get-Service', 'Get-Location', 'Test-Path', 'Get-Command', 'Get-Date', 'Get-Host', 'Get-Help', 'Get-Item', 'Get-ItemProperty', 'Get-Volume',
+        'where.exe', 'systeminfo', 'tasklist', 'ipconfig', 'hostname', 'whoami', 'ver']
       return readOnlyPrefixes.some(prefix => command.trimStart().startsWith(prefix))
     },
     reason: 'Read-only bash command',
@@ -74,7 +76,8 @@ const SAFE_WRITE_PATTERNS: Array<{
     toolName: 'Bash',
     pattern: (input) => {
       const command = (input as { command?: string }).command ?? ''
-      const safeWritePrefixes = ['npm install', 'npm ci', 'pip install', 'mkdir', 'touch']
+      const safeWritePrefixes = ['npm install', 'npm ci', 'pip install', 'mkdir', 'touch',
+        'New-Item', 'Copy-Item', 'Move-Item', 'Set-Content', 'Add-Content', 'Install-Module']
       return safeWritePrefixes.some(prefix => command.trimStart().startsWith(prefix))
     },
     reason: 'Safe package install or directory creation',
@@ -132,6 +135,8 @@ export function classifyBashCommand(command: string): BashCommandCategory {
     { pattern: /^(node|npm|npx|yarn|pnpm|python|python3|pip|pip3|java|javac|go|cargo|rustc)\s+--version/, reason: 'Version check command' },
     { pattern: /^(npm\s+run|npm\s+test|yarn\s+test|pnpm\s+test|pytest|jest|vitest|mocha)\b/, reason: 'Test runner command' },
     { pattern: /^(npm\s+run\s+build|npm\s+run\s+lint|npm\s+run\s+typecheck|tsc|eslint|prettier)\b/, reason: 'Build/lint command' },
+    { pattern: /^(dir|Get-Content|Get-ChildItem|Select-String|Get-Process|Get-Service|Get-Item|Get-ItemProperty|Get-Location|Get-Date|Get-Host|Get-Command|Get-Help|Test-Path|Get-Volume)\b/i, reason: 'PowerShell read-only command' },
+    { pattern: /^(where\.exe|systeminfo|tasklist|ipconfig|hostname|whoami|ver|type)\b/i, reason: 'Windows read-only system command' },
   ]
 
   for (const { pattern, reason } of safeReadPatterns) {
@@ -162,6 +167,7 @@ export function classifyBashCommand(command: string): BashCommandCategory {
 
   const installPatterns: Array<{ pattern: RegExp; reason: string }> = [
     { pattern: /^(npm\s+install|npm\s+ci|yarn\s+install|pnpm\s+install|pip\s+install|pip3\s+install|cargo\s+add|go\s+get)\b/, reason: 'Package installation' },
+    { pattern: /^(Install-Module|Install-Package)\b/i, reason: 'PowerShell package installation' },
   ]
 
   for (const { pattern, reason } of installPatterns) {
@@ -203,6 +209,8 @@ export function classifyBashCommand(command: string): BashCommandCategory {
 
   const systemPatterns: Array<{ pattern: RegExp; reason: string }> = [
     { pattern: /^(sudo|su|chmod|chown|systemctl|service|docker|kubectl|terraform)\b/, reason: 'System administration command' },
+    { pattern: /^(net\s+(user|localgroup|stop|start)|reg\s+(add|delete|query)|diskpart|bcdedit|sfc|netsh)\b/i, reason: 'Windows system administration command' },
+    { pattern: /^(Start-Service|Stop-Service|Set-Service|New-Service|Remove-Service)\b/i, reason: 'PowerShell service management command' },
   ]
 
   for (const { pattern, reason } of systemPatterns) {
@@ -217,6 +225,10 @@ export function classifyBashCommand(command: string): BashCommandCategory {
     { pattern: /wget\s+.*\|\s*(sh|bash|zsh)/, reason: 'Remote script execution' },
     { pattern: />\s*\/dev\/(null|zero|sda)/i, reason: 'Writing to device file' },
     { pattern: /sudo\s+rm\b/, reason: 'Privileged deletion' },
+    { pattern: /^(rd\s+\/s|del\s+\/[fq]\s+\/s|rmdir\s+\/s)\b/i, reason: 'Windows destructive delete command' },
+    { pattern: /\bRemove-Item\s+.*-Recurse\s+-Force/i, reason: 'PowerShell destructive remove' },
+    { pattern: /\b(Stop-Computer|Restart-Computer)\b/i, reason: 'PowerShell shutdown/restart command' },
+    { pattern: /\bdiskpart\b/i, reason: 'Windows disk partition tool' },
   ]
 
   for (const { pattern, reason } of dangerousPatterns) {

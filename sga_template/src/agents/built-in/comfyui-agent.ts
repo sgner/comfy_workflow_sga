@@ -16,7 +16,7 @@ const COMFYUI_CONTEXT_CONFIG: AgentContextConfig = {
   enableCompression: true,
   enableSgaMd: true,
   enableSkills: true,
-  skillNames: ['remember', 'stuck'],
+  skillNames: ['remember', 'stuck', 'workflow-create', 'workflow-debug', 'model-explore', 'workflow-optimize'],
 }
 
 export class ComfyUIWorkflowAgent extends BaseAgentDefinition {

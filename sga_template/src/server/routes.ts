@@ -27,6 +27,7 @@ import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllA
 import { getTaskManager } from '../tasks/index.js'
 import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks } from '../tools/built-in/agent.js'
 import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
+import { getAgentExtensions } from '../comfyui/agent-extensions.js'
 import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider } from '../providers/provider-store.js'
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
@@ -59,6 +60,14 @@ import { CostTracker } from '../utils/cost-tracker.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const costTrackers: Map<string, CostTracker> = new Map()
+
+function sendComfyUIEvent(res: Response, event: AgentStreamEvent): void {
+  try {
+    res.write(formatSSE(event))
+  } catch {
+    // connection closed
+  }
+}
 
 function getSessionId(req: Request): string {
   return req.params.sessionId as string
@@ -663,9 +672,106 @@ async function handleStreamResponse(
       costMgr.recordUsage(result.usage)
     }
 
+    try {
+      const taskMgr = getTaskManager()
+      const existingTask = taskMgr.get(session.id)
+      if (existingTask) {
+        taskMgr.completeWithUsage(
+          session.id,
+          result.content.slice(0, 200),
+          {
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+            totalCostUsd: costMgr?.getReport().totalCostUsd ?? 0,
+          },
+          Date.now() - existingTask.createdAt,
+        )
+      }
+    } catch {
+      // task completion tracking is optional
+    }
+
     triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
 
+    try {
+      const { extractWorkflowJSON, validateWorkflowJSON } = await import('../comfyui/verification-strategies.js')
+      const workflowJson = extractWorkflowJSON(result.content)
+      if (workflowJson) {
+        const validationResult = validateWorkflowJSON(workflowJson)
+        sendEvent({
+          type: 'verification_result',
+          data: {
+            verdict: validationResult.verdict,
+            strategy: validationResult.strategy,
+            summary: validationResult.summary,
+            checks: validationResult.checks,
+          },
+        } as AgentStreamEvent)
+      }
+    } catch (e) {
+      logger.debug(`Workflow verification skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
     sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
+
+    TelemetryManager.getInstance().trackEvent('comfyui_chat_complete', {
+      sessionId: session.id,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      contentLength: result.content.length,
+      hasWorkflowJson: /\{.*"nodes".*\}/s.test(result.content),
+    })
+
+    try {
+      const extensions = getAgentExtensions(session.config.agentType ?? 'comfyui-workflow')
+      if (extensions?.enableAutoDream) {
+        const memoryManager = getMemoryManager()
+        if (memoryManager) {
+          const { executeAutoDream, DEFAULT_AUTO_DREAM_CONFIG } = await import('../memory/consolidation/auto-dream.js')
+          const { buildComfyUIConsolidationPrompt } = await import('../comfyui/consolidation-prompt.js')
+          const extConfig = extensions.autoDreamConfig ?? {}
+          const autoDreamConfig = {
+            ...DEFAULT_AUTO_DREAM_CONFIG,
+            ...extConfig,
+            customPromptBuilder: buildComfyUIConsolidationPrompt,
+          }
+          const sessionCount = getSessionStore().size()
+          executeAutoDream(memoryManager, provider, sessionCount, autoDreamConfig).catch(e => {
+            logger.debug(`AutoDream background error: ${e instanceof Error ? e.message : String(e)}`)
+          })
+        }
+      }
+    } catch (e) {
+      logger.debug(`AutoDream trigger skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    try {
+      const extensions = getAgentExtensions(session.config.agentType ?? 'comfyui-workflow')
+      if (extensions?.enableTeamSync) {
+        const memoryManager = getMemoryManager()
+        if (memoryManager) {
+          const { TeamMemorySync } = await import('../memory/team-memory-sync.js')
+          const { COMFYUI_TEAM_MEMORY_SYNC_CONFIG } = await import('../comfyui/team-config.js')
+          const syncConfig = {
+            ...COMFYUI_TEAM_MEMORY_SYNC_CONFIG,
+            ...extensions.teamSyncConfig,
+          }
+          const sync = new TeamMemorySync(
+            session.config.agentType ?? 'comfyui-workflow',
+            session.id,
+            syncConfig,
+          )
+          if (sync.shouldSync()) {
+            sync.syncWithTeam(memoryManager).catch(e => {
+              logger.debug(`Team memory sync error: ${e instanceof Error ? e.message : String(e)}`)
+            })
+          }
+        }
+      }
+    } catch (e) {
+      logger.debug(`Team memory sync skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
   } catch (error) {
     getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
     sendEvent({ type: 'error', data: session.error ?? 'Unknown error' })
@@ -1943,6 +2049,198 @@ async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProv
   return resolveProvider(providerName)
 }
 
+async function handleComfyUIChatStreamWithCoordinator(
+  _req: Request,
+  res: Response,
+  session: Session,
+  options: {
+    userMessage: string
+    errorLog?: string
+    providerName: string
+    model: string
+  },
+): Promise<void> {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+
+  const sendEvent = (event: AgentStreamEvent) => {
+    try {
+      res.write(formatSSE(event))
+    } catch {
+      // connection closed
+    }
+  }
+
+  try {
+    const { detectTaskIntent, createComfyUICoordinatorPlan } = await import('../comfyui/coordinator-plans.js')
+    const intent = detectTaskIntent(options.userMessage)
+
+    const telemetry = TelemetryManager.getInstance()
+    telemetry.trackEvent('comfyui_coordinator_start', {
+      sessionId: session.id,
+      taskIntent: intent.type,
+      model: options.model,
+      hasErrorLog: !!options.errorLog,
+    })
+
+    const provider = resolveProvider(options.providerName)
+    const toolPool = await buildToolPoolWithAgents()
+    const agentDefs = await getAllAgentDefinitions()
+
+    const plan = createComfyUICoordinatorPlan(
+      intent.type,
+      options.userMessage,
+      agentDefs,
+      session.id,
+      options.errorLog,
+    )
+
+    sendEvent({
+      type: 'coordinator_start',
+      data: {
+        planId: plan.id,
+        taskType: intent.type,
+        phaseCount: plan.tasks.length,
+        strategy: plan.strategy,
+      },
+    } as AgentStreamEvent)
+
+    const coordinator = new Coordinator({
+      maxConcurrency: 2,
+      defaultModel: options.model,
+      provider,
+      tools: toolPool,
+      agentDefinitions: agentDefs,
+      maxTurnsPerAgent: 8,
+      onTaskStart: (task) => {
+        sendEvent({
+          type: 'coordinator_phase_change',
+          data: {
+            phase: task.phase,
+            description: task.description,
+            agentType: task.agentType,
+            taskId: task.id,
+          },
+        } as AgentStreamEvent)
+      },
+      onTaskComplete: (task) => {
+        sendEvent({
+          type: 'coordinator_task_complete',
+          data: {
+            phase: task.phase,
+            description: task.description,
+            status: task.status,
+          },
+        } as AgentStreamEvent)
+      },
+      onTaskFailed: (task) => {
+        sendEvent({
+          type: 'coordinator_task_failed',
+          data: {
+            phase: task.phase,
+            description: task.description,
+            error: task.error,
+          },
+        } as AgentStreamEvent)
+      },
+    })
+
+    const result = await coordinator.execute(plan)
+
+    const assistantMessage: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'assistant',
+      content: [{ type: 'text', text: result.synthesis }],
+      timestamp: Date.now(),
+    }
+    getSessionStore().appendMessage(session.id, assistantMessage)
+    getSessionStore().appendUsage(session.id, result.totalUsage)
+
+    const costMgr = getCostManager(session.id)
+    if (costMgr) {
+      costMgr.recordUsage(result.totalUsage)
+    }
+
+    try {
+      const taskMgr = getTaskManager()
+      const existingTask = taskMgr.get(session.id)
+      if (existingTask) {
+        taskMgr.completeWithUsage(
+          session.id,
+          result.synthesis.slice(0, 200),
+          {
+            inputTokens: result.totalUsage.inputTokens,
+            outputTokens: result.totalUsage.outputTokens,
+            totalTokens: result.totalUsage.inputTokens + result.totalUsage.outputTokens,
+            totalCostUsd: costMgr?.getReport().totalCostUsd ?? 0,
+          },
+          result.totalDurationMs,
+        )
+      }
+    } catch {
+      // task completion tracking is optional
+    }
+
+    triggerMemoryExtraction(session.messages, provider, options.model, session.id, session.config.agentType)
+
+    sendEvent({
+      type: 'coordinator_complete',
+      data: {
+        synthesis: result.synthesis,
+        totalDurationMs: result.totalDurationMs,
+        taskResults: result.tasks.map(t => ({
+          phase: t.phase,
+          description: t.description,
+          status: t.status,
+        })),
+      },
+    } as AgentStreamEvent)
+
+    sendEvent({ type: 'done', data: { content: result.synthesis, usage: result.totalUsage } })
+
+    telemetry.trackEvent('comfyui_coordinator_complete', {
+      sessionId: session.id,
+      totalDurationMs: result.totalDurationMs,
+      inputTokens: result.totalUsage.inputTokens,
+      outputTokens: result.totalUsage.outputTokens,
+      taskCount: result.tasks.length,
+      successCount: result.tasks.filter(t => t.status === 'completed').length,
+      failCount: result.tasks.filter(t => t.status === 'failed').length,
+    })
+
+    try {
+      const extensions = getAgentExtensions(session.config.agentType ?? 'comfyui-workflow')
+      if (extensions?.enableAutoDream) {
+        const memoryManager = getMemoryManager()
+        if (memoryManager) {
+          const { executeAutoDream, DEFAULT_AUTO_DREAM_CONFIG } = await import('../memory/consolidation/auto-dream.js')
+          const { buildComfyUIConsolidationPrompt } = await import('../comfyui/consolidation-prompt.js')
+          const extConfig = extensions.autoDreamConfig ?? {}
+          const autoDreamConfig = {
+            ...DEFAULT_AUTO_DREAM_CONFIG,
+            ...extConfig,
+            customPromptBuilder: buildComfyUIConsolidationPrompt,
+          }
+          const sessionCount = getSessionStore().size()
+          executeAutoDream(memoryManager, provider, sessionCount, autoDreamConfig).catch(e => {
+            logger.debug(`AutoDream background error: ${e instanceof Error ? e.message : String(e)}`)
+          })
+        }
+      }
+    } catch (e) {
+      logger.debug(`AutoDream trigger skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  } catch (error) {
+    logger.error(`Coordinator stream error: ${error instanceof Error ? error.message : String(error)}`)
+    sendEvent({ type: 'error', data: error instanceof Error ? error.message : String(error) })
+    sendEvent({ type: 'done', data: null })
+  }
+
+  res.end()
+}
+
 export async function handleComfyUIChatStream(req: Request, res: Response): Promise<void> {
   const { message, workflow, session_id, error_log, language, config_id, workflow_context_text } = req.body as Record<string, unknown>
   const sessionId = session_id as string
@@ -1970,6 +2268,15 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
     const providerName = `comfyui-${config.id}`
     const model = config.default_model ?? 'sonnet'
 
+    const telemetry = TelemetryManager.getInstance()
+    telemetry.trackEvent('comfyui_chat_start', {
+      sessionId,
+      model,
+      hasErrorLog: !!errorLog,
+      language: lang,
+      hasWorkflowContext: !!workflowContextText,
+    })
+
     const store = getSessionStore()
     let session = store.get(sessionId)
     if (!session) {
@@ -1983,6 +2290,52 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
     }
 
     getOrCreateCostManager(session.id)
+
+    try {
+      const taskMgr = getTaskManager()
+      if (!taskMgr.get(session.id)) {
+        const task = taskMgr.create({
+          id: session.id,
+          name: `ComfyUI Chat: ${userMessage.slice(0, 50)}`,
+          kind: 'agent',
+          agentType: 'comfyui-workflow',
+        })
+        taskMgr.onNotification((notification) => {
+          try {
+            sendComfyUIEvent(res, {
+              type: 'task_status_update',
+              data: {
+                taskId: notification.taskId,
+                status: notification.status,
+                summary: notification.summary,
+                usage: notification.usage,
+                durationMs: notification.durationMs,
+              },
+            })
+          } catch {
+            // SSE connection may be closed
+          }
+        })
+        sendComfyUIEvent(res, {
+          type: 'task_created',
+          data: {
+            taskId: task.id,
+            name: task.name ?? '',
+            kind: task.kind,
+            agentType: task.agentType,
+          },
+        })
+      }
+    } catch {
+      // task creation is optional
+    }
+
+    try {
+      const { registerComfyUIHooks } = await import('../comfyui/hooks.js')
+      registerComfyUIHooks()
+    } catch (hookErr) {
+      logger.debug(`ComfyUI hooks registration skipped: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`)
+    }
 
     let ws = getWorkingSet()
     if (!ws) {
@@ -2027,6 +2380,17 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
       )
     }
 
+    if (workflowContextText) {
+      ws.pin(
+        `workflow-panel-context-${sessionId}`,
+        `Workflow Panel Context`,
+        workflowContextText,
+        'comfyui-workflow',
+        'high',
+        5_000,
+      )
+    }
+
     if (errorLog) {
       ws.pin(
         `error-log-${sessionId}`,
@@ -2039,16 +2403,6 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
     }
 
     let contextParts: string[] = []
-    if (workflow) {
-      const workflowStr = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
-      contextParts.push(`[FULL WORKFLOW JSON]\n${workflowStr}`)
-    }
-    if (workflowContextText) {
-      contextParts.push(`[WORKFLOW PANEL CONTEXT (from ComfyUI RightSidePanel data sources)]\n${workflowContextText}`)
-    }
-    if (errorLog) {
-      contextParts.push(`[RUNTIME ERRORS]\nThe user encountered the following errors during execution:\n${errorLog}`)
-    }
     if (lang && lang !== 'en') {
       contextParts.push(`IMPORTANT: You MUST respond in the following language code: "${lang}". Translate your advice and interface text accordingly.`)
     }
@@ -2067,15 +2421,26 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
 
     const contextInjector = new ComfyUIContextInjector()
     await contextInjector.onSessionStart(session.messages)
-    contextInjector.injectWorkflowSummary(session.messages)
 
-    await handleStreamResponse(req, res, session, {
-      content: fullContent,
-      stream: true,
-      agentType: 'comfyui-workflow',
-      providerName,
-      model,
-    })
+    const { shouldUseCoordinator, detectTaskIntent, createComfyUICoordinatorPlan } = await import('../comfyui/coordinator-plans.js')
+    const useCoordinator = shouldUseCoordinator(userMessage, errorLog)
+
+    if (useCoordinator) {
+      await handleComfyUIChatStreamWithCoordinator(req, res, session, {
+        userMessage,
+        errorLog,
+        providerName,
+        model,
+      })
+    } else {
+      await handleStreamResponse(req, res, session, {
+        content: '',
+        stream: true,
+        agentType: 'comfyui-workflow',
+        providerName,
+        model,
+      })
+    }
   } catch (error) {
     logger.error(`Chat stream error: ${error instanceof Error ? error.message : String(error)}`)
     if (!res.headersSent) {
@@ -2115,11 +2480,28 @@ export function handleComfyUIChatHistory(req: Request, res: Response): void {
         const requestMatch = text.match(/\[USER REQUEST\]\s*"([^"]*)"/)
         if (requestMatch) {
           text = requestMatch[1]
+        } else {
+          text = text
+            .replace(/\[FULL WORKFLOW JSON\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[WORKFLOW PANEL CONTEXT[^\]]*\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[RUNTIME ERRORS\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[Current Workflow Context\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/IMPORTANT: You MUST respond in the following language code: "[^"]*"\.[^\n]*\n?/, '')
+            .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[USER REQUEST\]\s*"?/, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
         }
       } else if (m.role === 'assistant') {
         text = text
+          .replace(/=== TASK PLANNING GUIDANCE ===[\s\S]*?=== END TASK PLANNING ===/, '')
+          .replace(/=== TASK PLANNING GUIDANCE ===[\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/, '')
+          .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/, '')
+          .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/, '')
           .replace(/SUGGESTED_ACTIONS:\s*\[.*?\]/, '')
           .replace(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/, '')
+          .replace(/\n{3,}/g, '\n\n')
           .trim()
       }
       return {

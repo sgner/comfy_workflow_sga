@@ -20,6 +20,17 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bshutdown\b/, reason: 'System shutdown detected' },
   { pattern: /\breboot\b/, reason: 'System reboot detected' },
   { pattern: /\binit\s+[06]/, reason: 'Changing runlevel detected' },
+  { pattern: /\brd\s+\/s\s+\/q\s+[A-Z]:\\/i, reason: 'Windows recursive force directory delete' },
+  { pattern: /\bdel\s+\/[fq]\s+\/s\s+/i, reason: 'Windows recursive force file delete' },
+  { pattern: /\brmdir\s+\/s\s+\/q\s+/i, reason: 'Windows recursive force directory remove' },
+  { pattern: /\bRemove-Item\s+.*-Recurse\s+-Force/i, reason: 'PowerShell recursive force remove' },
+  { pattern: /\bStop-Computer\b/i, reason: 'PowerShell shutdown command' },
+  { pattern: /\bRestart-Computer\b/i, reason: 'PowerShell restart command' },
+  { pattern: /\bnet\s+(user|localgroup|stop)\s+/i, reason: 'Windows user/service modification' },
+  { pattern: /\breg\s+(delete|add)\s+/i, reason: 'Windows registry modification' },
+  { pattern: /\bdiskpart\b/i, reason: 'Windows disk partition tool' },
+  { pattern: /\bsfc\s+/i, reason: 'Windows system file checker modification' },
+  { pattern: /\bbcdedit\b/i, reason: 'Windows boot configuration modification' },
 ]
 
 const SENSITIVE_PATH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
@@ -30,6 +41,11 @@ const SENSITIVE_PATH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\/\.(bashrc|zshrc|profile|bash_profile)\b/, reason: 'Writing to shell configuration files' },
   { pattern: /\/\.ssh\//, reason: 'Writing to SSH configuration' },
   { pattern: /\/\.env\b/, reason: 'Writing to environment file' },
+  { pattern: /[\\]Windows[\\]System32[\\]/i, reason: 'Writing to Windows system directory' },
+  { pattern: /[\\]ProgramData[\\]/i, reason: 'Writing to Windows ProgramData directory' },
+  { pattern: /[\\]AppData[\\]Local[\\]/i, reason: 'Writing to Windows AppData Local directory' },
+  { pattern: /\bSAM\b.*[\\]System32/i, reason: 'Writing to Windows SAM database' },
+  { pattern: /[\\]boot[\\]bcd/i, reason: 'Writing to Windows boot configuration' },
 ]
 
 const READ_COMMAND_PREFIXES = [
@@ -39,6 +55,11 @@ const READ_COMMAND_PREFIXES = [
   'uname', 'hostname', 'date', 'cal', 'df', 'du', 'free', 'top', 'ps', 'netstat',
   'ss', 'lsof', 'tree', 'file', 'less', 'more', 'tee', 'xargs', 'awk', 'sed',
   'cut', 'tr', 'rev', 'basename', 'dirname', 'realpath', 'readlink',
+  'dir', 'Get-Content', 'Get-ChildItem', 'Select-String', 'Get-Process',
+  'Get-Service', 'Get-Item', 'Get-ItemProperty', 'Get-Location', 'Get-Date',
+  'Get-Host', 'Get-Command', 'Get-Help', 'Test-Path', 'Get-Volume',
+  'type', 'where.exe', 'systeminfo', 'tasklist', 'ipconfig', 'netstat',
+  'hostname', 'whoami', 'ver',
 ]
 
 const WRITE_COMMAND_PREFIXES = [
@@ -46,6 +67,9 @@ const WRITE_COMMAND_PREFIXES = [
   'npm', 'yarn', 'pnpm', 'pip', 'pip3', 'cargo', 'go install', 'dotnet',
   'docker', 'kubectl', 'git push', 'git commit', 'git add', 'git merge',
   'git rebase', 'git reset', 'git checkout', 'git stash',
+  'del', 'Remove-Item', 'Copy-Item', 'Move-Item', 'New-Item', 'Set-Content',
+  'Add-Content', 'Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty',
+  'rd', 'rmdir', 'mkdir', 'ren', 'move', 'copy', 'xcopy', 'robocopy',
 ]
 
 export class BashTool extends BaseTool<{ command: string; timeout?: number }, string> {

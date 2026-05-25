@@ -144,6 +144,14 @@ export type AgentStreamEvent =
   | { type: 'stop'; reason: StopReason }
   | { type: 'done'; data: { content: string; usage: UsageMetrics } | null }
   | { type: 'error'; data: string }
+  | { type: 'coordinator_start'; data: { planId: string; taskType: string; phaseCount: number; strategy: string } }
+  | { type: 'coordinator_phase_change'; data: { phase: string; description: string; agentType: string; taskId: string } }
+  | { type: 'coordinator_task_complete'; data: { phase: string; description: string; status: string } }
+  | { type: 'coordinator_task_failed'; data: { phase: string; description: string; error: string | undefined } }
+  | { type: 'coordinator_complete'; data: { synthesis: string; totalDurationMs: number; taskResults: Array<{ phase: string; description: string; status: string }> } }
+  | { type: 'verification_result'; data: { verdict: string; strategy: string; summary: string; checks: Array<{ name: string; passed: boolean; message: string; severity: string }> } }
+  | { type: 'task_created'; data: { taskId: string; name: string; kind: string; agentType?: string } }
+  | { type: 'task_status_update'; data: { taskId: string; status: string; summary?: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number; totalCostUsd: number }; durationMs?: number } }
 
 export type SSEEventType = AgentStreamEvent['type']
 

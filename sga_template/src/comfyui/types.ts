@@ -9,12 +9,24 @@ export interface ComfyUIAdapterConfig {
   enableFork: boolean
   enableCoordinator: boolean
   enableAutoDream: boolean
+  autoDreamConfig?: {
+    minHours?: number
+    minSessions?: number
+    maxOutputTokens?: number
+    model?: string
+  }
   autoInjectWorkflowContext: boolean
   autoInitWorkingSet: boolean
   enableRetry: boolean
   retryConfig?: Partial<ToolRetryConfig>
   enableAdvisorOnFailure: boolean
   advisorModel?: string
+  enableTeamSync?: boolean
+  teamSyncConfig?: {
+    syncIntervalMs?: number
+    conflictResolution?: 'last_write_wins' | 'merge' | 'manual'
+    broadcastToAgents?: string[]
+  }
 }
 
 export const DEFAULT_COMFYUI_ADAPTER_CONFIG: ComfyUIAdapterConfig = {
