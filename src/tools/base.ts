@@ -70,7 +70,7 @@ export interface Tool<Input = Record<string, unknown>, Output = unknown> {
 
 export type PermissionResult =
   | { behavior: 'allow'; updatedInput?: unknown; decisionReason?: string }
-  | { behavior: 'ask'; message: string; suggestions?: string[] }
+  | { behavior: 'ask'; message: string; suggestions?: string[]; decisionReason?: string }
   | { behavior: 'deny'; message: string; decisionReason?: string }
   | { behavior: 'passthrough'; message: string }
 

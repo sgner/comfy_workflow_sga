@@ -1,4 +1,4 @@
-import type { MCPServerConfig, MCPTool, MCPResource, MCPPrompt, MCPCallResult } from './types.js'
+import type { MCPServerConfig, MCPTool, MCPResource, MCPPrompt, MCPCallResult, MCPConnectionState } from './types.js'
 import { createLogger } from '../utils/logger.js'
 
 const logger = createLogger('mcp-client')
@@ -24,10 +24,18 @@ export class MCPClient {
   private prompts: MCPPrompt[] = []
   private sessionId: string | null = null
   private protocolVersion: string = MCP_PROTOCOL_VERSION
+  private _connectionState: MCPConnectionState = 'disconnected'
+  private _lastAuthError: string | null = null
+  private _reconnectAttempts = 0
+  private _maxReconnectAttempts: number
+  private _toolsCache: MCPTool[] | null = null
+  private _toolsCacheTime = 0
+  private _toolsCacheTtlMs = 60_000
 
   constructor(serverName: string, config: MCPServerConfig) {
     this.serverName = serverName
     this.config = config
+    this._maxReconnectAttempts = config.maxRestartAttempts ?? 3
   }
 
   get name(): string {
@@ -38,7 +46,21 @@ export class MCPClient {
     return this.transport?.isConnected() ?? false
   }
 
+  get connectionState(): MCPConnectionState {
+    return this._connectionState
+  }
+
+  get lastAuthError(): string | null {
+    return this._lastAuthError
+  }
+
   getTools(): MCPTool[] {
+    const now = Date.now()
+    if (this._toolsCache && now - this._toolsCacheTime < this._toolsCacheTtlMs) {
+      return this._toolsCache
+    }
+    this._toolsCache = this.tools
+    this._toolsCacheTime = now
     return this.tools
   }
 
@@ -51,11 +73,29 @@ export class MCPClient {
   }
 
   async connect(): Promise<void> {
-    this.transport = this.createTransport()
-    await this.transport.connect()
+    this._connectionState = 'connecting'
+    try {
+      this.transport = this.createTransport()
+      await this.transport.connect()
 
-    await this.initialize()
-    await this.refreshCapabilities()
+      await this.initialize()
+      await this.refreshCapabilities()
+
+      this._connectionState = 'connected'
+      this._reconnectAttempts = 0
+      this._lastAuthError = null
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      if (isAuthError(msg)) {
+        this._connectionState = 'needs-auth'
+        this._lastAuthError = msg
+        logger.warn(`[MCP:${this.serverName}] Connection requires auth: ${redactUrl(msg)}`)
+      } else {
+        this._connectionState = 'error'
+        logger.error(`[MCP:${this.serverName}] Connection failed: ${redactUrl(msg)}`)
+      }
+      throw error
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -64,24 +104,75 @@ export class MCPClient {
       this.transport = null
       this.sessionId = null
     }
+    this._connectionState = 'disconnected'
+    this._toolsCache = null
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<MCPCallResult> {
     if (!this.transport) throw new Error(`MCP server "${this.serverName}" is not connected`)
 
-    const response = await this.transport.send({
-      jsonrpc: JSON_RPC_VERSION,
-      method: 'tools/call',
-      params: { name, arguments: args },
-      id: generateId(),
-    })
+    try {
+      const response = await this.transport.send({
+        jsonrpc: JSON_RPC_VERSION,
+        method: 'tools/call',
+        params: { name, arguments: args },
+        id: generateId(),
+      })
 
-    const result = response as { result?: MCPCallResult; error?: { message: string; code?: number } }
-    if (result.error) {
-      throw new Error(`MCP tool call error (${result.error.code}): ${result.error.message}`)
+      const result = response as { result?: MCPCallResult; error?: { message: string; code?: number } }
+      if (result.error) {
+        const errorCode = result.error.code
+        const errorMsg = result.error.message
+
+        if (errorCode === 401 || isAuthError(errorMsg)) {
+          this._connectionState = 'needs-auth'
+          this._lastAuthError = errorMsg
+          this._toolsCache = null
+          throw new Error(`MCP auth required for "${this.serverName}": ${errorMsg}`)
+        }
+
+        if (errorCode === 404 && isSessionExpiredError(errorMsg)) {
+          this._connectionState = 'session-expired'
+          this._toolsCache = null
+          throw new Error(`MCP session expired for "${this.serverName}": ${errorMsg}`)
+        }
+
+        throw new Error(`MCP tool call error (${errorCode}): ${errorMsg}`)
+      }
+
+      return result.result ?? { content: [] }
+    } catch (error) {
+      if (error instanceof Error && isAuthError(error.message)) {
+        this._connectionState = 'needs-auth'
+        this._lastAuthError = error.message
+      }
+      throw error
+    }
+  }
+
+  async tryRecover(): Promise<boolean> {
+    if (this._connectionState === 'needs-auth') {
+      logger.info(`[MCP:${this.serverName}] Cannot auto-recover from needs-auth state — user must provide credentials`)
+      return false
     }
 
-    return result.result ?? { content: [] }
+    if (this._connectionState === 'session-expired' && this._reconnectAttempts < this._maxReconnectAttempts) {
+      this._reconnectAttempts++
+      logger.info(`[MCP:${this.serverName}] Attempting recovery reconnect (${this._reconnectAttempts}/${this._maxReconnectAttempts})`)
+
+      try {
+        await this.disconnect()
+        this._toolsCache = null
+        await this.connect()
+      } catch {
+        logger.warn(`[MCP:${this.serverName}] Recovery reconnect failed`)
+        return false
+      }
+
+      return this._connectionState as string === 'connected'
+    }
+
+    return false
   }
 
   async readResource(uri: string): Promise<unknown> {
@@ -200,6 +291,34 @@ export class MCPClient {
 
 function generateId(): number {
   return Date.now() + Math.floor(Math.random() * 1000)
+}
+
+function isAuthError(message: string): boolean {
+  const lower = message.toLowerCase()
+  return lower.includes('unauthorized') ||
+    lower.includes('authentication') ||
+    lower.includes('invalid token') ||
+    lower.includes('token expired') ||
+    lower.includes('access denied') ||
+    lower.includes('forbidden') ||
+    lower.includes('401') ||
+    lower.includes('needs-auth')
+}
+
+function isSessionExpiredError(message: string): boolean {
+  const lower = message.toLowerCase()
+  return lower.includes('session') && (lower.includes('expired') || lower.includes('invalid') || lower.includes('not found'))
+}
+
+function redactUrl(message: string): string {
+  return message.replace(/https?:\/\/[^\s]+/g, (url) => {
+    try {
+      const parsed = new URL(url)
+      return `${parsed.protocol}//${parsed.host}`
+    } catch {
+      return '[redacted-url]'
+    }
+  })
 }
 
 class StdioTransport implements MCPTransport {

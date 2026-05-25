@@ -49,3 +49,5 @@ export interface MCPCallResult {
   }>
   isError?: boolean
 }
+
+export type MCPConnectionState = 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'session-expired' | 'error'

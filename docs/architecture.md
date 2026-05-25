@@ -14,7 +14,9 @@ src/
 │   └── agent.ts        # 核心 Agent 查询入口
 ├── agents/         # Agent 定义与运行
 │   ├── definition.ts   # AgentDefinition 接口、BaseAgentDefinition 基类
-│   ├── runner.ts       # Agent 执行引擎（runAgent）
+│   ├── runner.ts       # Agent 执行引擎（runAgent，含任务通知注入）
+│   ├── coordinator-mode.ts  # Coordinator Agent 模式（系统提示 + 工具驱动）
+│   ├── plan-manager.ts     # PlanManager 结构化计划管理器
 │   ├── thinking-prompts.ts  # 思考力度策略解析与提示词模板
 │   ├── fork.ts         # 子 Agent 分叉执行
 │   └── built-in/       # 内置 Agent 定义
@@ -116,18 +118,41 @@ src/
 
 ## Agent 调度与对抗性验证架构
 
-### 多 Agent 协作流程
+### Coordinator Agent 模式
+
+Coordinator 从独立类重构为 Agent 模式，通过系统提示 + 工具驱动实现多 Agent 编排：
 
 ```
-用户任务
+用户复杂任务
     │
     ▼
 ┌─────────────────────────────────────────┐
-│ Coordinator 编排器                       │
-│ ├─ 分解任务为阶段（Research/Synthesis/   │
-│ │  Implementation/Verification）         │
-│ ├─ 按依赖关系调度 Agent                  │
-│ └─ 汇总结果                              │
+│ 任务复杂度检测（routes.ts）              │
+│ ├─ 关键词匹配（"实现"、"重构"等）        │
+│ ├─ 句子数量 ≥ 3                         │
+│ └─ 动作数量 ≥ 2（and/然后连接）          │
+│                                         │
+│ 复杂 → 自动路由到 Coordinator Agent      │
+│ 简单 → 直接调用 GeneralPurpose Agent     │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────┐
+│ Coordinator Agent                       │
+│ （系统提示引导 LLM 自主决策）            │
+│                                         │
+│ 工具集：                                │
+│ ├─ Plan — 创建/更新/查询结构化计划       │
+│ ├─ Agent — 启动子 Agent（sync/async/fork）│
+│ ├─ SendMessage — 向运行中 Agent 发消息   │
+│ └─ TaskStop — 停止运行中 Agent           │
+│                                         │
+│ 工作流：                                │
+│ 1. Plan(create) — 创建结构化计划         │
+│ 2. Agent(spawn) — 启动 Worker 执行任务   │
+│ 3. 接收 task-notification — 注入消息流   │
+│ 4. Plan(update) — 更新任务状态           │
+│ 5. 综合结果，输出最终回答                │
 └──────────────────┬──────────────────────┘
                    │
     ┌──────────────┼──────────────┐
@@ -153,6 +178,64 @@ src/
          │  关键性审查       │
          └──────────────────┘
 ```
+
+### 结构化计划管理（PlanManager）
+
+PlanManager 为 Coordinator 提供结构化的计划创建、更新和持久化能力：
+
+```
+Coordinator Agent
+    │
+    ▼
+Plan({ action: "create", query, tasks, strategy })
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ PlanManager                             │
+│ ├─ createPlan() — 创建计划              │
+│ ├─ updateTaskStatus() — 更新任务状态    │
+│ ├─ getReadyTasks() — 获取可执行任务     │
+│ │   └─ 依赖检查：dependsOn 全部完成     │
+│ ├─ canLaunchMore() — 并发控制           │
+│ │   └─ maxConcurrency = 5              │
+│ ├─ getProgress() — 获取进度             │
+│ ├─ saveSnapshot() — 持久化到 .sga/      │
+│ └─ formatPlanSummary() — 格式化摘要    │
+└─────────────────────────────────────────┘
+```
+
+### 任务通知注入
+
+异步 Worker 完成后，任务通知自动注入回 Coordinator 的消息流：
+
+```
+Worker (async) 完成任务
+    │
+    ▼
+emitTaskNotification() → pendingNotifications 队列
+    │
+    ▼
+runner.ts 每轮循环开始时
+    │
+    ▼
+drainPendingNotifications() → 格式化为 XML
+    │
+    ▼
+注入为 user 角色消息到 Coordinator 对话
+    │
+    ▼
+Coordinator LLM 在下一轮看到通知，更新计划
+```
+
+### 并发控制
+
+Agent Tool 限制同时运行的 Worker 数量，防止资源耗尽：
+
+| 机制 | 说明 |
+|------|------|
+| MAX_CONCURRENT_WORKERS | 最大并发数 = 5 |
+| 超限拒绝 | async spawn 时检查运行数，超限返回错误 |
+| Plan status | Coordinator 可通过 Plan({ action: "status" }) 查看运行数 |
 
 ### 对抗性验证机制
 
@@ -338,6 +421,10 @@ TelemetryManager 提供事件追踪能力，用于监控系统行为：
 
 | 组件 | 源文件 | 职责 |
 |------|--------|------|
+| CoordinatorAgent | `src/agents/coordinator-mode.ts` | Agent 模式的编排器，系统提示 + 工具驱动 |
+| PlanManager | `src/agents/plan-manager.ts` | 结构化计划管理，创建/更新/查询/持久化 |
+| PlanTool | `src/tools/built-in/plan.ts` | Plan 工具，Coordinator 通过工具调用管理计划 |
+| AgentTool | `src/tools/built-in/agent.ts` | Agent 工具，子 Agent 调度 + 并发控制 + 通知队列 |
 | PermissionChecker | `src/permissions/checker.ts` | 权限检查入口，协调规则/分类器/模式 |
 | DefaultPermissionClassifier | `src/permissions/classifier.ts` | 基于置信度的自动决策 |
 | classifyBashCommand | `src/permissions/classifier.ts` | Bash 命令细粒度分类（11 类） |

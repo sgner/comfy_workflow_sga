@@ -41,8 +41,60 @@ export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
   shouldAvoidPermissionPrompts: false,
 }
 
+export const DANGEROUS_ALLOW_PATTERNS: Array<{ tool: string; pattern?: string; reason: string }> = [
+  { tool: 'Bash', pattern: '*', reason: 'Bash(*) allows arbitrary command execution, bypassing all safety evaluation' },
+  { tool: 'Bash', pattern: 'rm*', reason: 'Bash(rm*) allows destructive deletion commands' },
+  { tool: 'PowerShell', pattern: '*', reason: 'PowerShell(*) allows arbitrary PowerShell execution' },
+  { tool: 'PowerShell', pattern: 'iex:*', reason: 'PowerShell(iex:*) allows Invoke-Expression, equivalent to eval()' },
+  { tool: 'Agent', pattern: '*', reason: 'Agent(*) allows unrestricted subagent spawning, bypassing blast radius control' },
+  { tool: 'Write', pattern: '/**', reason: 'Write(/**) allows writing to any path including system directories' },
+  { tool: 'Edit', pattern: '/**', reason: 'Edit(/**) allows editing any file including system files' },
+]
+
+export interface StrippedRuleRecord {
+  originalRule: PermissionRule
+  strippedAt: Date
+  reason: string
+}
+
+export function stripDangerousAllowRules(rules: PermissionRuleSet): {
+  cleaned: PermissionRuleSet
+  stripped: StrippedRuleRecord[]
+} {
+  const stripped: StrippedRuleRecord[] = []
+  const cleanedAllow: PermissionRule[] = []
+
+  for (const rule of rules.allow) {
+    const isDangerous = DANGEROUS_ALLOW_PATTERNS.some(danger =>
+      danger.tool === rule.tool &&
+      (!danger.pattern || danger.pattern === rule.pattern || (danger.pattern === '*' && (!rule.pattern || rule.pattern === '*')))
+    )
+
+    if (isDangerous) {
+      const danger = DANGEROUS_ALLOW_PATTERNS.find(d =>
+        d.tool === rule.tool &&
+        (!d.pattern || d.pattern === rule.pattern || (d.pattern === '*' && (!rule.pattern || rule.pattern === '*')))
+      )
+      stripped.push({
+        originalRule: rule,
+        strippedAt: new Date(),
+        reason: danger?.reason ?? 'Dangerous allow rule',
+      })
+    } else {
+      cleanedAllow.push(rule)
+    }
+  }
+
+  return {
+    cleaned: { allow: cleanedAllow, deny: rules.deny, ask: rules.ask },
+    stripped,
+  }
+}
+
 export class PermissionChecker {
   private config: PermissionConfig
+  private strippedRules: StrippedRuleRecord[] = []
+  private originalRules: PermissionRuleSet | null = null
 
   constructor(config: PermissionConfig = DEFAULT_PERMISSION_CONFIG) {
     this.config = config
@@ -54,6 +106,56 @@ export class PermissionChecker {
 
   updateConfig(config: Partial<PermissionConfig>): void {
     this.config = { ...this.config, ...config }
+  }
+
+  enterAutoMode(): StrippedRuleRecord[] {
+    if (this.config.mode === 'auto') return []
+
+    this.originalRules = {
+      allow: [...this.config.rules.allow],
+      deny: [...this.config.rules.deny],
+      ask: [...this.config.rules.ask],
+    }
+
+    const { cleaned, stripped } = stripDangerousAllowRules(this.config.rules)
+    this.config.rules = cleaned
+    this.strippedRules = stripped
+    this.config.mode = 'auto'
+    this.config.isAutoModeAvailable = true
+    this.config.shouldAvoidPermissionPrompts = true
+
+    if (stripped.length > 0) {
+      logger.warn(`[PermissionChecker] Entering auto mode: stripped ${stripped.length} dangerous allow rule(s): ${stripped.map(s => s.reason).join('; ')}`)
+    }
+
+    return stripped
+  }
+
+  exitAutoMode(): void {
+    if (this.originalRules) {
+      this.config.rules = this.originalRules
+      this.originalRules = null
+      this.strippedRules = []
+    }
+    this.config.mode = 'default'
+    this.config.isAutoModeAvailable = false
+    this.config.shouldAvoidPermissionPrompts = false
+  }
+
+  getStrippedRules(): StrippedRuleRecord[] {
+    return [...this.strippedRules]
+  }
+
+  getRules(): PermissionRuleSet {
+    return {
+      allow: [...this.config.rules.allow],
+      deny: [...this.config.rules.deny],
+      ask: [...this.config.rules.ask],
+    }
+  }
+
+  get shouldAvoidPermissionPrompts(): boolean {
+    return this.config.shouldAvoidPermissionPrompts
   }
 
   addRule(rule: PermissionRule): void {

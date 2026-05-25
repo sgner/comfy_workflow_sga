@@ -20,6 +20,15 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bshutdown\b/, reason: 'System shutdown detected' },
   { pattern: /\breboot\b/, reason: 'System reboot detected' },
   { pattern: /\binit\s+[06]/, reason: 'Changing runlevel detected' },
+  { pattern: /\bRemove-Item\s+.*-Recurse\s+-Force/, reason: 'PowerShell recursive force delete detected' },
+  { pattern: /\bStop-Computer\b/, reason: 'PowerShell stop computer detected' },
+  { pattern: /\bRestart-Computer\b/, reason: 'PowerShell restart computer detected' },
+  { pattern: /\bSet-ExecutionPolicy\b/, reason: 'PowerShell execution policy change detected' },
+  { pattern: /\bnet\s+(user|localgroup)\s+.*\b(add|delete)\b/i, reason: 'Windows user/group modification detected' },
+  { pattern: /\breg\s+(add|delete)\s/i, reason: 'Windows registry modification detected' },
+  { pattern: /\bdiskpart\b/i, reason: 'Windows disk partition tool detected' },
+  { pattern: /\bsfc\s+/i, reason: 'Windows system file checker detected' },
+  { pattern: /\bbcdedit\b/i, reason: 'Windows boot configuration edit detected' },
 ]
 
 const SENSITIVE_PATH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
@@ -30,6 +39,13 @@ const SENSITIVE_PATH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\/\.(bashrc|zshrc|profile|bash_profile)\b/, reason: 'Writing to shell configuration files' },
   { pattern: /\/\.ssh\//, reason: 'Writing to SSH configuration' },
   { pattern: /\/\.env\b/, reason: 'Writing to environment file' },
+  { pattern: /[\/\\]Windows[\/\\]System32[\/\\]config/i, reason: 'Writing to Windows system configuration (SAM/SYSTEM)' },
+  { pattern: /[\/\\]NTUSER\.DAT/i, reason: 'Writing to Windows user registry hive' },
+  { pattern: /[\/\\]pagefile\.sys/i, reason: 'Writing to Windows page file' },
+  { pattern: /[\/\\]hiberfil\.sys/i, reason: 'Writing to Windows hibernation file' },
+  { pattern: /[\/\\]ProgramData[\/\\]/i, reason: 'Writing to Windows ProgramData directory' },
+  { pattern: /[\/\\]AppData[\/\\]Local[\/\\]GroupPolicy/i, reason: 'Writing to Windows Group Policy' },
+  { pattern: /[\/\\]boot\.ini/i, reason: 'Writing to Windows boot configuration' },
 ]
 
 const READ_COMMAND_PREFIXES = [
@@ -39,6 +55,11 @@ const READ_COMMAND_PREFIXES = [
   'uname', 'hostname', 'date', 'cal', 'df', 'du', 'free', 'top', 'ps', 'netstat',
   'ss', 'lsof', 'tree', 'file', 'less', 'more', 'tee', 'xargs', 'awk', 'sed',
   'cut', 'tr', 'rev', 'basename', 'dirname', 'realpath', 'readlink',
+  'Get-Content', 'Get-ChildItem', 'Get-Process', 'Get-Service', 'Get-Location',
+  'Select-String', 'Get-Item', 'Get-ItemProperty', 'Get-Date', 'Get-Host',
+  'dir', 'type', 'where.exe', 'where', 'whoami.exe', 'hostname.exe',
+  'systeminfo', 'tasklist', 'ipconfig', 'netstat.exe', 'ping', 'tracert',
+  'doskey', 'fc', 'find', 'findstr',
 ]
 
 const WRITE_COMMAND_PREFIXES = [
@@ -46,6 +67,10 @@ const WRITE_COMMAND_PREFIXES = [
   'npm', 'yarn', 'pnpm', 'pip', 'pip3', 'cargo', 'go install', 'dotnet',
   'docker', 'kubectl', 'git push', 'git commit', 'git add', 'git merge',
   'git rebase', 'git reset', 'git checkout', 'git stash',
+  'Remove-Item', 'Copy-Item', 'Move-Item', 'New-Item', 'Set-Content',
+  'Add-Content', 'Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty',
+  'del', 'copy', 'move', 'mkdir', 'rmdir', 'ren', 'erase',
+  'icacls', 'takeown', 'attrib',
 ]
 
 export class BashTool extends BaseTool<{ command: string; timeout?: number }, string> {

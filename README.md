@@ -14,6 +14,7 @@
 - 🪝 **Hook 系统** — 在工具调用前后插入自定义逻辑，支持失败处理和取消事件
 - 📊 **上下文压缩** — 智能压缩历史消息，突破上下文窗口限制
 - 🏗 **团队协作** — 多 Agent 协作，邮箱消息传递
+- 🎯 **Coordinator 编排** — Agent 模式的编排器，自动路由复杂任务，结构化计划管理，任务通知注入，并发控制
 - 🛡 **对抗性验证** — 10 种验证策略，PASS/FAIL 对抗性判定，防止虚假验证
 - 🔄 **反思与重试** — 工具失败自动重试（指数退避）、连续失败自动转向、Advisor 顾问反思
 - 🎛 **Feature Gate** — 13 个特性开关，支持环境变量和运行时覆盖
@@ -98,6 +99,13 @@ npm run dev
 src/
 ├── core/           # 核心类型与状态机
 ├── agents/         # Agent 定义与运行
+│   ├── definition.ts   # AgentDefinition 接口、BaseAgentDefinition 基类
+│   ├── runner.ts       # Agent 执行引擎（runAgent）
+│   ├── coordinator-mode.ts  # Coordinator Agent 模式（系统提示 + 工具驱动）
+│   ├── plan-manager.ts     # 结构化计划管理器（PlanManager）
+│   ├── thinking-prompts.ts  # 思考力度策略解析与提示词模板
+│   ├── fork.ts         # 子 Agent 分叉执行
+│   └── built-in/       # 内置 Agent 定义
 ├── tools/          # 工具系统
 ├── api/            # LLM API 客户端
 ├── providers/      # 多供应商 LLM 接入

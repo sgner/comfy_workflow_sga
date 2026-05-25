@@ -101,9 +101,11 @@ async function readFileWithFallback(filePath: string): Promise<string> {
       const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
       let cmd: string
       if (process.platform === 'win32') {
-        cmd = `Get-Content -Path '${filePath}' -Encoding UTF8 -Raw`
+        const escapedPath = filePath.replace(/'/g, "''")
+        cmd = `Get-Content -Path '${escapedPath}' -Encoding UTF8 -Raw`
       } else {
-        cmd = `cat '${filePath}'`
+        const escapedPath = filePath.replace(/'/g, "'\\''")
+        cmd = `cat '${escapedPath}'`
       }
       return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, shell }) as string
     }

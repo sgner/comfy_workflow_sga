@@ -362,145 +362,73 @@ killRunningTask('agent-task-1234567890-1')
 cleanupCompletedTasks()
 ```
 
-## Agent 编排 — Coordinator 模式
+## Agent 编排 — Coordinator Agent 模式
 
-> 📄 相关源文件：`src/agents/coordinator.ts`
+> 📄 相关源文件：`src/agents/coordinator-mode.ts`（CoordinatorAgent 类）、`src/agents/plan-manager.ts`（PlanManager）、`src/tools/built-in/plan.ts`（PlanTool）
 
-Coordinator 模式参考 cc-haha-main 的实现，支持多 Agent 并行调度与结果汇总。
+Coordinator 已从独立类重构为 Agent 模式，通过系统提示 + 工具驱动实现多 Agent 编排。当检测到复杂任务时，系统自动路由到 Coordinator Agent。
+
+### 架构变更
+
+| 旧架构 | 新架构 |
+|--------|--------|
+| `Coordinator` 独立类 | `CoordinatorAgent` Agent 模式 |
+| 代码驱动编排 | 系统提示 + 工具驱动编排 |
+| `coordinator.execute(plan)` | `runAgent({ agentDefinition: coordinatorDef })` |
+| 静态/动态规划函数 | LLM 自主规划（Plan 工具） |
+| 回调通知 | 任务通知注入消息流 |
 
 ### 编排流程
 
 ```
-用户查询 → Coordinator → 分解任务 → 并行/串行调度 Agent → 汇总结果
+用户查询 → 复杂度检测 → Coordinator Agent → Plan(create) → Agent(spawn workers) → 通知注入 → Plan(update) → 综合结果
 ```
 
-### 工作阶段
+### Coordinator 工具集
 
-| 阶段 | 说明 | 并发策略 |
-|------|------|----------|
-| Research | 调查代码库，理解问题 | 可并行 |
-| Synthesis | 综合研究结果，设计实现方案 | 串行 |
-| Implementation | 执行代码修改 | 串行（按文件集） |
-| Verification | 验证实现是否正确 | 可并行 |
+| 工具 | 说明 |
+|------|------|
+| **Plan** | 创建/更新/查询结构化计划，管理任务依赖和状态 |
+| **Agent** | 启动子 Agent（sync/async/fork 三种模式） |
+| **SendMessage** | 向运行中的 Worker 发送消息 |
+| **TaskStop** | 停止运行中的 Worker |
 
-### 使用 Coordinator API
+### 结构化计划（PlanManager）
 
-```bash
-# 静态规划（基于模板生成计划）
-POST /api/v1/coordinate
-Content-Type: application/json
+Coordinator 在启动任何 Worker 之前必须先创建计划。PlanManager 提供以下能力：
 
-{
-  "query": "修复 auth 模块中的空指针异常",
-  "strategy": "hybrid",
-  "maxConcurrency": 3,
-  "model": "sonnet",
-  "providerName": "openai"
-}
+- `createPlan(query, steps, strategy)` — 创建结构化计划
+- `updateTaskStatus(taskId, status, result?)` — 更新任务状态
+- `getReadyTasks()` — 获取依赖已满足的可执行任务
+- `canLaunchMore()` — 检查是否还能启动更多 Worker（maxConcurrency = 5）
+- `getProgress()` — 获取计划进度
+- `saveSnapshot()` / `loadSnapshot()` — 持久化到 `.sga/snapshots/`
 
-# 动态规划（LLM 智能分析生成计划）
-POST /api/v1/coordinate
-Content-Type: application/json
+### 任务通知注入
 
-{
-  "query": "Rust 异步编程有哪些坑？",
-  "strategy": "hybrid",
-  "maxConcurrency": 3,
-  "model": "sonnet",
-  "dynamic": true
-}
+异步 Worker 完成后，任务通知自动注入回 Coordinator 的消息流：
 
-# 仅生成计划（不执行）
-POST /api/v1/coordinate/plan
-Content-Type: application/json
+1. Worker 完成 → `emitTaskNotification()` → 加入 `pendingNotifications` 队列
+2. `runner.ts` 每轮循环开始时 → `drainPendingNotifications()` → 格式化为 XML
+3. 注入为 `user` 角色消息 → Coordinator LLM 在下一轮看到通知
+4. Coordinator 调用 `Plan({ action: "update" })` 更新任务状态
 
-{
-  "query": "Rust 异步编程有哪些坑？",
-  "model": "sonnet"
-}
+### 并发控制
 
-# 查看所有快照
-GET /api/v1/coordinate/snapshots
+系统限制同时运行的 Worker 数量（`MAX_CONCURRENT_WORKERS = 5`），超限时 async spawn 返回错误信息。
 
-# 从快照恢复执行
-POST /api/v1/coordinate/resume
-Content-Type: application/json
+### 使用方式
 
-{
-  "snapshotPath": ".sga/snapshots/plan-1700000000-abc123.json",
-  "maxConcurrency": 3,
-  "model": "sonnet"
-}
-```
-
-### 使用 Coordinator 代码
+Coordinator Agent 由系统自动路由，无需手动调用：
 
 ```typescript
-import { Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan, getAllAgentDefinitions } from 'SGA-Template'
-
-const agentDefs = await getAllAgentDefinitions()
-
-// 方式一：静态规划（基于模板）
-const plan = createCoordinatorPlanFromUserQuery('修复 auth 模块中的空指针异常', agentDefs)
-
-// 方式二：动态规划（LLM 智能分析）
-const dynamicPlan = await generateDynamicPlan('修复 auth 模块中的空指针异常', agentDefs, provider, 'sonnet')
-
-const coordinator = new Coordinator({
-  maxConcurrency: 3,
-  defaultModel: 'sonnet',
-  provider: myProvider,
-  tools: toolPool,
-  agentDefinitions: agentDefs,
-  onTaskStart: (task) => console.log(`Started: ${task.description}`),
-  onTaskComplete: (task) => console.log(`Completed: ${task.description}`),
-  onTaskFailed: (task) => console.log(`Failed: ${task.description}: ${task.error}`),
-  onPlanUpdated: (plan) => console.log(`Plan updated: ${plan.tasks.length} tasks`),
-})
-
-const result = await coordinator.execute(plan)
-console.log(result.synthesis)
-```
-
-### 自定义编排计划
-
-```typescript
-import { Coordinator } from 'SGA-Template'
-
-const plan = {
-  strategy: 'hybrid',
-  tasks: [
-    {
-      description: '调查 auth 模块',
-      phase: 'research',
-      agentType: 'Explore',
-      prompt: '调查 src/auth/ 目录中的空指针异常问题...',
-    },
-    {
-      description: '设计修复方案',
-      phase: 'synthesis',
-      agentType: 'Plan',
-      prompt: '基于调查结果设计修复方案...',
-      dependsOn: ['调查 auth 模块'],
-    },
-    {
-      description: '实现修复',
-      phase: 'implementation',
-      agentType: 'general-purpose',
-      prompt: '修复 src/auth/validate.ts 中的空指针异常...',
-      dependsOn: ['设计修复方案'],
-    },
-    {
-      description: '验证修复',
-      phase: 'verification',
-      agentType: 'verification',
-      prompt: '验证空指针异常的修复是否正确...',
-      dependsOn: ['实现修复'],
-    },
-  ],
+// 当用户发送复杂任务时，routes.ts 自动检测并路由到 Coordinator
+// 也可以通过 API 指定 agentType
+POST /api/v1/sessions/:sessionId/message
+{
+  "content": "实现用户认证功能并编写测试",
+  "agentType": "coordinator"
 }
-
-const result = await coordinator.execute(plan)
 ```
 
 ### 编排策略
@@ -511,310 +439,88 @@ const result = await coordinator.execute(plan)
 | `sequential` | 所有任务串行执行 |
 | `hybrid` | 按阶段执行：research/verification 可并行，implementation 串行（推荐） |
 
-### 动态规划 — LLM 智能生成计划
+### 动态规划 — LLM 自主生成计划
 
-> 📄 相关源文件：`src/agents/coordinator.ts` → `generateDynamicPlan()`
-
-传统静态规划使用固定模板，根据有哪些内置 Agent 拼装步骤。动态规划则让 LLM 根据用户查询和可用 Agent 列表智能分析，生成最优执行计划。
+Coordinator Agent 通过系统提示引导 LLM 自主决定任务分解和 Agent 调度。LLM 根据查询内容和可用 Agent 列表，使用 Plan 工具智能生成最优计划。
 
 #### 工作原理
 
 ```
 用户查询："Rust 异步编程有哪些坑？"
         +
-可用 Agent 列表：
-  - WebResearcher (联网搜索专家)
-  - ProblemSolver (问题解决专家)
-  - Explore (代码探索)
-  - ...
+可用 Agent 列表
         ↓
-   LLM 分析规划（PLAN_GENERATION_SYSTEM_PROMPT）
+   Coordinator Agent 分析规划（系统提示引导）
         ↓
-   输出 JSON 计划：
-{
-  "strategy": "sequential",
-  "tasks": [
-    {
-      "description": "联网搜集资料",
-      "phase": "research",
-      "agentType": "WebResearcher",
-      "prompt": "搜索 Rust 异步编程常见陷阱...",
-      "dependsOn": []
-    },
-    {
-      "description": "基于资料解决问题",
-      "phase": "synthesis",
-      "agentType": "ProblemSolver",
-      "prompt": "基于上一步搜集到的资料，回答...",
-      "dependsOn": ["联网搜集资料"]
-    }
-  ]
-}
-```
-
-#### 使用方式
-
-```typescript
-import { generateDynamicPlan, getAllAgentDefinitions } from 'SGA-Template'
-
-const agentDefs = await getAllAgentDefinitions()
-
-// LLM 会根据查询内容和可用 Agent 智能生成计划
-const plan = await generateDynamicPlan(
-  'Rust 异步编程有哪些坑？',
-  agentDefs,
-  provider,
-  'sonnet',
-)
-
-// 如果 LLM 规划失败，会自动回退到静态规划
-console.log(plan.strategy)  // 'sequential' | 'parallel' | 'hybrid'
-console.log(plan.tasks)     // CoordinatorTaskStep[]
-```
-
-#### API 调用
-
-```bash
-# 仅生成计划（不执行），可预览后再决定是否执行
-POST /api/v1/coordinate/plan
-{ "query": "Rust 异步编程有哪些坑？" }
-
-# 生成并执行（dynamic=true 启用 LLM 规划）
-POST /api/v1/coordinate
-{ "query": "Rust 异步编程有哪些坑？", "dynamic": true }
+   Plan({ action: "create", query, tasks, strategy })
+        ↓
+   Agent(spawn) 启动 Worker 执行
 ```
 
 #### 容错机制
 
-- LLM 返回空计划 → 自动回退到 `createCoordinatorPlanFromUserQuery()` 静态规划
-- LLM 返回无效 JSON → 自动回退到静态规划
-- LLM 返回无效 phase/strategy → 自动修正为默认值（`implementation` / `hybrid`）
-- 网络超时或 Provider 错误 → 自动回退到静态规划
+- LLM 未调用 Plan 工具 → 系统提示强制要求先创建计划
+- Worker 失败 → task-notification 注入消息流，Coordinator 可重试或跳过
+- 超出并发限制 → Agent Tool 返回错误，Coordinator 等待后重试
 
 ### 上下文注入 — 自动传递步骤结果
 
-> 📄 相关源文件：`src/agents/coordinator.ts` → `injectContextFromDependencies()`
-
-当任务声明了 `dependsOn` 依赖关系时，Coordinator 会在执行前自动将依赖步骤的结果注入到当前步骤的 prompt 前面。
+当任务声明了 `dependsOn` 依赖关系时，Coordinator 会自动将依赖步骤的结果注入到当前步骤的 prompt 前面。
 
 #### 工作原理
 
 ```
-Step 1: WebResearcher
-  prompt: "搜索 Rust 异步编程常见陷阱..."
-  → 返回: "### 搜索结果汇总\n1. Send/Sync trait bounds...\n2. Pinning issues..."
+Step 1: Explore Worker
+  prompt: "调查 auth 模块..."
+  → task-notification: <result>调查结果...</result>
 
-Step 2: ProblemSolver (dependsOn: ["联网搜集资料"])
-  原始 prompt: "基于上一步搜集到的资料，回答..."
-  ↓ injectContextFromDependencies 自动注入 ↓
+Step 2: Plan Worker (dependsOn: ["调查 auth 模块"])
+  原始 prompt: "基于调查结果设计修复方案..."
+  ↓ PlanManager 自动注入依赖结果 ↓
   实际 prompt:
   """
   ## Previous Step Results
-
-  ### 联网搜集资料 (research)
-  ### 搜索结果汇总
-  1. Send/Sync trait bounds...
-  2. Pinning issues...
-
+  调查结果...
   ---
-
-  基于上一步搜集到的资料，回答...
+  基于调查结果设计修复方案...
   """
-```
-
-#### 关键特性
-
-- 通过 `dependsOn` 字段声明依赖（引用依赖步骤的 `description`）
-- 执行前自动查找已完成的依赖步骤
-- 将依赖步骤的结果（截断到 3000 字符防止过长）注入到 prompt 前面
-- 如果依赖步骤未完成或未找到匹配，则只使用原始 prompt
-- 断点续跑时，已完成步骤的结果同样会被注入
-
-#### 代码示例
-
-```typescript
-const plan = {
-  strategy: 'hybrid',
-  tasks: [
-    {
-      description: '联网搜集资料',
-      phase: 'research',
-      agentType: 'WebResearcher',
-      prompt: '搜索 Rust 异步编程常见陷阱...',
-    },
-    {
-      description: '基于资料解决问题',
-      phase: 'synthesis',
-      agentType: 'ProblemSolver',
-      prompt: '基于上一步搜集到的资料，回答用户问题...',
-      dependsOn: ['联网搜集资料'],  // 引用上一步的 description
-    },
-  ],
-}
-
-// Coordinator 执行 Step 2 时会自动注入 Step 1 的结果
-const result = await coordinator.execute(plan)
 ```
 
 ### 计划动态更新
 
-> 📄 相关源文件：`src/agents/coordinator.ts` → `addStep()` / `skipTask()` / `updateTaskPrompt()`
-
-Coordinator 支持在执行过程中动态修改计划，无需重新创建整个编排。
-
-#### 添加步骤
+Coordinator 通过 Plan 工具在执行过程中动态修改计划：
 
 ```typescript
-// 在执行中添加新步骤（例如发现需要额外安全审查）
-const newTask = coordinator.addStep({
-  description: '补充安全审查',
-  phase: 'verification',
-  agentType: 'SecurityScanner',
-  prompt: '审查代码安全性，重点关注注入攻击...',
-  dependsOn: ['实现功能'],
-})
-// 触发 onPlanUpdated 回调
-```
+// 添加新任务
+Plan({ action: "add_task", task: { description: "补充安全审查", phase: "verification", agentType: "verification", prompt: "..." } })
 
-#### 跳过步骤
+// 移除任务
+Plan({ action: "remove_task", taskId: "task-xxx" })
 
-```typescript
-// 跳过某个不再需要的步骤
-coordinator.skipTask('coord-task-1700000000-1', '该步骤不再需要')
-// 只能跳过 pending 或 running 状态的任务
-```
+// 更新任务状态
+Plan({ action: "update", taskId: "task-xxx", status: "completed", result: "审查完成" })
 
-#### 修改步骤 Prompt
-
-```typescript
-// 根据中间结果调整后续步骤的 prompt
-coordinator.updateTaskPrompt(
-  'coord-task-1700000000-2',
-  '基于最新的调查结果，重点关注 src/auth/validate.ts 第 42 行的空指针问题...',
-)
-// 只能修改 pending 状态的任务
-```
-
-#### 回调通知
-
-```typescript
-const coordinator = new Coordinator({
-  // ...其他配置
-  onPlanUpdated: (plan) => {
-    console.log(`计划已更新，当前 ${plan.tasks.length} 个步骤`)
-    // 可在此处持久化计划、通知前端等
-  },
-})
+// 查看计划状态
+Plan({ action: "status" })
 ```
 
 ### 计划持久化与断点续跑
 
-> 📄 相关源文件：`src/agents/coordinator.ts` → `saveSnapshot()` / `loadSnapshot()` / `resumeFromSnapshot()` / `listSnapshots()`
-
-Coordinator 在执行过程中自动保存快照，支持从断点恢复执行。
-
-#### 快照自动保存
-
-- **每个阶段完成后** — 自动保存快照到 `.sga/snapshots/{planId}.json`
-- **全部完成时** — 保存最终快照
-- 快照目录可通过 `snapshotDir` 配置覆盖
-
-#### 快照内容
-
-```json
-{
-  "plan": {
-    "id": "plan-1700000000-abc123",
-    "query": "修复 auth 模块中的空指针异常",
-    "strategy": "hybrid",
-    "tasks": [
-      { "id": "step-1", "description": "Research the codebase", "phase": "research", ... },
-      { "id": "step-2", "description": "Design implementation plan", "phase": "synthesis", ... }
-    ]
-  },
-  "tasks": [
-    { "id": "coord-task-xxx-1", "status": "completed", "result": { "content": "...", "durationMs": 5000, "turnCount": 3, "toolUseCount": 5 } },
-    { "id": "coord-task-xxx-2", "status": "completed", "result": { "content": "...", "durationMs": 8000, "turnCount": 4, "toolUseCount": 7 } },
-    { "id": "coord-task-xxx-3", "status": "pending" },
-    { "id": "coord-task-xxx-4", "status": "pending" }
-  ],
-  "totalUsage": { "inputTokens": 10000, "outputTokens": 5000, "totalTokens": 15000, "totalCostUsd": 0.075 },
-  "startedAt": 1700000000000,
-  "savedAt": 1700000013000
-}
-```
-
-#### 从快照恢复
+PlanManager 在执行过程中自动保存快照到 `.sga/snapshots/`，支持从断点恢复执行：
 
 ```typescript
-import { Coordinator, listSnapshots } from 'SGA-Template'
+import { getPlanManager, listSnapshots } from 'SGA-Template'
 
-// 查看所有可用快照
+const planManager = getPlanManager()
+
+// 保存快照
+const snapshotPath = planManager.saveSnapshot()
+
+// 查看所有快照
 const snapshots = listSnapshots()
-// [
-//   { planId: 'plan-xxx', query: '修复 auth...', savedAt: 1700000013000, pendingCount: 2, path: '.sga/snapshots/plan-xxx.json' }
-// ]
 
-// 从快照恢复执行
-const coordinator = new Coordinator({
-  maxConcurrency: 3,
-  defaultModel: 'sonnet',
-  provider,
-  tools: toolPool,
-  agentDefinitions: agentDefs,
-})
-
-const result = await coordinator.resumeFromSnapshot('.sga/snapshots/plan-xxx.json')
-// 恢复过程：
-// 1. 加载快照，还原所有任务状态
-// 2. 跳过已完成的任务 (status === 'completed')
-// 3. 从第一个 pending 任务继续执行
-// 4. 上下文注入仍然有效（已完成的结果会被注入到依赖步骤）
-// 5. 执行完成后保存最终快照
-```
-
-#### API 调用
-
-```bash
-# 查看所有快照
-GET /api/v1/coordinate/snapshots
-# 响应: { "snapshots": [{ "planId": "plan-xxx", "query": "...", "savedAt": ..., "pendingCount": 2, "path": "..." }] }
-
-# 从快照恢复执行
-POST /api/v1/coordinate/resume
-{ "snapshotPath": ".sga/snapshots/plan-xxx.json" }
-```
-
-#### 断点续跑的上下文注入
-
-恢复执行时，`injectContextFromDependencies` 仍然有效：
-
-```
-快照中 Step 1 已完成 → result.content 保存了搜索结果
-快照中 Step 2 待执行 → dependsOn: ["联网搜集资料"]
-
-恢复执行 Step 2 时：
-  → 找到 Step 1 的 result（从快照恢复的）
-  → 自动注入到 Step 2 的 prompt 前面
-  → ProblemSolver 仍然能看到搜索结果
-```
-
-### CoordinatorConfig 完整配置
-
-```typescript
-interface CoordinatorConfig {
-  maxConcurrency: number              // 最大并发数
-  defaultModel: string                // 默认模型
-  provider: LLMProvider               // LLM Provider
-  tools: Tool[]                       // 工具池
-  agentDefinitions: AgentDefinition[] // 可用 Agent 列表
-  maxTurnsPerAgent?: number           // 每个 Agent 最大轮次
-  snapshotDir?: string                // 快照保存目录（默认 .sga/snapshots）
-  onTaskStart?: (task: CoordinatorTask) => void
-  onTaskComplete?: (task: CoordinatorTask) => void
-  onTaskFailed?: (task: CoordinatorTask) => void
-  onPlanUpdated?: (plan: CoordinatorPlan) => void
-}
+// 从快照恢复
+const plan = planManager.loadSnapshot(snapshotPath)
 ```
 
 ## 子 Agent 分叉执行
@@ -860,10 +566,9 @@ const forkedContext = createSubagentContext(parentContext, {
 |------|------|------|
 | `/api/v1/agents` | GET | 列出所有 Agent（内置 + 自定义） |
 | `/api/v1/agents` | POST | 动态创建自定义 Agent |
-| `/api/v1/coordinate` | POST | 执行 Coordinator 编排（支持 `dynamic: true` 启用 LLM 动态规划） |
-| `/api/v1/coordinate/plan` | POST | 仅生成动态计划（不执行） |
+| `/api/v1/sessions/:id/message` | POST | 发送消息（自动检测复杂度，复杂任务路由到 Coordinator） |
+| `/api/v1/sessions/:id/stream` | POST (SSE) | 流式发送消息（同上，支持实时事件推送） |
 | `/api/v1/coordinate/snapshots` | GET | 列出所有快照 |
-| `/api/v1/coordinate/resume` | POST | 从快照恢复执行 |
 
 ### Task 相关 API
 
