@@ -71,7 +71,9 @@ async function walkDir(dir: string, results: string[], maxResults: number): Prom
     const fullPath = join(dir, entry.name)
     if (entry.name.startsWith('.') && entry.name !== '.claude' && entry.name !== '.env') continue
     if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' ||
+          entry.name === '.vs' || entry.name === 'bin' || entry.name === 'obj' ||
+          entry.name === '__pycache__' || entry.name === '.next' || entry.name === '.nuxt') continue
       await walkDir(fullPath, results, maxResults)
     } else if (entry.isFile()) {
       results.push(fullPath)

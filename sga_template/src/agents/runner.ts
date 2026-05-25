@@ -26,6 +26,8 @@ import { CostTracker } from '../utils/cost-tracker.js'
 import { MemoryExtractor } from '../memory/extractor.js'
 import { computeBudgetAllocation, buildContextFromSlots, type ContextSlot, type ContextBudgetConfig, getBudgetConfig } from '../memory/context-budget.js'
 import { generateToolUseSummary, type ToolUseInfo } from '../tools/built-in/tool-use-summary.js'
+import { drainPendingNotifications, formatTaskNotificationXml } from '../tools/built-in/agent.js'
+import { isCoordinatorMode } from './coordinator-mode.js'
 
 const logger = createLogger('agent-runner')
 
@@ -410,6 +412,22 @@ async function executeAgentLoop(
   while (turnCount < maxTurns) {
     turnCount++
     logger.debug(`Turn ${turnCount} starting`)
+
+    if (isCoordinatorMode()) {
+      const notifications = drainPendingNotifications()
+      if (notifications.length > 0) {
+        const notificationTexts = notifications.map(n =>
+          formatTaskNotificationXml(n.taskId, n.status, n.summary, n.result, n.usage)
+        )
+        allMessages.push({
+          id: `notification-${Date.now()}`,
+          role: 'user',
+          content: [{ type: 'text', text: notificationTexts.join('\n\n') }],
+          timestamp: Date.now(),
+        })
+        logger.info(`Injected ${notifications.length} task-notification(s) into coordinator message stream`)
+      }
+    }
 
     if (options.onProgress) {
       options.onProgress({ type: 'turn_start', turnCount })

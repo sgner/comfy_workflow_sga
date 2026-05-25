@@ -1,6 +1,8 @@
 import type { Message, MessageContent, UsageMetrics } from '../core/types.js'
 import type { Tool, ToolUseContext } from '../tools/base.js'
 import type { SystemPrompt } from '../context/system-prompt.js'
+import type { PermissionChecker } from '../permissions/checker.js'
+import { stripDangerousAllowRules, PermissionChecker as PermissionCheckerClass } from '../permissions/checker.js'
 import { createLogger } from '../utils/logger.js'
 
 const logger = createLogger('fork')
@@ -132,6 +134,26 @@ export function createSubagentContext(
   parentContext: ToolUseContext,
   overrides: SubagentContextOverrides = {},
 ): ToolUseContext {
+  let subagentPermissionChecker: PermissionChecker | undefined
+
+  if (parentContext.permissionChecker) {
+    const parentChecker = parentContext.permissionChecker
+    const parentRules = {
+      allow: [...parentChecker.getRules().allow],
+      deny: [...parentChecker.getRules().deny],
+      ask: [...parentChecker.getRules().ask],
+    }
+
+    const { cleaned } = stripDangerousAllowRules(parentRules)
+    subagentPermissionChecker = new PermissionCheckerClass({
+      mode: parentChecker.mode,
+      rules: cleaned,
+      isBypassPermissionsAvailable: false,
+      isAutoModeAvailable: false,
+      shouldAvoidPermissionPrompts: parentChecker.shouldAvoidPermissionPrompts,
+    })
+  }
+
   return {
     tools: overrides.tools ?? parentContext.tools,
     messages: overrides.messages ?? [],
@@ -141,6 +163,7 @@ export function createSubagentContext(
     readFileState: overrides.readFileState ?? new Map(parentContext.readFileState),
     agentId: overrides.agentId,
     agentType: overrides.agentType,
+    permissionChecker: subagentPermissionChecker ?? parentContext.permissionChecker,
   }
 }
 

@@ -30,15 +30,12 @@ const SENSITIVE_PATTERNS: Array<{
   { pattern: /[/\\]\.aws[/\\]/, reason: 'AWS configuration directory', category: 'secrets' },
   { pattern: /[/\\]\.gcp[/\\]/, reason: 'GCP configuration directory', category: 'secrets' },
   { pattern: /[/\\]\.kube[/\\]/, reason: 'Kubernetes configuration directory', category: 'secrets' },
-  { pattern: /[/\\]etc[/\\]passwd$/, reason: 'System password file', category: 'system' },
-  { pattern: /[/\\]etc[/\\]shadow$/, reason: 'System shadow password file', category: 'system' },
-  { pattern: /[/\\]etc[/\\]sudoers/, reason: 'Sudo configuration', category: 'system' },
-  { pattern: /[/\\]etc[/\\]ssh[/\\]/, reason: 'SSH server configuration', category: 'system' },
-  { pattern: /[/\\]Windows[/\\]System32[/\\]/i, reason: 'Windows system directory', category: 'system' },
-  { pattern: /[/\\]Windows[/\\]System32[/\\]config[/\\]/i, reason: 'Windows system configuration', category: 'system' },
-  { pattern: /[/\\]ProgramData[/\\]/i, reason: 'Windows ProgramData directory', category: 'system' },
-  { pattern: /[/\\]bootmgr/i, reason: 'Windows boot manager', category: 'system' },
-  { pattern: /[/\\]Boot[/\\]BCD/i, reason: 'Windows Boot Configuration Data', category: 'system' },
+  { pattern: /[/\\]etc[/\\]passwd$/i, reason: 'System password file', category: 'system' },
+  { pattern: /[/\\]etc[/\\]shadow$/i, reason: 'System shadow password file', category: 'system' },
+  { pattern: /[/\\]etc[/\\]sudoers/i, reason: 'Sudo configuration', category: 'system' },
+  { pattern: /[/\\]etc[/\\]ssh[/\\]/i, reason: 'SSH server configuration', category: 'system' },
+  { pattern: /[/\\]Windows[/\\]System32[/\\]config[/\\]/i, reason: 'Windows system configuration (SAM/SYSTEM)', category: 'system' },
+  { pattern: /[/\\]Windows[/\\]System32[/\\]drivers[/\\]etc[/\\]/i, reason: 'Windows hosts/network configuration', category: 'system' },
   { pattern: /[/\\]\.claude[/\\]/, reason: 'Claude configuration directory', category: 'config' },
   { pattern: /[/\\]\.sga[/\\]/, reason: 'SGA configuration directory', category: 'config' },
   { pattern: /[/\\]\.bashrc$/, reason: 'Bash configuration', category: 'config' },
@@ -59,6 +56,7 @@ const SENSITIVE_PATTERNS: Array<{
 
 const SENSITIVE_EXTENSIONS = new Set([
   '.pem', '.key', '.p12', '.pfx', '.jks', '.keystore',
+  '.p7b', '.p7c', '.der', '.cer', '.crt',
 ])
 
 const SENSITIVE_FILENAMES = new Set([
@@ -68,6 +66,11 @@ const SENSITIVE_FILENAMES = new Set([
   'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
   '.npmrc', '.pypirc', '.netrc',
   '.gitconfig', '.hgrc',
+  'ntuser.dat', 'ntuser.ini',
+  'pagefile.sys', 'hiberfil.sys', 'swapfile.sys',
+  'boot.ini', 'ntldr',
+  'sam', 'system', 'security',
+  'hosts',
 ])
 
 export function isSensitivePath(filePath: string): SensitivePathResult | null {
@@ -98,6 +101,9 @@ export function isPathOutsideProject(filePath: string, projectRoot?: string): bo
   const root = projectRoot ?? process.cwd()
   const resolvedPath = resolve(filePath)
   const resolvedRoot = resolve(root)
+  if (process.platform === 'win32') {
+    return !resolvedPath.toLowerCase().startsWith(resolvedRoot.toLowerCase())
+  }
   return !resolvedPath.startsWith(resolvedRoot)
 }
 

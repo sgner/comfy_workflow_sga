@@ -142,6 +142,13 @@ export type AgentStreamEvent =
   | { type: 'recovery'; error: Error; attempt: number }
   | { type: 'workflow_updated'; workflowJson: string; actionType: string }
   | { type: 'stop'; reason: StopReason }
+  | { type: 'coordinator_start'; data: { query: string } }
+  | { type: 'coordinator_plan'; data: { planId: string; strategy: string; taskCount: number } }
+  | { type: 'coordinator_task_start'; data: { id: string; description: string; phase: string; agentType: string } }
+  | { type: 'coordinator_task_complete'; data: { id: string; description: string } }
+  | { type: 'coordinator_task_failed'; data: { id: string; description: string; error: string | undefined } }
+  | { type: 'coordinator_end'; data: { planId: string; totalTasks: number; completedTasks: number } }
+  | { type: 'coordinator_fallback'; data: { reason: string } }
   | { type: 'done'; data: { content: string; usage: UsageMetrics } | null }
   | { type: 'error'; data: string }
   | { type: 'coordinator_start'; data: { planId: string; taskType: string; phaseCount: number; strategy: string } }

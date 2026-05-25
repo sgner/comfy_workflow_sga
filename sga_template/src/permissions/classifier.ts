@@ -19,6 +19,10 @@ export type ErrorCategory =
   | 'validation'
   | 'timeout'
   | 'resource'
+  | 'auth'
+  | 'session_expired'
+  | 'rate_limit'
+  | 'tool_config'
   | 'unknown'
 
 export interface PermissionClassifier {
@@ -246,20 +250,35 @@ export function classifyError(error: string): ErrorCategory {
   if (/econnrefused|etimedout|enotfound|econnreset|network|dns|socket/.test(lower)) {
     return 'network'
   }
-  if (/enoent|eacces|eperm|enoent|not found|no such file|permission denied|access denied/.test(lower)) {
+  if (/enoent|eacces|eperm|not found|no such file|permission denied/.test(lower)) {
     return 'filesystem'
   }
-  if (/forbidden|unauthorized|authentication|auth|token|credential/.test(lower)) {
+  if (/session.*expired|session.*invalid|session.*not found/.test(lower)) {
+    return 'session_expired'
+  }
+  if (/unauthorized|authentication|invalid token|token expired|needs-auth|401/.test(lower)) {
+    return 'auth'
+  }
+  if (/forbidden|access denied|403/.test(lower)) {
     return 'permission'
+  }
+  if (/rate limit|too many requests|429|throttl/.test(lower)) {
+    return 'rate_limit'
   }
   if (/validation|invalid|malformed|schema|type error|typeerror/.test(lower)) {
     return 'validation'
   }
-  if (/timeout|timed out|deadline|expired/.test(lower)) {
+  if (/timeout|timed out|deadline/.test(lower)) {
     return 'timeout'
   }
-  if (/out of memory|oom|resource|quota|limit|capacity/.test(lower)) {
+  if (/expired/.test(lower)) {
+    return 'timeout'
+  }
+  if (/out of memory|oom|resource|quota|capacity/.test(lower)) {
     return 'resource'
+  }
+  if (/tool.*config|mcp.*config|server.*not found|tool.*not found/.test(lower)) {
+    return 'tool_config'
   }
 
   return 'unknown'

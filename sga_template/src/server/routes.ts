@@ -23,11 +23,12 @@ import { createBuiltinTools } from '../tools/built-in/index.js'
 import { assembleToolPool } from '../tools/registry.js'
 import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
 import { createAllMCPToolAdapters } from '../mcp/adapter.js'
-import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan, listSnapshots, getCoordinatorSystemPrompt } from '../agents/index.js'
+import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, getCoordinatorAgentDefinition, isCoordinatorMode, setCoordinatorMode, getCoordinatorSystemPrompt, listSnapshots } from '../agents/index.js'
 import { getTaskManager } from '../tasks/index.js'
-import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks } from '../tools/built-in/agent.js'
+import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks, setTaskNotificationCallback, formatTaskNotificationXml } from '../tools/built-in/agent.js'
 import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
 import { getAgentExtensions } from '../comfyui/agent-extensions.js'
+import { CostTracker } from '../utils/cost-tracker.js'
 import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider } from '../providers/provider-store.js'
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
@@ -56,7 +57,6 @@ import type { FeatureGateConfig } from '../feature-gate/index.js'
 import { TelemetryManager, initTelemetry } from '../telemetry/index.js'
 import { classifyBashCommand, classifyError } from '../permissions/index.js'
 import { buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context/system-prompt.js'
-import { CostTracker } from '../utils/cost-tracker.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const costTrackers: Map<string, CostTracker> = new Map()
@@ -90,6 +90,45 @@ async function buildToolPoolWithAgents(): Promise<import('../tools/base.js').Too
   const mcpClients = getConnectedMCPClients()
   const mcpToolAdapters = createAllMCPToolAdapters(mcpClients)
   return assembleToolPool(builtinTools, mcpToolAdapters)
+}
+
+const COMPLEXITY_KEYWORDS = [
+  'implement', 'refactor', 'migrate', 'redesign', 'architect', 'rewrite',
+  'integrate', 'build', 'create a', 'develop', 'design and implement',
+  'end-to-end', 'full-stack', 'multi-step', 'comprehensive',
+  '实现', '重构', '迁移', '重新设计', '架构', '重写',
+  '集成', '构建', '开发', '设计并实现', '端到端', '全栈',
+  '多步骤', '综合', '完整实现', '从零开始',
+]
+
+const SIMPLE_KEYWORDS = [
+  'what is', 'explain', 'show me', 'list', 'how does', 'where is',
+  'read', 'cat', 'echo', 'print', 'tell me',
+  '什么是', '解释', '列出', '怎么', '在哪', '读取', '显示',
+]
+
+function shouldUseCoordinator(query: string, agentType?: string): boolean {
+  if (!isFeatureEnabled('auto_coordinator')) return false
+
+  if (agentType && agentType !== 'general-purpose') return false
+
+  const lowerQuery = query.toLowerCase()
+
+  const simpleScore = SIMPLE_KEYWORDS.reduce((acc, kw) => acc + (lowerQuery.includes(kw) ? 1 : 0), 0)
+  if (simpleScore >= 2 && !lowerQuery.includes('and')) return false
+
+  if (lowerQuery.length < 30) return false
+
+  const complexScore = COMPLEXITY_KEYWORDS.reduce((acc, kw) => acc + (lowerQuery.includes(kw) ? 1 : 0), 0)
+  if (complexScore >= 2) return true
+
+  const sentenceCount = query.split(/[.!?。！？]+/).filter(s => s.trim().length > 5).length
+  if (sentenceCount >= 3) return true
+
+  const hasMultipleActions = (lowerQuery.match(/\band\b|&|，|；|然后|接着|之后/g) || []).length >= 2
+  if (hasMultipleActions) return true
+
+  return false
 }
 
 export function handleListSessions(_req: Request, res: Response): void {
@@ -309,6 +348,64 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
       return
     }
 
+    if (shouldUseCoordinator(body.content, body.agentType)) {
+      logger.info(`Session ${sessionId}: complex task detected, routing to Coordinator agent`)
+
+      try {
+        const allAgentDefs = await getAllAgentDefinitions()
+        const toolPool = await buildToolPoolWithAgents()
+        const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
+
+        setCoordinatorMode(true)
+
+        const pendingNotifications: Array<{ taskId: string; status: string; summary: string; result?: string }> = []
+
+        setTaskNotificationCallback((notification) => {
+          pendingNotifications.push(notification)
+        })
+
+        const result = await runAgent({
+          agentDefinition: coordinatorDef,
+          prompt: body.content,
+          messages: session.messages,
+          tools: toolPool,
+          model,
+          provider,
+          maxTurns: session.config.maxTurns ?? 50,
+          maxBudgetUsd: session.config.maxBudgetUsd,
+          agentDefinitions: allAgentDefs,
+        })
+
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+
+        const assistantMessage: Message = {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: result.content }],
+          timestamp: Date.now(),
+        }
+        store.appendMessage(session.id, assistantMessage)
+        store.appendUsage(session.id, result.usage)
+
+        triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
+
+        const response: SendMessageResponse = {
+          sessionId: session.id,
+          content: result.content,
+          usage: result.usage,
+          messages: session.messages,
+        }
+
+        res.json(response)
+        return
+      } catch (coordError) {
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        logger.warn(`Coordinator agent failed, falling back to direct agent: ${coordError instanceof Error ? coordError.message : String(coordError)}`)
+      }
+    }
+
     const requestApproval = async (event: import('../agents/runner.js').ApprovalEvent): Promise<import('../agents/runner.js').ApprovalResponse> => {
       const approvalReq = createApprovalRequest({
         toolName: event.toolName,
@@ -499,6 +596,67 @@ async function handleStreamResponse(
     if (!agentDef) {
       sendEvent({ type: 'error', data: 'No agent definition available' })
       sendEvent({ type: 'done', data: null })
+      res.end()
+      activeSSEConnections.delete(session.id)
+      return
+    }
+
+    if (shouldUseCoordinator(body.content, body.agentType)) {
+      logger.info(`Session ${session.id} (stream): complex task detected, routing to Coordinator agent`)
+
+      sendEvent({ type: 'coordinator_start', data: { query: body.content } })
+
+      try {
+        const allAgentDefs = await getAllAgentDefinitions()
+        const toolPool = await buildToolPoolWithAgents()
+        const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
+
+        setCoordinatorMode(true)
+
+        setTaskNotificationCallback((notification) => {
+          sendEvent({
+            type: 'task_notification',
+            taskId: notification.taskId,
+            status: notification.status === 'killed' ? 'stopped' : notification.status,
+            summary: notification.summary,
+          })
+        })
+
+        const result = await runAgent({
+          agentDefinition: coordinatorDef,
+          prompt: body.content,
+          messages: session.messages,
+          tools: toolPool,
+          model,
+          provider,
+          maxTurns: session.config.maxTurns ?? 50,
+          maxBudgetUsd: session.config.maxBudgetUsd,
+          agentDefinitions: allAgentDefs,
+        })
+
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+
+        const assistantMessage: Message = {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: result.content }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, assistantMessage)
+        getSessionStore().appendUsage(session.id, result.usage)
+
+        triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
+
+        sendEvent({ type: 'coordinator_end', data: { planId: 'coordinator-agent', totalTasks: 0, completedTasks: 0 } })
+        sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
+      } catch (coordError) {
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        logger.warn(`Coordinator agent failed (stream), falling back to direct agent: ${coordError instanceof Error ? coordError.message : String(coordError)}`)
+        sendEvent({ type: 'coordinator_fallback', data: { reason: coordError instanceof Error ? coordError.message : String(coordError) } })
+      }
+
       res.end()
       activeSSEConnections.delete(session.id)
       return
@@ -902,52 +1060,35 @@ export async function handleComfyUICoordinator(req: Request, res: Response): Pro
   }
 
   try {
-    const { Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan } = await import('../agents/coordinator.js')
-
+    const allAgentDefs = await getAllAgentDefinitions()
     const provider = getProviderForSession(session)
     const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
-    const tools = buildToolPool()
-    const agentDefs = await getAllAgentDefinitions()
+    const toolPool = await buildToolPoolWithAgents()
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
-    const coordinator = new Coordinator({
-      maxConcurrency: 2,
-      defaultModel: model,
+    setCoordinatorMode(true)
+
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: query as string,
+      tools: toolPool,
+      model,
       provider,
-      tools,
-      agentDefinitions: agentDefs,
-      maxTurnsPerAgent: 5,
+      maxTurns: 50,
+      agentDefinitions: allAgentDefs,
     })
 
-    let plan
-    if (strategy === 'dynamic') {
-      plan = await generateDynamicPlan(query as string, agentDefs, provider, model)
-    } else {
-      plan = createCoordinatorPlanFromUserQuery(query as string, agentDefs)
-      if (strategy) {
-        plan.strategy = strategy as 'parallel' | 'sequential' | 'hybrid'
-      }
-    }
-
-    const result = await coordinator.execute(plan)
+    setCoordinatorMode(false)
 
     res.json({
       success: true,
-      synthesis: result.synthesis,
-      totalUsage: result.totalUsage,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
       totalDurationMs: result.totalDurationMs,
-      tasks: result.tasks.map(t => ({
-        id: t.id,
-        phase: t.phase,
-        status: t.status,
-        description: t.description,
-        result: t.result ? {
-          content: t.result.content,
-          turnCount: t.result.turnCount,
-          durationMs: t.result.durationMs,
-        } : undefined,
-      })),
     })
   } catch (error) {
+    setCoordinatorMode(false)
     const msg = error instanceof Error ? error.message : String(error)
     logger.error(`Coordinator failed: ${msg}`)
     res.status(500).json({ error: msg })
@@ -1098,7 +1239,7 @@ export async function handleCreateAgent(req: Request, res: Response): Promise<vo
 }
 
 export async function handleCoordinate(req: Request, res: Response): Promise<void> {
-  const { query, strategy, maxConcurrency, model, providerName, dynamic } = req.body
+  const { query, model, providerName } = req.body
 
   if (!query) {
     res.status(400).json({ error: 'query is required' })
@@ -1118,61 +1259,32 @@ export async function handleCoordinate(req: Request, res: Response): Promise<voi
 
     const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
     const toolPool = await buildToolPoolWithAgents()
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
-    let plan: import('../agents/coordinator.js').CoordinatorPlan
-    if (dynamic) {
-      plan = await generateDynamicPlan(query, allAgentDefs, provider, resolvedModel)
-    } else {
-      plan = createCoordinatorPlanFromUserQuery(query, allAgentDefs)
-    }
-    if (strategy) plan.strategy = strategy
+    setCoordinatorMode(true)
 
-    const coordinator = new Coordinator({
-      maxConcurrency: maxConcurrency ?? 3,
-      defaultModel: resolvedModel,
-      provider,
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: query,
       tools: toolPool,
+      model: resolvedModel,
+      provider,
+      maxTurns: 50,
       agentDefinitions: allAgentDefs,
     })
 
-    const result = await coordinator.execute(plan)
+    setCoordinatorMode(false)
 
     res.json({
-      plan: {
-        id: result.plan.id,
-        query: result.plan.query,
-        strategy: result.plan.strategy,
-        tasks: result.plan.tasks.map(t => ({
-          id: t.id,
-          description: t.description,
-          phase: t.phase,
-          agentType: t.agentType,
-          dependsOn: t.dependsOn,
-        })),
-        createdAt: result.plan.createdAt,
-        updatedAt: result.plan.updatedAt,
-      },
-      tasks: result.tasks.map(t => ({
-        id: t.id,
-        description: t.description,
-        phase: t.phase,
-        agentType: t.agentType,
-        status: t.status,
-        result: t.result ? {
-          content: t.result.content,
-          durationMs: t.result.durationMs,
-          turnCount: t.result.turnCount,
-          toolUseCount: t.result.toolUseCount,
-        } : undefined,
-        error: t.error,
-      })),
-      synthesis: result.synthesis,
-      totalUsage: result.totalUsage,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
       totalDurationMs: result.totalDurationMs,
     })
   } catch (error) {
+    setCoordinatorMode(false)
     const errMsg = error instanceof Error ? error.message : String(error)
-    logger.error(`Coordinator execution failed: ${errMsg}`)
+    logger.error(`Coordinator agent failed: ${errMsg}`)
     res.status(500).json({ error: errMsg })
   }
 }
@@ -1197,24 +1309,20 @@ export async function handleGeneratePlan(req: Request, res: Response): Promise<v
     }
 
     const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
-    const plan = await generateDynamicPlan(query, allAgentDefs, provider, resolvedModel)
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
     res.json({
-      plan: {
-        id: plan.id,
-        query: plan.query,
-        strategy: plan.strategy,
-        tasks: plan.tasks.map(t => ({
-          id: t.id,
-          description: t.description,
-          phase: t.phase,
-          agentType: t.agentType,
-          prompt: t.prompt,
-          dependsOn: t.dependsOn,
-        })),
-        createdAt: plan.createdAt,
-        updatedAt: plan.updatedAt,
+      message: 'Plan generation is now handled by the Coordinator agent at runtime. Use the /coordinate endpoint to execute tasks.',
+      coordinatorAgent: {
+        name: coordinatorDef.name,
+        description: coordinatorDef.description,
+        subagentType: coordinatorDef.subagentType,
       },
+      availableAgents: allAgentDefs.map(a => ({
+        name: a.name,
+        description: a.description,
+        subagentType: a.subagentType,
+      })),
     })
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
@@ -1229,7 +1337,7 @@ export function handleListSnapshots(_req: Request, res: Response): void {
 }
 
 export async function handleResumePlan(req: Request, res: Response): Promise<void> {
-  const { snapshotPath, maxConcurrency, model, providerName } = req.body
+  const { snapshotPath, model, providerName } = req.body
 
   if (!snapshotPath) {
     res.status(400).json({ error: 'snapshotPath is required' })
@@ -1249,49 +1357,30 @@ export async function handleResumePlan(req: Request, res: Response): Promise<voi
     const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
     const allAgentDefs = await getAllAgentDefinitions()
     const toolPool = await buildToolPoolWithAgents()
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
-    const coordinator = new Coordinator({
-      maxConcurrency: maxConcurrency ?? 3,
-      defaultModel: resolvedModel,
-      provider,
+    setCoordinatorMode(true)
+
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: `Resume the previously saved coordination plan from snapshot: ${snapshotPath}. Read the snapshot file, understand what was done and what remains, then continue the work.`,
       tools: toolPool,
+      model: resolvedModel,
+      provider,
+      maxTurns: 50,
       agentDefinitions: allAgentDefs,
     })
 
-    const result = await coordinator.resumeFromSnapshot(snapshotPath)
+    setCoordinatorMode(false)
 
     res.json({
-      plan: {
-        id: result.plan.id,
-        query: result.plan.query,
-        strategy: result.plan.strategy,
-        tasks: result.plan.tasks.map(t => ({
-          id: t.id,
-          description: t.description,
-          phase: t.phase,
-          agentType: t.agentType,
-          dependsOn: t.dependsOn,
-        })),
-      },
-      tasks: result.tasks.map(t => ({
-        id: t.id,
-        description: t.description,
-        phase: t.phase,
-        agentType: t.agentType,
-        status: t.status,
-        result: t.result ? {
-          content: t.result.content,
-          durationMs: t.result.durationMs,
-          turnCount: t.result.turnCount,
-          toolUseCount: t.result.toolUseCount,
-        } : undefined,
-        error: t.error,
-      })),
-      synthesis: result.synthesis,
-      totalUsage: result.totalUsage,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
       totalDurationMs: result.totalDurationMs,
     })
   } catch (error) {
+    setCoordinatorMode(false)
     const errMsg = error instanceof Error ? error.message : String(error)
     logger.error(`Resume plan failed: ${errMsg}`)
     res.status(500).json({ error: errMsg })
@@ -2089,78 +2178,36 @@ async function handleComfyUIChatStreamWithCoordinator(
     const toolPool = await buildToolPoolWithAgents()
     const agentDefs = await getAllAgentDefinitions()
 
-    const plan = createComfyUICoordinatorPlan(
-      intent.type,
-      options.userMessage,
-      agentDefs,
-      session.id,
-      options.errorLog,
-    )
+    const coordinatorDef = getCoordinatorAgentDefinition(agentDefs)
 
-    sendEvent({
-      type: 'coordinator_start',
-      data: {
-        planId: plan.id,
-        taskType: intent.type,
-        phaseCount: plan.tasks.length,
-        strategy: plan.strategy,
-      },
-    } as AgentStreamEvent)
+    setCoordinatorMode(true)
 
-    const coordinator = new Coordinator({
-      maxConcurrency: 2,
-      defaultModel: options.model,
-      provider,
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: options.userMessage,
       tools: toolPool,
+      model: options.model,
+      provider,
+      maxTurns: 50,
       agentDefinitions: agentDefs,
-      maxTurnsPerAgent: 8,
-      onTaskStart: (task) => {
-        sendEvent({
-          type: 'coordinator_phase_change',
-          data: {
-            phase: task.phase,
-            description: task.description,
-            agentType: task.agentType,
-            taskId: task.id,
-          },
-        } as AgentStreamEvent)
-      },
-      onTaskComplete: (task) => {
-        sendEvent({
-          type: 'coordinator_task_complete',
-          data: {
-            phase: task.phase,
-            description: task.description,
-            status: task.status,
-          },
-        } as AgentStreamEvent)
-      },
-      onTaskFailed: (task) => {
-        sendEvent({
-          type: 'coordinator_task_failed',
-          data: {
-            phase: task.phase,
-            description: task.description,
-            error: task.error,
-          },
-        } as AgentStreamEvent)
-      },
     })
 
-    const result = await coordinator.execute(plan)
+    setCoordinatorMode(false)
+
+    const synthesis = result.content
 
     const assistantMessage: Message = {
       id: `msg-${Date.now()}`,
       role: 'assistant',
-      content: [{ type: 'text', text: result.synthesis }],
+      content: [{ type: 'text', text: synthesis }],
       timestamp: Date.now(),
     }
     getSessionStore().appendMessage(session.id, assistantMessage)
-    getSessionStore().appendUsage(session.id, result.totalUsage)
+    getSessionStore().appendUsage(session.id, result.usage)
 
     const costMgr = getCostManager(session.id)
     if (costMgr) {
-      costMgr.recordUsage(result.totalUsage)
+      costMgr.recordUsage(result.usage)
     }
 
     try {
@@ -2169,11 +2216,11 @@ async function handleComfyUIChatStreamWithCoordinator(
       if (existingTask) {
         taskMgr.completeWithUsage(
           session.id,
-          result.synthesis.slice(0, 200),
+          synthesis.slice(0, 200),
           {
-            inputTokens: result.totalUsage.inputTokens,
-            outputTokens: result.totalUsage.outputTokens,
-            totalTokens: result.totalUsage.inputTokens + result.totalUsage.outputTokens,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.usage.inputTokens + result.usage.outputTokens,
             totalCostUsd: costMgr?.getReport().totalCostUsd ?? 0,
           },
           result.totalDurationMs,
@@ -2188,26 +2235,18 @@ async function handleComfyUIChatStreamWithCoordinator(
     sendEvent({
       type: 'coordinator_complete',
       data: {
-        synthesis: result.synthesis,
+        synthesis,
         totalDurationMs: result.totalDurationMs,
-        taskResults: result.tasks.map(t => ({
-          phase: t.phase,
-          description: t.description,
-          status: t.status,
-        })),
       },
     } as AgentStreamEvent)
 
-    sendEvent({ type: 'done', data: { content: result.synthesis, usage: result.totalUsage } })
+    sendEvent({ type: 'done', data: { content: synthesis, usage: result.usage } })
 
     telemetry.trackEvent('comfyui_coordinator_complete', {
       sessionId: session.id,
       totalDurationMs: result.totalDurationMs,
-      inputTokens: result.totalUsage.inputTokens,
-      outputTokens: result.totalUsage.outputTokens,
-      taskCount: result.tasks.length,
-      successCount: result.tasks.filter(t => t.status === 'completed').length,
-      failCount: result.tasks.filter(t => t.status === 'failed').length,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
     })
 
     try {

@@ -4,6 +4,9 @@ import { createLogger } from '../utils/logger.js'
 import { HookRegistry, HookExecutor, loadHookConfig } from '../hooks/index.js'
 import type { HookDefinition, HookExecutionContext } from '../hooks/index.js'
 import { classifyError } from '../permissions/index.js'
+import { writeFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 const logger = createLogger('tool-execution')
 
@@ -122,6 +125,11 @@ export function createExecutionPipeline(
         ? context.permissionChecker.resolveWithToolPermission(toolPermission, tool.name, currentInput as Record<string, unknown>)
         : toolPermission
 
+      const hookPermissionBehavior = extractHookPermissionBehavior(preToolUseResults)
+      if (hookPermissionBehavior) {
+        finalPermission = mergeHookWithPermission(hookPermissionBehavior, finalPermission, tool.name)
+      }
+
       if (tool.requiresUserInteraction() && finalPermission.behavior === 'allow') {
         finalPermission = {
           behavior: 'ask',
@@ -232,11 +240,21 @@ export function createExecutionPipeline(
       }
 
       if (maxResultSizeChars && typeof result === 'string' && result.length > maxResultSizeChars) {
-        result = result.slice(0, maxResultSizeChars) + `\n...[truncated, original size: ${result.length} chars]`
+        const persisted = await persistOversizedResult(result, tool.name)
+        if (persisted) {
+          result = `[Result too large (${result.length} chars), saved to ${persisted}]\n\nFirst ${Math.min(500, maxResultSizeChars)} chars:\n${result.slice(0, Math.min(500, maxResultSizeChars))}`
+        } else {
+          result = result.slice(0, maxResultSizeChars) + `\n...[truncated, original size: ${result.length} chars]`
+        }
       } else if (maxResultSizeChars && typeof result === 'object' && result !== null) {
         const serialized = JSON.stringify(result)
         if (serialized.length > maxResultSizeChars) {
-          result = serialized.slice(0, maxResultSizeChars) + `\n...[truncated, original size: ${serialized.length} chars]`
+          const persisted = await persistOversizedResult(serialized, tool.name)
+          if (persisted) {
+            result = `[Result too large (${serialized.length} chars), saved to ${persisted}]\n\nFirst ${Math.min(500, maxResultSizeChars)} chars:\n${serialized.slice(0, Math.min(500, maxResultSizeChars))}`
+          } else {
+            result = serialized.slice(0, maxResultSizeChars) + `\n...[truncated, original size: ${serialized.length} chars]`
+          }
         }
       }
 
@@ -437,4 +455,78 @@ export function createDefaultPipeline(maxResultSizeChars?: number): ToolExecutio
     maxResultSizeChars,
     hookDefinitions,
   })
+}
+
+function extractHookPermissionBehavior(
+  hookResults: Array<{ modifiedData?: unknown }>,
+): 'allow' | 'deny' | 'ask' | null {
+  for (const result of hookResults) {
+    if (result.modifiedData && typeof result.modifiedData === 'object') {
+      const md = result.modifiedData as { permissionBehavior?: string }
+      if (md.permissionBehavior === 'allow' || md.permissionBehavior === 'deny' || md.permissionBehavior === 'ask') {
+        return md.permissionBehavior
+      }
+    }
+  }
+  return null
+}
+
+function mergeHookWithPermission(
+  hookBehavior: 'allow' | 'deny' | 'ask',
+  permissionResult: PermissionResult,
+  toolName: string,
+): PermissionResult {
+  if (hookBehavior === 'deny') {
+    return {
+      behavior: 'deny',
+      message: `Denied by PreToolUse hook for ${toolName}`,
+      decisionReason: 'hook_deny',
+    }
+  }
+
+  if (hookBehavior === 'ask') {
+    if (permissionResult.behavior === 'deny') {
+      return permissionResult
+    }
+    const msg = permissionResult.behavior === 'allow'
+      ? `Hook requests confirmation for ${toolName}`
+      : (permissionResult as { message: string }).message ?? `Hook requests confirmation for ${toolName}`
+    return {
+      behavior: 'ask',
+      message: msg,
+      decisionReason: 'hook_ask',
+    }
+  }
+
+  if (hookBehavior === 'allow') {
+    if (permissionResult.behavior === 'deny') {
+      logger.warn(`[Pipeline] Hook allows ${toolName} but rule-based deny takes precedence`)
+      return permissionResult
+    }
+    if (permissionResult.behavior === 'ask' && permissionResult.decisionReason?.startsWith('rule_')) {
+      logger.warn(`[Pipeline] Hook allows ${toolName} but rule-based ask takes precedence`)
+      return permissionResult
+    }
+    return {
+      behavior: 'allow',
+      decisionReason: 'hook_allow',
+    }
+  }
+
+  return permissionResult
+}
+
+async function persistOversizedResult(content: string, toolName: string): Promise<string | null> {
+  try {
+    const dir = join(tmpdir(), 'sga-oversized-results')
+    mkdirSync(dir, { recursive: true })
+    const filename = `${toolName}-${Date.now()}.txt`
+    const filepath = join(dir, filename)
+    writeFileSync(filepath, content, 'utf-8')
+    logger.info(`[Pipeline] Persisted oversized result from ${toolName} to ${filepath} (${content.length} chars)`)
+    return filepath
+  } catch (error) {
+    logger.warn(`[Pipeline] Failed to persist oversized result: ${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
 }

@@ -243,17 +243,31 @@ export async function getMcpInstructionsSection(): Promise<string | null> {
   }
 }
 
+const SKILL_LISTING_CHAR_BUDGET = 2000
+
 export async function getSkillListSection(): Promise<string | null> {
   try {
     const skills = await discoverSkills()
     const userInvocable = skills.filter(s => s.userInvocable)
     if (userInvocable.length === 0) return null
 
-    const skillList = userInvocable
-      .map(s => `- **/${s.name}**: ${s.description}`)
-      .join('\n')
+    const entries: string[] = []
+    let totalChars = 0
 
-    return `# Available Skills\n\n${skillList}\n\nUse the Skill tool to execute these skills.`
+    for (const s of userInvocable) {
+      const entry = `- **/${s.name}**: ${s.description}`
+      if (totalChars + entry.length > SKILL_LISTING_CHAR_BUDGET) {
+        const remaining = userInvocable.length - entries.length
+        if (remaining > 0) {
+          entries.push(`- ... and ${remaining} more (use Skill tool to discover)`)
+        }
+        break
+      }
+      entries.push(entry)
+      totalChars += entry.length + 1
+    }
+
+    return `# Available Skills\n\n${entries.join('\n')}\n\nUse the Skill tool to execute these skills.`
   } catch (error) {
     logger.debug(`Failed to get skill list: ${error instanceof Error ? error.message : String(error)}`)
     return null

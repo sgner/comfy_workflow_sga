@@ -131,6 +131,12 @@ const BUILTIN_GATES: FeatureGateConfig[] = [
     defaultEnabled: true,
     envVar: 'SGA_FEATURE_COST_TRACKING',
   },
+  {
+    name: 'auto_coordinator',
+    description: 'Enable automatic routing of complex tasks to the Coordinator for multi-agent orchestration',
+    defaultEnabled: true,
+    envVar: 'SGA_FEATURE_AUTO_COORDINATOR',
+  },
 ]
 
 export class FeatureGateManager {
