@@ -68,6 +68,7 @@ export interface ChatMessage {
     timestamp: Date;
     metadata?: {
         thinking?: boolean;
+        interrupted?: boolean;
         workflowUpdate?: boolean;
         missingNodes?: string[];
         groundingSources?: Array<{ uri: string; title: string }>;
@@ -86,7 +87,7 @@ export interface AgentStatus {
 
 export interface AgentActivity {
     id: string;
-    type: 'thinking' | 'status' | 'tool_start' | 'tool_result' | 'content' | 'error';
+    type: 'thinking' | 'status' | 'tool_start' | 'tool_result' | 'content' | 'error' | 'done' | 'turn_end';
     timestamp: number;
     label: string;
     node?: string;
@@ -170,6 +171,8 @@ export interface ModelConfig {
     maxOutputTokens?: number;
     inputPricePerMToken?: number;
     outputPricePerMToken?: number;
+    /** Price unit: 'M' = per million tokens (default), 'K' = per thousand tokens */
+    priceUnit?: 'M' | 'K';
     supportsVision?: boolean;
     supportsToolUse?: boolean;
     supportsStreaming?: boolean;

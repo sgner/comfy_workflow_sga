@@ -33,6 +33,7 @@ You are "Comfy Workflow Agent", an expert AI assistant and Workflow Architect sp
 - **Always** validate connections.
 - **Never** break JSON structure.
 - When explaining, focus on **data flow** and **functionality**, not just node names.
+- **Node Reference Format**: When referring to a node, ALWAYS use the full format "Node #<id> <NodeType>" (e.g., "Node #56 LoraLoaderModelOnly"), NEVER use just "Node 56", "Node 12", or "Node #56" alone. The node type name in parentheses from the context (e.g., Node #56 (LoraLoaderModelOnly)) should be included without parentheses as part of the reference.
 
 ## FINAL OUTPUT
 At the end of your response, please provide 3 short "Related Questions" that the user might want to ask you next to help them deeper understand the workflow or resolve issues. These should be questions the USER would ask the agent, NOT questions the agent asks the user. Do NOT phrase them as offers or suggestions from the agent (e.g. avoid "Do you want me to..."); instead phrase them as what the user might want to know or request.
@@ -267,6 +268,7 @@ async function callPythonBackendStream(
     workflow: ComfyWorkflow,
     workflowId: string,
     errorLog: string | null,
+    abortSignal?: AbortSignal,
     onStream?: (chunk: string) => void,
     onStatus?: (status: AgentStatus) => void,
     onApprovalRequired?: (request: ApprovalRequest) => void,
@@ -304,6 +306,7 @@ async function callPythonBackendStream(
         headers: {
             'Content-Type': 'application/json'
         },
+        signal: abortSignal,
         body: JSON.stringify({
             message: prompt,
             workflow,
@@ -351,6 +354,10 @@ async function callPythonBackendStream(
         TodoWrite: '更新任务列表',
         AskUserQuestion: '询问用户',
         HuggingFaceDownload: '下载模型',
+        ComfyUINodeSearch: '搜索节点',
+        ComfyUIAPI: '查询 ComfyUI API',
+        ComfyUIModelList: '查询模型列表',
+        Plan: '制定计划',
     }
 
     function getToolDisplayName(name: string | undefined): string {
@@ -372,6 +379,35 @@ async function callPythonBackendStream(
         const values = Object.values(input).filter(v => typeof v === 'string' && v.length > 0)
         if (values.length > 0) return String(values[0]).slice(0, 60)
         return ''
+    }
+
+    function formatToolResultBrief(toolName: string | undefined, result: { content?: string; isError?: boolean } | undefined): string {
+        if (!result || !result.content) return ''
+        if (result.isError) return `错误: ${result.content.slice(0, 80)}`
+        const content = result.content
+        // 尝试解析 JSON 结果提取关键信息
+        try {
+            const parsed = JSON.parse(content)
+            if (toolName === 'ComfyUINodeSearch' && Array.isArray(parsed)) {
+                const names = parsed.slice(0, 3).map((n: any) => n.name || n.category || String(n)).join(', ')
+                return parsed.length > 3 ? `${names} 等${parsed.length}个结果` : names
+            }
+            if (toolName === 'ComfyUIAPI' && parsed.nodes) {
+                return `${Array.isArray(parsed.nodes) ? parsed.nodes.length : '?'} 个节点`
+            }
+            if (toolName === 'ComfyUIModelList' && parsed.models) {
+                return `${Array.isArray(parsed.models) ? parsed.models.length : '?'} 个模型`
+            }
+            if (toolName === 'workflow_action' && parsed.nodes) {
+                return `工作流已更新 (${Array.isArray(parsed.nodes) ? parsed.nodes.length : '?'} 个节点)`
+            }
+            if (typeof parsed === 'string') return parsed.slice(0, 80)
+            if (Array.isArray(parsed)) return `${parsed.length} 个结果`
+            if (typeof parsed === 'object') return Object.keys(parsed).slice(0, 3).join(', ')
+        } catch {
+            // 非 JSON 结果
+        }
+        return content.slice(0, 80)
     }
 
     while (true) {
@@ -494,18 +530,23 @@ async function callPythonBackendStream(
                                 onToolUseResult({
                                     toolName: data.toolName,
                                     toolUseId: data.result?.toolUseId,
-                                    status: 'completed',
+                                    status: data.result?.isError ? 'error' : 'completed',
                                     endTime: Date.now(),
+                                    toolOutput: data.result?.content?.slice(0, 200),
                                 });
                             }
                             if (onActivity) {
+                                const resultBrief = formatToolResultBrief(data.toolName, data.result);
                                 onActivity({
                                     id: `act-tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                                     type: 'tool_result',
                                     timestamp: Date.now(),
-                                    label: `${getToolDisplayName(data.toolName)} 完成`,
+                                    label: resultBrief
+                                        ? `${getToolDisplayName(data.toolName)}: ${resultBrief}`
+                                        : `${getToolDisplayName(data.toolName)} 完成`,
                                     toolName: data.toolName,
-                                    status: 'done',
+                                    toolOutput: data.result?.content?.slice(0, 200),
+                                    status: data.result?.isError ? 'error' : 'done',
                                 });
                             }
                             break;
@@ -541,6 +582,7 @@ async function callPythonBackendStream(
                             if (onUsage && data.usage) {
                                 onUsage(data.usage as TokenUsage);
                             }
+                            // 不再显示"第N轮结束"，轮次结束由后续的工具/流式事件自然体现
                             break;
                         case 'result':
                             if (data.data) {
@@ -550,6 +592,15 @@ async function callPythonBackendStream(
                         case 'done':
                             if (data.data?.usage && onUsage) {
                                 onUsage(data.data.usage as TokenUsage);
+                            }
+                            if (onActivity) {
+                                onActivity({
+                                    id: `act-done-${Date.now()}`,
+                                    type: 'done',
+                                    timestamp: Date.now(),
+                                    label: '完成',
+                                    status: 'done',
+                                });
                             }
                             break;
                         case 'error':
@@ -572,9 +623,9 @@ async function callPythonBackendStream(
                             if (onActivity) {
                                 onActivity({
                                     id: `act-turn-${Date.now()}`,
-                                    type: 'status',
+                                    type: 'thinking',
                                     timestamp: Date.now(),
-                                    label: `第 ${data.turnCount ?? 0} 轮开始`,
+                                    label: `思考中...`,
                                     status: 'processing',
                                 });
                             }
@@ -826,6 +877,62 @@ async function callPythonBackendStream(
                                 });
                             }
                             break;
+                        case 'plan_update':
+                            if (onActivity) {
+                                const planEvent = data;
+                                const phaseLabels: Record<string, string> = {
+                                    research: '研究',
+                                    synthesis: '规划',
+                                    implementation: '实现',
+                                    verification: '验证',
+                                };
+                                const statusLabels: Record<string, string> = {
+                                    pending: '等待',
+                                    running: '执行中',
+                                    completed: '完成',
+                                    failed: '失败',
+                                    skipped: '跳过',
+                                };
+                                const statusMap: Record<string, 'processing' | 'done' | 'error'> = {
+                                    pending: 'processing',
+                                    running: 'processing',
+                                    completed: 'done',
+                                    failed: 'error',
+                                    skipped: 'done',
+                                };
+
+                                if (planEvent.type === 'plan_created' && planEvent.tasks) {
+                                    const taskSummary = planEvent.tasks.map((t: { phase: string; description: string }) => `${phaseLabels[t.phase] || t.phase}: ${t.description}`).join(', ');
+                                    onActivity({
+                                        id: `act-plan-${planEvent.planId}`,
+                                        type: 'status',
+                                        timestamp: Date.now(),
+                                        label: `计划创建 (${planEvent.tasks.length} 个任务): ${taskSummary}`,
+                                        status: 'processing',
+                                    });
+                                } else if (planEvent.type === 'task_updated') {
+                                    const phase = phaseLabels[planEvent.taskPhase || ''] || planEvent.taskPhase || '';
+                                    const status = statusLabels[planEvent.taskStatus || ''] || planEvent.taskStatus || '';
+                                    const progress = planEvent.progress;
+                                    onActivity({
+                                        id: `act-plan-task-${planEvent.taskId || Date.now()}`,
+                                        type: statusMap[planEvent.taskStatus || ''] === 'error' ? 'error' : 'status',
+                                        timestamp: Date.now(),
+                                        label: `[${phase}] ${planEvent.taskDescription || ''} - ${status}${progress ? ` (${progress.completed}/${progress.total})` : ''}`,
+                                        status: statusMap[planEvent.taskStatus || ''] || 'processing',
+                                    });
+                                } else if (planEvent.type === 'task_added') {
+                                    const phase = phaseLabels[planEvent.taskPhase || ''] || planEvent.taskPhase || '';
+                                    onActivity({
+                                        id: `act-plan-add-${planEvent.taskId || Date.now()}`,
+                                        type: 'status',
+                                        timestamp: Date.now(),
+                                        label: `新增任务: [${phase}] ${planEvent.taskDescription || ''}`,
+                                        status: 'processing',
+                                    });
+                                }
+                            }
+                            break;
                     }
                     
                 } catch (e) {
@@ -873,20 +980,21 @@ function cleanHistoryText(text: string, isAssistant: boolean): string {
 export const fetchChatHistory = async (
     settings: AppSettings,
     workflowId: string
-): Promise<ChatMessage[]> => {
-    if (!settings.usePythonBackend || !settings.pythonBackendUrl) return [];
+): Promise<{ messages: ChatMessage[]; isActive: boolean }> => {
+    if (!settings.usePythonBackend || !settings.pythonBackendUrl) return { messages: [], isActive: false };
 
     const sgaSessionId = workflowId;
 
     try {
         const response = await fetch(`${settings.pythonBackendUrl.replace(/\/$/, '')}/api/v1/sessions/${sgaSessionId}/messages`);
-        if (!response.ok) return [];
+        if (!response.ok) return { messages: [], isActive: false };
 
         const rawResult = await response.json();
+        const isActive = rawResult.isActive === true;
         const rawHistory = Array.isArray(rawResult.messages) ? rawResult.messages : (Array.isArray(rawResult) ? rawResult : []);
-        if (!Array.isArray(rawHistory)) return [];
+        if (!Array.isArray(rawHistory)) return { messages: [], isActive };
 
-        return rawHistory.map((msg: any, idx: number) => {
+        const messages = rawHistory.map((msg: any, idx: number) => {
             const isAi = msg.role === 'assistant';
             let text = '';
             if (Array.isArray(msg.content)) {
@@ -909,9 +1017,30 @@ export const fetchChatHistory = async (
                 } : undefined
             };
         });
+        return { messages, isActive };
     } catch (e) {
         console.error("Failed to fetch chat history:", e);
-        return [];
+        return { messages: [], isActive: false };
+    }
+};
+
+export const abortBackendAgent = async (
+    settings: AppSettings,
+    sessionId: string
+): Promise<boolean> => {
+    if (!settings.usePythonBackend || !settings.pythonBackendUrl) return false;
+
+    try {
+        const response = await fetch(
+            `${settings.pythonBackendUrl.replace(/\/$/, '')}/api/chat/abort/${sessionId}`,
+            { method: 'POST' }
+        );
+        if (!response.ok) return false;
+        const result = await response.json();
+        return result.success === true;
+    } catch (e) {
+        console.error("Failed to abort backend agent:", e);
+        return false;
     }
 };
 
@@ -1043,6 +1172,7 @@ export const sendMessageToComfyAgent = async (
     workflowId: string = "default",
     errorLog: string | null,
     workflowContextPrompt: string | null = null,
+    abortSignal?: AbortSignal,
     onStream?: (chunk: string) => void,
     onStatus?: (status: AgentStatus) => void,
     onApprovalRequired?: (request: ApprovalRequest) => void,
@@ -1061,7 +1191,7 @@ export const sendMessageToComfyAgent = async (
         let sources: Array<{ uri: string; title: string }> = [];
 
         if (settings.usePythonBackend) {
-             const res = await callPythonBackendStream(settings, userPrompt, currentWorkflow, workflowId, errorLog, onStream, onStatus, onApprovalRequired, onHumanInputRequired, onToolUseStart, onToolUseResult, onActivity, onUsage, onWorkflowUpdate);
+             const res = await callPythonBackendStream(settings, userPrompt, currentWorkflow, workflowId, errorLog, abortSignal, onStream, onStatus, onApprovalRequired, onHumanInputRequired, onToolUseStart, onToolUseResult, onActivity, onUsage, onWorkflowUpdate);
              textResponse = res.text;
              sources = res.sources;
         } else {

@@ -68,3 +68,4 @@ model-versions.md
 tags.md
 uv.lock
 comfy_workflow_agent.egg-info/
+.sga/

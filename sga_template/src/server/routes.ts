@@ -23,7 +23,7 @@ import { createBuiltinTools } from '../tools/built-in/index.js'
 import { assembleToolPool } from '../tools/registry.js'
 import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
 import { createAllMCPToolAdapters } from '../mcp/adapter.js'
-import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, getCoordinatorAgentDefinition, isCoordinatorMode, setCoordinatorMode, getCoordinatorSystemPrompt, listSnapshots } from '../agents/index.js'
+import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, getCoordinatorAgentDefinition, isCoordinatorMode, setCoordinatorMode, getCoordinatorSystemPrompt, listSnapshots, getPlanManager } from '../agents/index.js'
 import { getTaskManager } from '../tasks/index.js'
 import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks, setTaskNotificationCallback, formatTaskNotificationXml } from '../tools/built-in/agent.js'
 import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
@@ -59,13 +59,49 @@ import { classifyBashCommand, classifyError } from '../permissions/index.js'
 import { buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context/system-prompt.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
+const activeAbortControllers: Map<string, AbortController> = new Map()
 const costTrackers: Map<string, CostTracker> = new Map()
+
+function initSSEResponse(res: Response): void {
+  if (!res.headersSent) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+  }
+}
 
 function sendComfyUIEvent(res: Response, event: AgentStreamEvent): void {
   try {
+    if (res.writableEnded) return
+    if (!res.headersSent) {
+      initSSEResponse(res)
+    }
     res.write(formatSSE(event))
   } catch {
     // connection closed
+  }
+}
+
+function closeSSEConnection(sessionId: string): void {
+  const existing = activeSSEConnections.get(sessionId)
+  if (existing) {
+    try {
+      existing.end()
+    } catch {
+      // already closed
+    }
+    activeSSEConnections.delete(sessionId)
+  }
+
+  const abortCtrl = activeAbortControllers.get(sessionId)
+  if (abortCtrl) {
+    try {
+      abortCtrl.abort()
+    } catch {
+      // already aborted
+    }
+    activeAbortControllers.delete(sessionId)
   }
 }
 
@@ -567,20 +603,26 @@ async function handleStreamResponse(
   session: Session,
   body: SendMessageRequest,
 ): Promise<void> {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
+  const abortController = activeAbortControllers.get(session.id) ?? new AbortController()
+  activeAbortControllers.set(session.id, abortController)
+
+  initSSEResponse(res)
 
   activeSSEConnections.set(session.id, res)
 
   const sendEvent = (event: AgentStreamEvent) => {
     try {
+      if (res.writableEnded || abortController.signal.aborted) return
+      if (!res.headersSent) {
+        initSSEResponse(res)
+      }
       res.write(formatSSE(event))
     } catch {
       // connection closed
     }
   }
+
+  let partialText = ''
 
   try {
     const provider = getProviderForSession(session, body.providerName)
@@ -596,67 +638,6 @@ async function handleStreamResponse(
     if (!agentDef) {
       sendEvent({ type: 'error', data: 'No agent definition available' })
       sendEvent({ type: 'done', data: null })
-      res.end()
-      activeSSEConnections.delete(session.id)
-      return
-    }
-
-    if (shouldUseCoordinator(body.content, body.agentType)) {
-      logger.info(`Session ${session.id} (stream): complex task detected, routing to Coordinator agent`)
-
-      sendEvent({ type: 'coordinator_start', data: { query: body.content } })
-
-      try {
-        const allAgentDefs = await getAllAgentDefinitions()
-        const toolPool = await buildToolPoolWithAgents()
-        const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
-
-        setCoordinatorMode(true)
-
-        setTaskNotificationCallback((notification) => {
-          sendEvent({
-            type: 'task_notification',
-            taskId: notification.taskId,
-            status: notification.status === 'killed' ? 'stopped' : notification.status,
-            summary: notification.summary,
-          })
-        })
-
-        const result = await runAgent({
-          agentDefinition: coordinatorDef,
-          prompt: body.content,
-          messages: session.messages,
-          tools: toolPool,
-          model,
-          provider,
-          maxTurns: session.config.maxTurns ?? 50,
-          maxBudgetUsd: session.config.maxBudgetUsd,
-          agentDefinitions: allAgentDefs,
-        })
-
-        setCoordinatorMode(false)
-        setTaskNotificationCallback(null)
-
-        const assistantMessage: Message = {
-          id: `msg-${Date.now()}`,
-          role: 'assistant',
-          content: [{ type: 'text', text: result.content }],
-          timestamp: Date.now(),
-        }
-        getSessionStore().appendMessage(session.id, assistantMessage)
-        getSessionStore().appendUsage(session.id, result.usage)
-
-        triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
-
-        sendEvent({ type: 'coordinator_end', data: { planId: 'coordinator-agent', totalTasks: 0, completedTasks: 0 } })
-        sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
-      } catch (coordError) {
-        setCoordinatorMode(false)
-        setTaskNotificationCallback(null)
-        logger.warn(`Coordinator agent failed (stream), falling back to direct agent: ${coordError instanceof Error ? coordError.message : String(coordError)}`)
-        sendEvent({ type: 'coordinator_fallback', data: { reason: coordError instanceof Error ? coordError.message : String(coordError) } })
-      }
-
       res.end()
       activeSSEConnections.delete(session.id)
       return
@@ -799,6 +780,79 @@ async function handleStreamResponse(
       }
     }
 
+    if (shouldUseCoordinator(body.content, body.agentType)) {
+      logger.info(`Session ${session.id} (stream): complex task detected, routing to Coordinator agent`)
+
+      sendEvent({ type: 'coordinator_start', data: { query: body.content } })
+
+      try {
+        const allAgentDefs = await getAllAgentDefinitions()
+        const toolPool = await buildToolPoolWithAgents()
+        const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
+
+        setCoordinatorMode(true)
+
+        setTaskNotificationCallback((notification) => {
+          sendEvent({
+            type: 'task_notification',
+            taskId: notification.taskId,
+            status: notification.status === 'killed' ? 'stopped' : notification.status,
+            summary: notification.summary,
+          })
+        })
+
+        const planMgr = getPlanManager()
+        planMgr.setNotificationCallback((event) => {
+          sendEvent({
+            type: 'plan_update',
+            data: event,
+          } as unknown as AgentStreamEvent)
+        })
+
+        const result = await runAgent({
+          agentDefinition: coordinatorDef,
+          prompt: body.content,
+          messages: session.messages,
+          tools: toolPool,
+          model,
+          provider,
+          maxTurns: session.config.maxTurns ?? 50,
+          maxBudgetUsd: session.config.maxBudgetUsd,
+          agentDefinitions: allAgentDefs,
+          signal: abortController.signal,
+          requestApproval,
+          requestHumanInput,
+        })
+
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        planMgr.setNotificationCallback(null)
+
+        const assistantMessage: Message = {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: result.content }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, assistantMessage)
+        getSessionStore().appendUsage(session.id, result.usage)
+
+        triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
+
+        sendEvent({ type: 'coordinator_end', data: { planId: 'coordinator-agent', totalTasks: 0, completedTasks: 0 } })
+        sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
+      } catch (coordError) {
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        logger.warn(`Coordinator agent failed (stream), falling back to direct agent: ${coordError instanceof Error ? coordError.message : String(coordError)}`)
+        sendEvent({ type: 'coordinator_fallback', data: { reason: coordError instanceof Error ? coordError.message : String(coordError) } })
+      }
+
+      res.end()
+      activeSSEConnections.delete(session.id)
+      return
+    }
+
     const result = await runAgent({
       agentDefinition: agentDef,
       prompt: body.content,
@@ -809,7 +863,11 @@ async function handleStreamResponse(
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
       stream: true,
+      signal: abortController.signal,
       onProgress: (event: AgentStreamEvent) => {
+        if (event.type === 'stream_delta' && event.text) {
+          partialText += event.text
+        }
         sendEvent(event)
       },
       requestApproval,
@@ -856,6 +914,8 @@ async function handleStreamResponse(
       const { extractWorkflowJSON, validateWorkflowJSON } = await import('../comfyui/verification-strategies.js')
       const workflowJson = extractWorkflowJSON(result.content)
       if (workflowJson) {
+        // 发送 workflow_updated 事件让前端立刻应用工作流
+        sendEvent({ type: 'workflow_updated', workflowJson: JSON.stringify(workflowJson), actionType: 'agent_response' })
         const validationResult = validateWorkflowJSON(workflowJson)
         sendEvent({
           type: 'verification_result',
@@ -931,13 +991,29 @@ async function handleStreamResponse(
       logger.debug(`Team memory sync skipped: ${e instanceof Error ? e.message : String(e)}`)
     }
   } catch (error) {
-    getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
-    sendEvent({ type: 'error', data: session.error ?? 'Unknown error' })
-    sendEvent({ type: 'done', data: null })
+    if (abortController.signal.aborted) {
+      logger.info(`Session ${session.id}: agent run was aborted`)
+      if (partialText.trim()) {
+        const partialMsg: Message = {
+          id: `msg-partial-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: partialText + '\n\n[Response interrupted - workflow was switched]' }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, partialMsg)
+      }
+    } else {
+      getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
+      sendEvent({ type: 'error', data: session.error ?? 'Unknown error' })
+      sendEvent({ type: 'done', data: null })
+    }
   }
 
-  res.end()
+  if (!res.writableEnded) {
+    res.end()
+  }
   activeSSEConnections.delete(session.id)
+  activeAbortControllers.delete(session.id)
 }
 
 export function handleUserInput(req: Request, res: Response): void {
@@ -1833,6 +1909,8 @@ export interface ComfyUIModelConfig {
   maxOutputTokens?: number
   inputPricePerMToken?: number
   outputPricePerMToken?: number
+  /** Price unit: 'M' = per million tokens (default), 'K' = per thousand tokens */
+  priceUnit?: 'M' | 'K'
   supportsVision?: boolean
   supportsToolUse?: boolean
   supportsStreaming?: boolean
@@ -2149,18 +2227,24 @@ async function handleComfyUIChatStreamWithCoordinator(
     model: string
   },
 ): Promise<void> {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
+  const abortController = activeAbortControllers.get(session.id) ?? new AbortController()
+  activeAbortControllers.set(session.id, abortController)
+
+  initSSEResponse(res)
 
   const sendEvent = (event: AgentStreamEvent) => {
     try {
+      if (res.writableEnded || abortController.signal.aborted) return
+      if (!res.headersSent) {
+        initSSEResponse(res)
+      }
       res.write(formatSSE(event))
     } catch {
       // connection closed
     }
   }
+
+  let partialText = ''
 
   try {
     const { detectTaskIntent, createComfyUICoordinatorPlan } = await import('../comfyui/coordinator-plans.js')
@@ -2180,7 +2264,146 @@ async function handleComfyUIChatStreamWithCoordinator(
 
     const coordinatorDef = getCoordinatorAgentDefinition(agentDefs)
 
+    const approvalPromiseMap: Map<string, {
+      resolve: (response: unknown) => void
+      reject: (error: Error) => void
+    }> = new Map()
+
+    const requestApproval = async (event: import('../agents/runner.js').ApprovalEvent): Promise<import('../agents/runner.js').ApprovalResponse> => {
+      const approvalReq = createApprovalRequest({
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        message: event.message,
+        sessionId: session.id,
+        suggestions: event.suggestions,
+        isDestructive: true,
+        isReadOnly: false,
+      })
+
+      sendEvent({
+        type: 'approval_required',
+        actionId: approvalReq.id,
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        toolCallId: event.toolCallId,
+        message: event.message,
+        suggestions: event.suggestions,
+      })
+
+      const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
+        const wrappedResolve = (resp: unknown) => resolve(resp as UserApprovalResponse)
+        const wrappedReject = (err: Error) => reject(err)
+        approvalPromiseMap.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
+        pendingResolvers.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
+      })
+
+      setSessionWaitingInput(session, {
+        type: 'approval',
+        request: approvalReq,
+        resolve: (resp: unknown) => {
+          approvalPromiseMap.get(approvalReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          approvalPromiseMap.get(approvalReq.id)?.reject(error)
+        },
+      } as PendingAction, {
+        actionId: approvalReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model: options.model,
+        systemPromptContent: '',
+        providerName: options.providerName,
+      })
+
+      try {
+        const userResponse = await approvalPromise
+        clearSessionWaitingInput(session)
+        return {
+          decision: userResponse.decision,
+          updatedInput: userResponse.updatedInput,
+          reason: userResponse.reason,
+          permissionUpdate: userResponse.permissionUpdate,
+        }
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return { decision: 'deny', reason: 'Approval request cancelled' }
+      } finally {
+        approvalPromiseMap.delete(approvalReq.id)
+        pendingResolvers.delete(approvalReq.id)
+      }
+    }
+
+    const requestHumanInput = async (event: import('../agents/runner.js').HumanInputEvent): Promise<string> => {
+      const inputReq = createHumanInputRequest({
+        message: event.message,
+        sessionId: session.id,
+        context: event.context,
+        options: event.options,
+        allowFreeText: true,
+      })
+
+      sendEvent({
+        type: 'human_input_required',
+        actionId: inputReq.id,
+        message: event.message,
+        context: event.context,
+        options: event.options,
+      })
+
+      const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
+        pendingResolvers.set(inputReq.id, {
+          resolve: (resp: unknown) => resolve(resp as UserInputResponse),
+          reject: (err: Error) => reject(err),
+        })
+      })
+
+      setSessionWaitingInput(session, {
+        type: 'human_input',
+        request: inputReq,
+        resolve: (resp: unknown) => {
+          pendingResolvers.get(inputReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          pendingResolvers.get(inputReq.id)?.reject(error)
+        },
+      } as PendingAction, {
+        actionId: inputReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model: options.model,
+        systemPromptContent: '',
+        providerName: options.providerName,
+      })
+
+      try {
+        const userResponse = await inputPromise
+        clearSessionWaitingInput(session)
+        return userResponse.value
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return '[Input request cancelled]'
+      } finally {
+        pendingResolvers.delete(inputReq.id)
+      }
+    }
+
     setCoordinatorMode(true)
+
+    const planMgr = getPlanManager()
+    planMgr.setNotificationCallback((event) => {
+      sendEvent({
+        type: 'plan_update',
+        data: event,
+      } as unknown as AgentStreamEvent)
+    })
 
     const result = await runAgent({
       agentDefinition: coordinatorDef,
@@ -2190,9 +2413,19 @@ async function handleComfyUIChatStreamWithCoordinator(
       provider,
       maxTurns: 50,
       agentDefinitions: agentDefs,
+      signal: abortController.signal,
+      onProgress: (event: AgentStreamEvent) => {
+        if (event.type === 'stream_delta' && event.text) {
+          partialText += event.text
+        }
+        sendEvent(event)
+      },
+      requestApproval,
+      requestHumanInput,
     })
 
     setCoordinatorMode(false)
+    planMgr.setNotificationCallback(null)
 
     const synthesis = result.content
 
@@ -2231,6 +2464,17 @@ async function handleComfyUIChatStreamWithCoordinator(
     }
 
     triggerMemoryExtraction(session.messages, provider, options.model, session.id, session.config.agentType)
+
+    // 从最终回复中提取工作流 JSON 并发送 workflow_updated 事件
+    try {
+      const { extractWorkflowJSON } = await import('../comfyui/verification-strategies.js')
+      const workflowJson = extractWorkflowJSON(synthesis)
+      if (workflowJson) {
+        sendEvent({ type: 'workflow_updated', workflowJson: JSON.stringify(workflowJson), actionType: 'coordinator_synthesis' })
+      }
+    } catch (e) {
+      logger.debug(`Workflow JSON extraction from coordinator synthesis skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
     sendEvent({
       type: 'coordinator_complete',
@@ -2272,12 +2516,29 @@ async function handleComfyUIChatStreamWithCoordinator(
       logger.debug(`AutoDream trigger skipped: ${e instanceof Error ? e.message : String(e)}`)
     }
   } catch (error) {
-    logger.error(`Coordinator stream error: ${error instanceof Error ? error.message : String(error)}`)
-    sendEvent({ type: 'error', data: error instanceof Error ? error.message : String(error) })
-    sendEvent({ type: 'done', data: null })
+    if (abortController.signal.aborted) {
+      logger.info(`Session ${session.id}: coordinator agent run was aborted`)
+      if (partialText.trim()) {
+        const partialMsg: Message = {
+          id: `msg-partial-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: partialText + '\n\n[Response interrupted - workflow was switched]' }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, partialMsg)
+      }
+    } else {
+      logger.error(`Coordinator stream error: ${error instanceof Error ? error.message : String(error)}`)
+      sendEvent({ type: 'error', data: error instanceof Error ? error.message : String(error) })
+      sendEvent({ type: 'done', data: null })
+    }
   }
 
-  res.end()
+  activeSSEConnections.delete(session.id)
+  activeAbortControllers.delete(session.id)
+  if (!res.writableEnded) {
+    res.end()
+  }
 }
 
 export async function handleComfyUIChatStream(req: Request, res: Response): Promise<void> {
@@ -2289,17 +2550,29 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
   const configId = config_id as string | undefined
   const workflowContextText = workflow_context_text as string | undefined
 
+  closeSSEConnection(sessionId)
+  initSSEResponse(res)
+  activeSSEConnections.set(sessionId, res)
+
+  const abortController = new AbortController()
+  activeAbortControllers.set(sessionId, abortController)
+
+  const onConnectionClose = () => {
+    activeSSEConnections.delete(sessionId)
+    abortController.abort()
+    activeAbortControllers.delete(sessionId)
+  }
+  req.on('close', onConnectionClose)
+  res.on('close', onConnectionClose)
+
   try {
     const config = configId ? comfyUIConfigStore.getConfigById(configId) : comfyUIConfigStore.getDefaultConfig()
 
     if (!config) {
-      res.setHeader('Content-Type', 'text/event-stream')
-      res.setHeader('Cache-Control', 'no-cache')
-      res.setHeader('Connection', 'keep-alive')
-      res.setHeader('X-Accel-Buffering', 'no')
-      res.write(formatSSE({ type: 'error', data: 'No provider configuration found. Please configure a provider in settings.' }))
+      sendComfyUIEvent(res, { type: 'error', data: 'No provider configuration found. Please configure a provider in settings.' })
       res.write(formatSSE({ type: 'done', data: null }))
       res.end()
+      activeAbortControllers.delete(sessionId)
       return
     }
 
@@ -2482,19 +2755,11 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
     }
   } catch (error) {
     logger.error(`Chat stream error: ${error instanceof Error ? error.message : String(error)}`)
-    if (!res.headersSent) {
-      res.setHeader('Content-Type', 'text/event-stream')
-      res.setHeader('Cache-Control', 'no-cache')
-      res.setHeader('Connection', 'keep-alive')
-      res.setHeader('X-Accel-Buffering', 'no')
+    if (!res.writableEnded) {
+      sendComfyUIEvent(res, { type: 'error', data: error instanceof Error ? error.message : String(error) })
+      sendComfyUIEvent(res, { type: 'done', data: null })
+      res.end()
     }
-    try {
-      res.write(formatSSE({ type: 'error', data: error instanceof Error ? error.message : String(error) }))
-      res.write(formatSSE({ type: 'done', data: null }))
-    } catch {
-      // connection closed
-    }
-    res.end()
   }
 }
 
@@ -2551,7 +2816,37 @@ export function handleComfyUIChatHistory(req: Request, res: Response): void {
       }
     })
 
-  res.json(history)
+  res.json({ messages: history, isActive: activeAbortControllers.has(sessionId) })
+}
+
+export function handleComfyUIChatAbort(req: Request, res: Response): void {
+  const sessionId = req.params.sessionId as string
+
+  const abortCtrl = activeAbortControllers.get(sessionId)
+  if (!abortCtrl) {
+    res.json({ success: true, message: 'No active agent running for this session' })
+    return
+  }
+
+  try {
+    abortCtrl.abort()
+  } catch {
+    // already aborted
+  }
+  activeAbortControllers.delete(sessionId)
+
+  const existing = activeSSEConnections.get(sessionId)
+  if (existing) {
+    try {
+      existing.end()
+    } catch {
+      // already closed
+    }
+    activeSSEConnections.delete(sessionId)
+  }
+
+  logger.info(`Session ${sessionId}: agent aborted via API`)
+  res.json({ success: true, message: 'Agent aborted successfully' })
 }
 
 export async function handleComfyUIWorkflowAnalyze(req: Request, res: Response): Promise<void> {

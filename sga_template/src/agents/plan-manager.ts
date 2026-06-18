@@ -5,6 +5,18 @@ import { join } from 'path'
 
 const logger = createLogger('plan-manager')
 
+export type PlanNotificationCallback = (event: {
+  type: 'plan_created' | 'task_updated' | 'task_added' | 'task_removed'
+  planId: string
+  taskId?: string
+  taskDescription?: string
+  taskStatus?: string
+  taskPhase?: string
+  taskAgentType?: string
+  progress?: { total: number; pending: number; running: number; completed: number; failed: number; skipped: number; percentComplete: number }
+  tasks?: Array<{ id: string; description: string; phase: string; status: string; agentType: string }>
+}) => void
+
 let planCounter = 0
 
 function generatePlanId(): string {
@@ -21,10 +33,35 @@ export class PlanManager {
   private tasks: Map<string, CoordinatorTask> = new Map()
   private snapshotDir: string
   private maxConcurrency: number
+  private notificationCallback: PlanNotificationCallback | null = null
 
   constructor(options?: { snapshotDir?: string; maxConcurrency?: number }) {
     this.snapshotDir = options?.snapshotDir ?? join(process.cwd(), '.sga', 'snapshots')
     this.maxConcurrency = options?.maxConcurrency ?? 5
+  }
+
+  setNotificationCallback(cb: PlanNotificationCallback | null): void {
+    this.notificationCallback = cb
+  }
+
+  private notify(event: Parameters<PlanNotificationCallback>[0]): void {
+    if (this.notificationCallback) {
+      try {
+        this.notificationCallback(event)
+      } catch {
+        // notification callback error should not break plan operations
+      }
+    }
+  }
+
+  private getTasksSnapshot(): Array<{ id: string; description: string; phase: string; status: string; agentType: string }> {
+    return [...this.tasks.values()].map(t => ({
+      id: t.id,
+      description: t.description,
+      phase: t.phase,
+      status: t.status,
+      agentType: t.agentType,
+    }))
   }
 
   createPlan(query: string, steps: CoordinatorTaskStep[], strategy: CoordinatorPlan['strategy'] = 'hybrid'): CoordinatorPlan {
@@ -57,6 +94,14 @@ export class PlanManager {
     }
 
     logger.info(`Plan created: ${plan.id} with ${plan.tasks.length} tasks, strategy=${strategy}`)
+
+    this.notify({
+      type: 'plan_created',
+      planId: plan.id,
+      progress: this.getProgress(),
+      tasks: this.getTasksSnapshot(),
+    })
+
     return plan
   }
 
@@ -112,6 +157,19 @@ export class PlanManager {
     }
 
     logger.info(`Task ${taskId} → ${status}${error ? ` (${error})` : ''}`)
+
+    this.notify({
+      type: 'task_updated',
+      planId: this.activePlan?.id ?? '',
+      taskId,
+      taskDescription: task.description,
+      taskStatus: status,
+      taskPhase: task.phase,
+      taskAgentType: task.agentType,
+      progress: this.getProgress(),
+      tasks: this.getTasksSnapshot(),
+    })
+
     return true
   }
 
@@ -133,6 +191,19 @@ export class PlanManager {
     }
 
     logger.info(`Task added: ${task.id} (${task.phase}/${task.agentType})`)
+
+    this.notify({
+      type: 'task_added',
+      planId: this.activePlan?.id ?? '',
+      taskId: task.id,
+      taskDescription: task.description,
+      taskStatus: task.status,
+      taskPhase: task.phase,
+      taskAgentType: task.agentType,
+      progress: this.getProgress(),
+      tasks: this.getTasksSnapshot(),
+    })
+
     return task
   }
 
@@ -151,6 +222,16 @@ export class PlanManager {
     }
 
     logger.info(`Task removed: ${taskId}`)
+
+    this.notify({
+      type: 'task_removed',
+      planId: this.activePlan?.id ?? '',
+      taskId,
+      taskDescription: task.description,
+      progress: this.getProgress(),
+      tasks: this.getTasksSnapshot(),
+    })
+
     return true
   }
 

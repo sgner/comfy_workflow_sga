@@ -37,6 +37,7 @@ import {
   handleClassifyPermission,
   handleComfyUIChatStream,
   handleComfyUIChatHistory,
+  handleComfyUIChatAbort,
   handleComfyUIWorkflowParse,
   handleComfyUIWorkflowAnalyze,
   handleComfyUIActionExecute,
@@ -228,6 +229,7 @@ export function createApp(config: ServerConfig = {}): express.Application {
 
   app.post('/api/chat/stream', handleComfyUIChatStream)
   app.get('/api/chat/history/:sessionId', handleComfyUIChatHistory)
+  app.post('/api/chat/abort/:sessionId', handleComfyUIChatAbort)
 
   app.post('/api/workflow/parse', handleComfyUIWorkflowParse)
   app.post('/api/workflow/analyze', handleComfyUIWorkflowAnalyze)

@@ -107,6 +107,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
 
         {msg.sender === Sender.AI && (
           <div className="mt-2 space-y-2 w-full">
+            {msg.metadata?.interrupted && (
+              <div className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-900/20 border border-amber-700/30 rounded-lg px-2.5 py-1.5">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>{t(language, 'sessionSwitched')}</span>
+              </div>
+            )}
             {msg.metadata?.agentIssues && msg.metadata.agentIssues.length > 0 && (
               <AgentIssuesCard issues={msg.metadata.agentIssues} language={language} />
             )}
@@ -525,6 +531,10 @@ function ActivityIcon({ type, status }: { type: AgentActivity['type']; status?: 
       return <Sparkles className={`${size} text-sky-400/60`} />
     case 'error':
       return <XCircle className={`${size} text-red-400`} />
+    case 'done':
+      return <CheckCircle2 className={`${size} text-emerald-400`} />
+    case 'turn_end':
+      return <CheckCircle2 className={`${size} text-emerald-400/60`} />
     default:
       return <div className={`${size} rounded-full bg-slate-600`} />
   }

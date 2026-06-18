@@ -157,6 +157,17 @@ export type AgentStreamEvent =
   | { type: 'coordinator_task_failed'; data: { phase: string; description: string; error: string | undefined } }
   | { type: 'coordinator_complete'; data: { synthesis: string; totalDurationMs: number; taskResults: Array<{ phase: string; description: string; status: string }> } }
   | { type: 'verification_result'; data: { verdict: string; strategy: string; summary: string; checks: Array<{ name: string; passed: boolean; message: string; severity: string }> } }
+  | { type: 'plan_update'; data: {
+      type: 'plan_created' | 'task_updated' | 'task_added' | 'task_removed'
+      planId: string
+      taskId?: string
+      taskDescription?: string
+      taskStatus?: string
+      taskPhase?: string
+      taskAgentType?: string
+      progress?: { total: number; pending: number; running: number; completed: number; failed: number; skipped: number; percentComplete: number }
+      tasks?: Array<{ id: string; description: string; phase: string; status: string; agentType: string }>
+    } }
   | { type: 'task_created'; data: { taskId: string; name: string; kind: string; agentType?: string } }
   | { type: 'task_status_update'; data: { taskId: string; status: string; summary?: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number; totalCostUsd: number }; durationMs?: number } }
 

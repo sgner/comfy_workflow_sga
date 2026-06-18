@@ -1,13 +1,13 @@
 
 
-import { GripHorizontal, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson } from 'lucide-react'
+import { GripHorizontal, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson, AlertTriangle } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ChatPanel from './components/ChatPanel'
 import SettingsModal from './components/SettingsModal'
 import WorkflowVisualizer from './components/WorkflowVisualizer'
 import { DEFAULT_WORKFLOW } from './constants'
-import { sendMessageToComfyAgent, fetchChatHistory } from './services/aiService'
+import { sendMessageToComfyAgent, fetchChatHistory, abortBackendAgent } from './services/aiService'
 import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs } from './services/configService'
 import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, AgentActivity, ApprovalRequest, HumanInputRequest, ToolCallInfo, TokenUsage } from './types'
 import { t } from './utils/i18n'
@@ -43,6 +43,7 @@ const App: React.FC<AppProps> = () => {
   const lastLoadedSessionId = useRef<string | null>(null);
   const sessionStoreRef = useRef<Map<string, ChatMessage[]>>(new Map())
   const currentSessionIdRef = useRef<string | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
   
 
   // --- Application State ---
@@ -89,6 +90,11 @@ const App: React.FC<AppProps> = () => {
   const messagesRef = useRef(messages)
   messagesRef.current = messages
   const [isProcessing, setIsProcessing] = useState(false)
+  const isProcessingRef = useRef(false)
+  isProcessingRef.current = isProcessing
+  const [sessionNotification, setSessionNotification] = useState<string | null>(null)
+  const [isBackendActive, setIsBackendActive] = useState(false)
+  const [isAborting, setIsAborting] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const streamingTextRef = useRef('')
   const rafIdRef = useRef<number>(0)
@@ -104,6 +110,20 @@ const App: React.FC<AppProps> = () => {
     setActivityTimeline(prev => {
       const updated = [...prev]
       for (const activity of buffered) {
+        if (activity.type === 'done') {
+          for (let i = 0; i < updated.length; i++) {
+            if (updated[i].status === 'processing') {
+              updated[i] = { ...updated[i], status: 'done', duration: activity.timestamp - updated[i].timestamp }
+            }
+          }
+        }
+        if (activity.type === 'turn_end') {
+          for (let i = 0; i < updated.length; i++) {
+            if (updated[i].status === 'processing' && (updated[i].type === 'status' || updated[i].type === 'thinking')) {
+              updated[i] = { ...updated[i], status: 'done', duration: activity.timestamp - updated[i].timestamp }
+            }
+          }
+        }
         if (activity.type === 'tool_start') {
           const existingIdx = updated.findIndex(a => a.type === 'tool_start' && a.toolName === activity.toolName && a.status === 'processing')
           if (existingIdx !== -1) continue
@@ -426,12 +446,46 @@ const App: React.FC<AppProps> = () => {
   const switchSession = useCallback((newSessionId: string) => {
     if (newSessionId === currentSessionIdRef.current) return
 
+    const wasProcessing = isProcessingRef.current
+    const partialStreamingText = streamingTextRef.current
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+
+    setIsProcessing(false)
+
     if (currentSessionIdRef.current) {
-      sessionStoreRef.current.set(currentSessionIdRef.current, messagesRef.current)
+      let currentMsgs = messagesRef.current
+
+      if (wasProcessing && partialStreamingText.trim()) {
+        const lastMsg = currentMsgs[currentMsgs.length - 1]
+        if (lastMsg && lastMsg.sender === Sender.AI && lastMsg.metadata?.thinking) {
+          currentMsgs = currentMsgs.map(m =>
+            m.id === lastMsg.id
+              ? { ...m, text: partialStreamingText, metadata: { ...m.metadata, thinking: false, interrupted: true } }
+              : m
+          )
+        } else {
+          currentMsgs = [...currentMsgs, {
+            id: `partial-${Date.now()}`,
+            sender: Sender.AI,
+            text: partialStreamingText,
+            timestamp: new Date(),
+            metadata: { interrupted: true }
+          }]
+        }
+
+        setMessages(currentMsgs)
+      }
+
+      sessionStoreRef.current.set(currentSessionIdRef.current, currentMsgs)
     }
 
     currentSessionIdRef.current = newSessionId
     sessionIdRef.current = newSessionId
+    lastLoadedSessionId.current = ''
 
     const cached = sessionStoreRef.current.get(newSessionId)
     if (cached) {
@@ -455,6 +509,14 @@ const App: React.FC<AppProps> = () => {
     setTokenUsage(null)
     setStreamingText('')
     streamingTextRef.current = ''
+    setIsBackendActive(false)
+
+    if (wasProcessing) {
+      setSessionNotification(t(appSettings.language, 'sessionSwitched'))
+      setTimeout(() => setSessionNotification(null), 5000)
+    } else {
+      setSessionNotification(null)
+    }
   }, [appSettings.language])
 
   useEffect(() => {
@@ -478,16 +540,43 @@ const App: React.FC<AppProps> = () => {
         }
 
         const loadHistory = async () => {
-            const hist = await fetchChatHistory(appSettings, activeSessionId);
-            if (hist && hist.length > 0) {
-                setMessages(hist);
-                sessionStoreRef.current.set(activeSessionId, hist);
+            const result = await fetchChatHistory(appSettings, activeSessionId);
+            if (result.messages && result.messages.length > 0) {
+                setMessages(result.messages);
+                sessionStoreRef.current.set(activeSessionId, result.messages);
+            }
+            if (result.isActive) {
+                setIsBackendActive(true)
+                setSessionNotification(t(appSettings.language, 'sessionStillRunning'))
+            } else {
+                setIsBackendActive(false)
+                setSessionNotification(null)
             }
             lastLoadedSessionId.current = activeSessionId;
         };
         loadHistory();
     }
   }, [isVisible, appSettings.usePythonBackend, appSettings.pythonBackendUrl, activeSessionId, isProcessing]);
+
+  // --- Poll backend status when agent is still running ---
+  useEffect(() => {
+    if (!isBackendActive || !appSettings.usePythonBackend || !appSettings.pythonBackendUrl || !isVisible || !currentSessionIdRef.current) return
+
+    const sessionId = currentSessionIdRef.current
+    const pollInterval = setInterval(async () => {
+      const result = await fetchChatHistory(appSettings, sessionId)
+      if (!result.isActive) {
+        setIsBackendActive(false)
+        setSessionNotification(null)
+        if (result.messages && result.messages.length > 0) {
+          setMessages(result.messages)
+          sessionStoreRef.current.set(sessionId, result.messages)
+        }
+      }
+    }, 3000)
+
+    return () => clearInterval(pollInterval)
+  }, [isBackendActive, appSettings.usePythonBackend, appSettings.pythonBackendUrl, isVisible]);
 
   // --- Effect: Update Initial Message when Language Changes ---
   useEffect(() => {
@@ -773,7 +862,7 @@ const App: React.FC<AppProps> = () => {
 
   const handleSendMessage = useCallback(
     async (overrideText?: string, overrideErrorLog?: string) => {
-      if (!overrideText?.trim() || isProcessing) return
+      if (!overrideText?.trim() || isProcessing || isBackendActive) return
       const textToSend = overrideText
 
       if (!appSettings.usePythonBackend && !appSettings.apiKey && appSettings.provider === 'custom') {
@@ -864,6 +953,12 @@ const App: React.FC<AppProps> = () => {
       }
 
       try {
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort()
+        }
+        const controller = new AbortController()
+        abortControllerRef.current = controller
+
         const currentMessages = messagesRef.current
         const historyText = currentMessages
           .slice(-5)
@@ -877,6 +972,7 @@ const App: React.FC<AppProps> = () => {
           effectiveSessionId,
           errorLog,
           _workflowContext ? formatWorkflowContextForPrompt(_workflowContext) : null,
+          controller.signal,
           (chunk) => {
               accumulatedText += chunk;
               streamingTextRef.current = accumulatedText;
@@ -958,6 +1054,13 @@ const App: React.FC<AppProps> = () => {
         ))
 
       } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+          if (currentSessionIdRef.current !== effectiveSessionId) {
+            return
+          }
+          setMessages((prev) => prev.filter(m => m.id !== aiMsgId || m.text.length > 0))
+          return
+        }
         console.error(error)
         const errorMsg: ChatMessage = {
           id: (Date.now() + 2).toString(),
@@ -969,6 +1072,7 @@ const App: React.FC<AppProps> = () => {
         setMessages((prev) => prev.filter(m => m.id !== aiMsgId || m.text.length > 0))
       } finally {
         cancelAnimationFrame(rafIdRef.current)
+        abortControllerRef.current = null
         setIsProcessing(false)
         setCurrentStatus(null)
         setActiveToolCalls([])
@@ -1133,10 +1237,42 @@ const App: React.FC<AppProps> = () => {
                     <div className="flex-1 overflow-hidden relative flex flex-row">
                         {/* Left: Chat Panel (35%) */}
                         <div className="w-[35%] min-w-[300px] border-r border-slate-800 flex flex-col bg-slate-950">
+                            {sessionNotification && (
+                                <div className="flex items-center gap-2 px-3 py-2 bg-amber-900/30 border-b border-amber-700/30 text-amber-300 text-xs">
+                                    <AlertTriangle size={14} className="flex-shrink-0" />
+                                    <span className="flex-1">{sessionNotification}</span>
+                                    {isBackendActive && currentSessionIdRef.current && (
+                                        <button
+                                            onClick={async () => {
+                                                const sid = currentSessionIdRef.current!
+                                                setIsAborting(true)
+                                                const success = await abortBackendAgent(appSettings, sid)
+                                                setIsAborting(false)
+                                                if (success) {
+                                                    setIsBackendActive(false)
+                                                    setSessionNotification(null)
+                                                    const result = await fetchChatHistory(appSettings, sid)
+                                                    if (result.messages && result.messages.length > 0) {
+                                                        setMessages(result.messages)
+                                                        sessionStoreRef.current.set(sid, result.messages)
+                                                    }
+                                                }
+                                            }}
+                                            disabled={isAborting}
+                                            className="px-2 py-0.5 bg-red-700/60 hover:bg-red-600/80 text-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                                        >
+                                            {isAborting ? '...' : t(appSettings.language, 'forceAbort')}
+                                        </button>
+                                    )}
+                                    <button onClick={() => setSessionNotification(null)} className="text-amber-500 hover:text-amber-300">
+                                        <X size={14} />
+                                    </button>
+                                </div>
+                            )}
                             <ChatPanel
                                 messages={messages}
                                 onSend={(text) => handleSendMessage(text)}
-                                isProcessing={isProcessing}
+                                isProcessing={isProcessing || isBackendActive}
                                 streamingText={streamingText}
                                 currentStatus={currentStatus}
                                 activityTimeline={activityTimeline}

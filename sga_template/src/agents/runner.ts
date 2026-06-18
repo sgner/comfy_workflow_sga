@@ -363,11 +363,14 @@ async function executeAgentLoop(
 
   const inputPricePerMToken = modelConfig?.inputPricePerMToken
   const outputPricePerMToken = modelConfig?.outputPricePerMToken
+  const priceUnit = modelConfig?.priceUnit ?? 'M'
+  // Convert to per-token cost based on price unit
+  const tokenDivisor = priceUnit === 'K' ? 1_000 : 1_000_000
 
   const costTracker = new CostTracker({
     maxBudgetUsd: options.maxBudgetUsd,
-    costPerInputToken: inputPricePerMToken ? inputPricePerMToken / 1_000_000 : undefined,
-    costPerOutputToken: outputPricePerMToken ? outputPricePerMToken / 1_000_000 : undefined,
+    costPerInputToken: inputPricePerMToken ? inputPricePerMToken / tokenDivisor : undefined,
+    costPerOutputToken: outputPricePerMToken ? outputPricePerMToken / tokenDivisor : undefined,
   })
 
   const providerCircuitBreaker = new CircuitBreaker({
@@ -412,6 +415,11 @@ async function executeAgentLoop(
   while (turnCount < maxTurns) {
     turnCount++
     logger.debug(`Turn ${turnCount} starting`)
+
+    if (options.signal?.aborted) {
+      logger.info(`Agent run aborted at turn ${turnCount}`)
+      break
+    }
 
     if (isCoordinatorMode()) {
       const notifications = drainPendingNotifications()
@@ -537,6 +545,10 @@ async function executeAgentLoop(
 
       logger.info(`Provider responded, stopReason=${response.stopReason}, usage={in:${response.usage.inputTokens}, out:${response.usage.outputTokens}}`)
     } catch (error) {
+      if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        logger.info(`Provider call aborted at turn ${turnCount}`)
+        break
+      }
       const errMsg = error instanceof Error ? error.message : String(error)
       providerCircuitBreaker.recordFailure(error instanceof Error ? error : undefined)
       logger.error(`Provider call failed: ${errMsg}`)
@@ -585,8 +597,8 @@ async function executeAgentLoop(
 
     if (inputPricePerMToken !== undefined && outputPricePerMToken !== undefined) {
       usage.totalCostUsd +=
-        (response.usage.inputTokens * inputPricePerMToken) / 1_000_000 +
-        (response.usage.outputTokens * outputPricePerMToken) / 1_000_000
+        (response.usage.inputTokens * inputPricePerMToken) / tokenDivisor +
+        (response.usage.outputTokens * outputPricePerMToken) / tokenDivisor
     }
 
     const assistantMessage: Message = {
@@ -647,6 +659,11 @@ async function executeAgentLoop(
       permissionChecker: createPermissionChecker(options.permissionMode ?? 'default', undefined, createDefaultClassifier()),
     }
 
+    if (options.signal?.aborted) {
+      logger.info(`Agent run aborted before tool orchestration at turn ${turnCount}`)
+      break
+    }
+
     const orchestratedResults = await orchestrateToolCalls(
       toolCalls,
       tools,
@@ -667,6 +684,11 @@ async function executeAgentLoop(
     )
 
     for (const { id, name, result: execResult } of orchestratedResults) {
+      if (options.signal?.aborted) {
+        logger.info(`Agent run aborted during tool result processing at turn ${turnCount}`)
+        break
+      }
+
       toolUseCount++
 
       if (execResult.error?.code === 'APPROVAL_REQUIRED' && options.requestApproval) {

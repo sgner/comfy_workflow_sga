@@ -689,10 +689,10 @@ const handleSelectConfig = async (id: string) => {
                                                 </div>
                                             </div>
 
-                                            <div className="grid grid-cols-2 gap-2">
+                                            <div className="grid grid-cols-3 gap-2">
                                                 <div className="space-y-0.5">
                                                     <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'inputPrice')}</label>
-                                                    <input 
+                                                    <input
                                                         type="number"
                                                         step="0.01"
                                                         placeholder="2.5"
@@ -703,7 +703,7 @@ const handleSelectConfig = async (id: string) => {
                                                 </div>
                                                 <div className="space-y-0.5">
                                                     <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'outputPrice')}</label>
-                                                    <input 
+                                                    <input
                                                         type="number"
                                                         step="0.01"
                                                         placeholder="10.0"
@@ -711,6 +711,17 @@ const handleSelectConfig = async (id: string) => {
                                                         value={currentModel.outputPricePerMToken ?? ''}
                                                         onChange={e => setCurrentModel({...currentModel, outputPricePerMToken: e.target.value ? parseFloat(e.target.value) : undefined})}
                                                     />
+                                                </div>
+                                                <div className="space-y-0.5">
+                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'priceUnitLabel')}</label>
+                                                    <select
+                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
+                                                        value={currentModel.priceUnit ?? 'M'}
+                                                        onChange={e => setCurrentModel({...currentModel, priceUnit: e.target.value as 'M' | 'K'})}
+                                                    >
+                                                        <option value="M">$/M tokens</option>
+                                                        <option value="K">$/K tokens</option>
+                                                    </select>
                                                 </div>
                                             </div>
 
@@ -857,7 +868,7 @@ const handleSelectConfig = async (id: string) => {
                                                                 </div>
                                                                 <div className="flex items-center gap-2 mt-0.5 text-[9px] text-slate-500">
                                                                     {model.contextWindow && <span>{(model.contextWindow / 1000).toFixed(0)}K {t(currentLang, 'tokens')}</span>}
-                                                                    {model.inputPricePerMToken !== undefined && <span>${model.inputPricePerMToken}/{t(currentLang, 'pricePerMillion').replace('$/M ', '').replace('$/百万 ', 'M')}</span>}
+                                                                    {model.inputPricePerMToken !== undefined && <span>${model.inputPricePerMToken}/{model.priceUnit === 'K' ? 'K' : 'M'}</span>}
                                                                     {model.outputPricePerMToken !== undefined && <span>→ ${model.outputPricePerMToken}</span>}
                                                                     <div className="flex gap-1">
                                                                         {model.supportsVision && <span className="px-1 bg-indigo-500/10 text-indigo-400 rounded">👁</span>}

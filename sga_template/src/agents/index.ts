@@ -12,7 +12,7 @@ export { buildForkedMessages, createSubagentContext, FORK_BOILERPLATE } from './
 export { loadCustomAgents, createAgentFromConfig, isCustomAgent, agentDefinitionToJSON, type CustomAgentDefinition, type AgentSource } from './loader.js'
 export { CoordinatorAgent, getCoordinatorSystemPrompt, isCoordinatorMode, setCoordinatorMode } from './coordinator-mode.js'
 export { listSnapshots, type CoordinatorConfig, type CoordinatorPlan, type CoordinatorResult, type CoordinatorTask, type CoordinatorTaskStep, type CoordinatorTaskResult, type CoordinatorPhase, type CoordinatorSnapshot } from './coordinator.js'
-export { PlanManager, getPlanManager, resetPlanManager } from './plan-manager.js'
+export { PlanManager, getPlanManager, resetPlanManager, type PlanNotificationCallback } from './plan-manager.js'
 
 export function getBuiltinAgentDefinitions(): AgentDefinition[] {
   return [

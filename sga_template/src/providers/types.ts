@@ -79,6 +79,8 @@ export interface ModelConfig {
   maxOutputTokens?: number
   inputPricePerMToken?: number
   outputPricePerMToken?: number
+  /** Price unit: 'M' = per million tokens (default), 'K' = per thousand tokens */
+  priceUnit?: 'M' | 'K'
   supportsVision?: boolean
   supportsToolUse?: boolean
   supportsStreaming?: boolean
