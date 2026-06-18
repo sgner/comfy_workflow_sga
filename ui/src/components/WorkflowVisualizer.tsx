@@ -74,6 +74,7 @@ interface WorkflowVisualizerProps {
   onSendErrorsToAi?: (selectedIssues: WorkflowIssue[]) => void
   onResolveIssue?: (issue: WorkflowIssue) => void
   onDownloadModel?: (modelName: string, modelFolder?: string) => void
+  onDownloadModelFromCivitai?: (modelName: string, modelFolder?: string) => void
   backendUrl?: string
 }
 
@@ -98,6 +99,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   onSendErrorsToAi,
   onResolveIssue,
   onDownloadModel,
+  onDownloadModelFromCivitai,
   backendUrl
 }) => {
   const [copied, setCopied] = useState(false)
@@ -835,6 +837,27 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                         {t(language, 'downloadModel') || 'Download Model'}
                       </button>
                     )}
+                    {isMissingModel && onDownloadModelFromCivitai && (
+                      <button
+                        onClick={() => onDownloadModelFromCivitai(getModelSearchKeyword(issue), issue.modelFolder)}
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-pink-600 hover:bg-pink-500 text-white rounded transition-colors"
+                        title="Ask AI to find and download from CivitAI"
+                      >
+                        <Download size={10} />
+                        CivitAI
+                      </button>
+                    )}
+                    {isMissingModel && (
+                      <a
+                        href={`https://civitai.com/models?query=${encodeURIComponent(getModelSearchKeyword(issue))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        CivitAI
+                      </a>
+                    )}
                     {isMissingModel && (
                       <a
                         href={`https://hf-mirror.com/models?search=${encodeURIComponent(getModelSearchKeyword(issue))}`}
@@ -937,6 +960,27 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                         <Download size={10} />
                         {t(language, 'downloadModel') || 'Download Model'}
                       </button>
+                    )}
+                    {isMissingModel && onDownloadModelFromCivitai && (
+                      <button
+                        onClick={() => onDownloadModelFromCivitai(getModelSearchKeyword(issue), issue.modelFolder)}
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-pink-600 hover:bg-pink-500 text-white rounded transition-colors"
+                        title="Ask AI to find and download from CivitAI"
+                      >
+                        <Download size={10} />
+                        CivitAI
+                      </button>
+                    )}
+                    {isMissingModel && (
+                      <a
+                        href={`https://civitai.com/models?query=${encodeURIComponent(getModelSearchKeyword(issue))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >
+                        <ExternalLink size={10} />
+                        CivitAI
+                      </a>
                     )}
                     {isMissingModel && (
                       <a

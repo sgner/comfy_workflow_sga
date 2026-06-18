@@ -61,7 +61,54 @@ def _get_node_version():
 
 
 def _find_node():
-    return shutil.which("node") or shutil.which("node.exe")
+    """在 PATH 中查找 node，找不到时再在常见安装目录搜索。"""
+    n = shutil.which("node") or shutil.which("node.exe")
+    if n:
+        return n
+    # 常见 nvm / 标准安装位置兜底
+    candidates = []
+    if platform.system() == "Windows":
+        # nvm-windows 默认: %APPDATA%\nvm\<version>\node.exe
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            nvm_root = os.path.join(appdata, "nvm")
+            if os.path.isdir(nvm_root):
+                try:
+                    for entry in os.listdir(nvm_root):
+                        if entry.startswith("v") and entry[1:].split(".")[0].isdigit():
+                            candidates.append(os.path.join(nvm_root, entry, "node.exe"))
+                except OSError:
+                    pass
+        # nvm-windows 非默认位置: %LOCALAPPDATA%\nvm\<version>\node.exe
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            nvm_root = os.path.join(localappdata, "nvm")
+            if os.path.isdir(nvm_root):
+                try:
+                    for entry in os.listdir(nvm_root):
+                        if entry.startswith("v") and entry[1:].split(".")[0].isdigit():
+                            candidates.append(os.path.join(nvm_root, entry, "node.exe"))
+                except OSError:
+                    pass
+        # 系统级 Node.js: %ProgramFiles%\nodejs\node.exe
+        for pf in (os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
+            if pf:
+                candidates.append(os.path.join(pf, "nodejs", "node.exe"))
+        # 用户级安装: C:\node 或当前用户目录下
+        candidates.append(r"C:\node\node.exe")
+    else:
+        # nvm (Linux/macOS): ~/.nvm/versions/node/<version>/bin/node
+        nvm_dir = os.path.join(os.path.expanduser("~"), ".nvm", "versions", "node")
+        if os.path.isdir(nvm_dir):
+            for entry in os.listdir(nvm_dir):
+                candidates.append(os.path.join(nvm_dir, entry, "bin", "node"))
+        # 常见系统路径
+        for d in ("/usr/local/bin/node", "/usr/bin/node", "/opt/homebrew/bin/node"):
+            candidates.append(d)
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
 
 
 def _find_local_node():
@@ -83,11 +130,38 @@ def _find_local_node():
 def _get_node_path():
     system_node = _find_node()
     if system_node:
+        # 找到 node 后，把 node 所在目录加入 PATH，
+        # 以便同目录的 npm.cmd/npx.cmd 在后续 subprocess 中可被解析
+        node_dir = os.path.dirname(system_node)
+        if node_dir and node_dir not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = node_dir + os.pathsep + os.environ.get("PATH", "")
         return system_node
     local_node = _find_local_node()
     if local_node:
+        node_dir = os.path.dirname(local_node)
+        if node_dir and node_dir not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = node_dir + os.pathsep + os.environ.get("PATH", "")
         return local_node
     return None
+
+
+def _find_npm():
+    """在 node 所在目录或 PATH 中查找 npm/npm.cmd。
+    Windows 上 npm 实际是 npm.cmd，需要显式匹配。"""
+    node_path = _get_node_path()
+    candidates = []
+    if node_path:
+        node_dir = os.path.dirname(node_path)
+        # Windows: node.exe 同目录的 npm.cmd
+        candidates.append(os.path.join(node_dir, "npm.cmd"))
+        # nvm 安装时 npm.cmd 在 node.exe 同级
+        candidates.append(os.path.join(node_dir, "..", "npm.cmd"))
+    # 最后退化到 PATH
+    candidates.append(shutil.which("npm") or shutil.which("npm.cmd") or "npm")
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return candidates[0] if candidates else "npm"
 
 
 def _install_nodejs():
@@ -332,24 +406,29 @@ def _install_nodejs_linux(arch):
         raise RuntimeError("Node.js extraction did not produce expected files")
 
 
+def _run_npm(args, cwd):
+    """调用 npm 工具，使用找到的完整路径，实时输出日志。"""
+    npm_path = _find_npm()
+    if not npm_path or (npm_path == "npm" and not shutil.which("npm") and not shutil.which("npm.cmd")):
+        raise FileNotFoundError("npm not found")
+    cmd = [npm_path] + list(args)
+    return subprocess.run(cmd, cwd=cwd, check=False)
+
+
 def _ensure_dependencies(sga_dir):
     node_modules = os.path.join(sga_dir, "node_modules")
     if not os.path.exists(node_modules):
-        print("📦 Installing dependencies for sga_template...")
+        print("📦 Installing dependencies for sga_template (this may take a while)...")
         try:
-            subprocess.run(
-                ["npm", "install"],
-                cwd=sga_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            result = _run_npm(["install", "--no-audit", "--no-fund"], cwd=sga_dir)
+            if result.returncode != 0:
+                raise RuntimeError(f"npm install failed with exit code {result.returncode}")
             print("✅ Dependencies installed successfully")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to install dependencies: {e.stderr}")
-            raise
         except FileNotFoundError:
             print("❌ npm not found. Please install Node.js first.")
+            raise
+        except Exception as e:
+            print(f"❌ Failed to install dependencies: {e}")
             raise
 
 
@@ -358,40 +437,32 @@ def _build_if_needed(sga_dir):
     if not os.path.exists(dist_dir):
         print("🔨 Building sga_template...")
         try:
-            subprocess.run(
-                ["npm", "run", "build"],
-                cwd=sga_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            result = _run_npm(["run", "build"], cwd=sga_dir)
+            if result.returncode != 0:
+                raise RuntimeError(f"npm run build failed with exit code {result.returncode}")
             print("✅ Build completed successfully")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to build: {e.stderr}")
-            raise
         except FileNotFoundError:
             print("❌ npm not found. Please install Node.js first.")
+            raise
+        except Exception as e:
+            print(f"❌ Failed to build: {e}")
             raise
 
 
 def _ensure_ui_dependencies(ui_dir):
     node_modules = os.path.join(ui_dir, "node_modules")
     if not os.path.exists(node_modules):
-        print("📦 Installing dependencies for UI...")
+        print("📦 Installing dependencies for UI (this may take a while)...")
         try:
-            subprocess.run(
-                ["npm", "install"],
-                cwd=ui_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            result = _run_npm(["install", "--no-audit", "--no-fund"], cwd=ui_dir)
+            if result.returncode != 0:
+                raise RuntimeError(f"npm install failed with exit code {result.returncode}")
             print("✅ UI dependencies installed successfully")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to install UI dependencies: {e.stderr}")
-            raise
         except FileNotFoundError:
             print("❌ npm not found. Please install Node.js first.")
+            raise
+        except Exception as e:
+            print(f"❌ Failed to install UI dependencies: {e}")
             raise
 
 
@@ -401,19 +472,15 @@ def _build_ui_if_needed(ui_dir):
         print("🔨 Building UI (web folder not found or empty)...")
         try:
             _ensure_ui_dependencies(ui_dir)
-            subprocess.run(
-                ["npm", "run", "build"],
-                cwd=ui_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            result = _run_npm(["run", "build"], cwd=ui_dir)
+            if result.returncode != 0:
+                raise RuntimeError(f"npm run build failed with exit code {result.returncode}")
             print("✅ UI build completed successfully")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to build UI: {e.stderr}")
-            raise
         except FileNotFoundError:
             print("❌ npm not found. Please install Node.js first.")
+            raise
+        except Exception as e:
+            print(f"❌ Failed to build UI: {e}")
             raise
 
 
@@ -532,19 +599,30 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
             else:
                 env["COMFYUI_BASE_DIR"] = current_dir
 
+            # 强制子进程输出 UTF-8，避免 Windows 上 GBK 解码失败
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["LC_ALL"] = "C.UTF-8"
+
             _backend_process = subprocess.Popen(
                 [node_path, "dist/server/main.js"],
                 cwd=sga_dir,
                 env=env,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
             )
 
             print(f"✅ Backend server is running on http://{host}:{port}")
             print(f"⏰ Started at: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-            for line in _backend_process.stdout:
+            # 后台线程中读取并打印子进程输出，使用 errors='replace' 防止单行解码失败拖垮整个线程
+            while True:
+                line = _backend_process.stdout.readline()
+                if not line:
+                    break
                 print(line, end="")
 
         except Exception as e:
@@ -577,8 +655,13 @@ def _cleanup():
 
 
 def _auto_start_backend():
-    host, port = _get_sga_server_config()
-    start_backend_server(host=host, port=port)
+    try:
+        host, port = _get_sga_server_config()
+        start_backend_server(host=host, port=port)
+    except Exception as e:
+        print(f"❌ ComfyUI Workflow Agent auto-start failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 print("=" * 60)

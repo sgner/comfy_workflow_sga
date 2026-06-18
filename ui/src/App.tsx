@@ -1126,6 +1126,15 @@ const App: React.FC<AppProps> = () => {
       handleSendMessage(prompt)
   }, [handleSendMessage])
 
+  const handleDownloadModelFromCivitai = useCallback((modelName: string, modelFolder?: string) => {
+      let prompt = `The model "${modelName}" is missing. Please help me download it from CivitAI.`
+      if (modelFolder) {
+          prompt += ` It should be placed in the "${modelFolder}" folder.`
+      }
+      prompt += ` Use the civitai tool: first call action=search with query="${modelName}" to find the right model, then action=get to inspect versions and files, and finally action=download with the chosen model_version_id to fetch the file into the correct ComfyUI models subfolder. The tool auto-infers the target folder (LORA -> loras, Checkpoint -> checkpoints, VAE -> vae, etc.) from the CivitAI ModelType / ModelFileType.`
+      handleSendMessage(prompt)
+  }, [handleSendMessage])
+
   const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), [])
 
   const isConfigured = appSettings.usePythonBackend 
@@ -1314,6 +1323,7 @@ const App: React.FC<AppProps> = () => {
                                 onSendErrorsToAi={handleSendErrorsToAi}
                                 onResolveIssue={handleResolveIssue}
                                 onDownloadModel={handleDownloadModel}
+                                onDownloadModelFromCivitai={handleDownloadModelFromCivitai}
                                 backendUrl={appSettings.pythonBackendUrl}
                             />
                         </div>
