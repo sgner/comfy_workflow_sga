@@ -18,4 +18,9 @@ export type {
   ContinueReason,
   StopReason,
   QuerySource,
+  AgentEvent,
+  AgentStreamEvent,
+  SSEEventType,
+  SSEEvent,
+  ToolProgressData,
 } from './types.js'

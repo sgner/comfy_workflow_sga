@@ -833,8 +833,7 @@ export function formatWorkflowContextForPrompt(context: WorkflowContextData): st
 
   if (context.parameters.length > 0) {
     sections.push('[NODE PARAMETERS]')
-    const maxNodes = Math.min(context.parameters.length, 20)
-    for (let i = 0; i < maxNodes; i++) {
+    for (let i = 0; i < context.parameters.length; i++) {
       const p = context.parameters[i]
       sections.push(`  Node ${p.nodeId} (${p.nodeType}) "${p.nodeTitle}":`)
       if (p.widgets.length > 0) {
@@ -852,9 +851,6 @@ export function formatWorkflowContextForPrompt(context: WorkflowContextData): st
         const outputStrs = p.outputLinks.map(l => `${l.outputName} -> ${l.targetNodeType}(${l.targetNodeId}).${l.targetInputName}`)
         sections.push(`    Outputs: ${outputStrs.join('; ')}`)
       }
-    }
-    if (context.parameters.length > maxNodes) {
-      sections.push(`  ... and ${context.parameters.length - maxNodes} more nodes`)
     }
   }
 
@@ -901,13 +897,12 @@ export function formatWorkflowContextForPrompt(context: WorkflowContextData): st
 
   if (context.nodeDefs.length > 0) {
     sections.push('[NODE DEFINITIONS (used in workflow)]')
-    const maxDefs = Math.min(context.nodeDefs.length, 15)
-    for (let i = 0; i < maxDefs; i++) {
+    for (let i = 0; i < context.nodeDefs.length; i++) {
       const d = context.nodeDefs[i]
       let defStr = `  ${d.name} [${d.category}]`
       if (d.deprecated) defStr += ' [DEPRECATED]'
       if (d.experimental) defStr += ' [EXPERIMENTAL]'
-      if (d.description) defStr += `: ${d.description.slice(0, 100)}`
+      if (d.description) defStr += `: ${d.description}`
       sections.push(defStr)
       if (d.inputs?.length) {
         sections.push(`    Inputs: ${d.inputs.map(i => `${i.name}${i.required ? '*' : '?'}`).join(', ')}`)
@@ -915,9 +910,6 @@ export function formatWorkflowContextForPrompt(context: WorkflowContextData): st
       if (d.outputs?.length) {
         sections.push(`    Outputs: ${d.outputs.map(o => o.name).join(', ')}`)
       }
-    }
-    if (context.nodeDefs.length > maxDefs) {
-      sections.push(`  ... and ${context.nodeDefs.length - maxDefs} more definitions`)
     }
   }
 
@@ -928,23 +920,29 @@ export function contextErrorsToIssues(context: WorkflowContextData): Array<{
   id: string
   nodeId: number | null
   severity: 'error' | 'warning' | 'info'
+  category?: string
   message: string
   fixSuggestion?: string
   nodeType?: string
   exceptionType?: string
   traceback?: string
   isRuntimeError?: boolean
+  modelName?: string
+  modelFolder?: string
 }> {
   const issues: Array<{
     id: string
     nodeId: number | null
     severity: 'error' | 'warning' | 'info'
+    category?: string
     message: string
     fixSuggestion?: string
     nodeType?: string
     exceptionType?: string
     traceback?: string
     isRuntimeError?: boolean
+    modelName?: string
+    modelFolder?: string
   }> = []
 
   const { errors } = context
@@ -1000,7 +998,10 @@ export function contextErrorsToIssues(context: WorkflowContextData): Array<{
       id: `ctx-missing-model-${Date.now()}-${issues.length}`,
       nodeId: null,
       severity: 'warning',
-      message: `Missing model: ${mm.nodeName}/${mm.widgetName} in ${mm.directory}`,
+      category: 'missing_model',
+      message: `Missing model: ${mm.nodeName}`,
+      modelName: mm.nodeName,
+      modelFolder: mm.directory,
       fixSuggestion: `Place model file in: ${mm.modelPaths.join(' or ')}`,
     })
   }

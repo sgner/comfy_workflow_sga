@@ -152,8 +152,9 @@ export const ZHIPU_MODEL_CONFIGS: Record<string, ModelConfig> = {
     displayName: 'GLM-4',
     contextWindow: 128000,
     maxOutputTokens: 4096,
-    inputPricePerMToken: 14,
-    outputPricePerMToken: 14,
+    inputPricePerMToken: 0.1,
+    outputPricePerMToken: 0.1,
+    priceUnit: 'K',
     supportsVision: false,
     supportsToolUse: true,
     supportsStreaming: true,
@@ -166,8 +167,8 @@ export const ZHIPU_MODEL_CONFIGS: Record<string, ModelConfig> = {
     displayName: 'GLM-4 Plus',
     contextWindow: 128000,
     maxOutputTokens: 4096,
-    inputPricePerMToken: 50,
-    outputPricePerMToken: 50,
+    inputPricePerMToken: 5,
+    outputPricePerMToken: 5,
     supportsVision: false,
     supportsToolUse: true,
     supportsStreaming: true,
@@ -180,8 +181,9 @@ export const ZHIPU_MODEL_CONFIGS: Record<string, ModelConfig> = {
     displayName: 'GLM-4 Flash',
     contextWindow: 128000,
     maxOutputTokens: 4096,
-    inputPricePerMToken: 0.1,
-    outputPricePerMToken: 0.1,
+    inputPricePerMToken: 0.0001,
+    outputPricePerMToken: 0.0001,
+    priceUnit: 'K',
     supportsVision: false,
     supportsToolUse: true,
     supportsStreaming: true,
@@ -197,8 +199,8 @@ export const MOONSHOT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     displayName: 'Moonshot V1 8K',
     contextWindow: 8192,
     maxOutputTokens: 4096,
-    inputPricePerMToken: 12,
-    outputPricePerMToken: 12,
+    inputPricePerMToken: 2,
+    outputPricePerMToken: 10,
     supportsVision: false,
     supportsToolUse: true,
     supportsStreaming: true,
@@ -211,8 +213,8 @@ export const MOONSHOT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     displayName: 'Moonshot V1 32K',
     contextWindow: 32768,
     maxOutputTokens: 4096,
-    inputPricePerMToken: 24,
-    outputPricePerMToken: 24,
+    inputPricePerMToken: 5,
+    outputPricePerMToken: 20,
     supportsVision: false,
     supportsToolUse: true,
     supportsStreaming: true,
@@ -631,6 +633,14 @@ export class OpenAIProvider implements LLMProvider {
   private normalizeStreamChunk(raw: Record<string, unknown>): ProviderStreamChunk {
     const chunk: ProviderStreamChunk = { type: 'stream_chunk', raw }
 
+    if (raw.usage) {
+      const rawUsage = raw.usage as Record<string, unknown>
+      chunk.usage = {
+        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
+        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
+      }
+    }
+
     const choices = raw.choices as Array<Record<string, unknown>> | undefined
     if (!choices || choices.length === 0) return chunk
 
@@ -667,17 +677,19 @@ export class OpenAIProvider implements LLMProvider {
         length: 'max_tokens',
         tool_calls: 'tool_use',
       }
-      chunk.delta = {
-        type: 'message_delta',
-        stopReason: stopReasonMap[finishReason] ?? finishReason,
-      }
-    }
-
-    if (raw.usage) {
-      const rawUsage = raw.usage as Record<string, unknown>
-      chunk.usage = {
-        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
-        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
+      const mappedStopReason = stopReasonMap[finishReason] ?? finishReason
+      if (chunk.delta && chunk.delta.type !== 'text_delta' && chunk.delta.type !== 'message_delta') {
+        chunk.delta.stopReason = mappedStopReason
+      } else if (!chunk.delta || (chunk.delta.type === 'text_delta' && !chunk.delta.text)) {
+        chunk.delta = {
+          type: 'message_delta',
+          stopReason: mappedStopReason,
+        }
+      } else {
+        chunk.delta = {
+          ...chunk.delta,
+          stopReason: mappedStopReason,
+        }
       }
     }
 

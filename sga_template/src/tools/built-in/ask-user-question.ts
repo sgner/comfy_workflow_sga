@@ -23,6 +23,10 @@ export class AskUserQuestionTool extends BaseTool<{
     return true
   }
 
+  requiresUserInteraction(): boolean {
+    return true
+  }
+
   validateInput(input: unknown): ValidationResult {
     if (!input || typeof input !== 'object') return { success: false, error: 'Input must be an object' }
     const question = (input as { question?: string }).question
@@ -32,8 +36,22 @@ export class AskUserQuestionTool extends BaseTool<{
     return { success: true }
   }
 
-  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
-    return { behavior: 'allow' }
+  async checkPermissions(_input: unknown, context: ToolUseContext): Promise<PermissionResult> {
+    if (context.permissionChecker && !this.requiresUserInteraction()) {
+      const ruleResult = context.permissionChecker.check(this.name)
+      if (ruleResult.behavior === 'deny') {
+        return { behavior: 'deny', message: ruleResult.reason ?? 'Denied by rule', decisionReason: 'rule_deny' }
+      }
+      if (ruleResult.behavior === 'allow') {
+        return { behavior: 'allow', decisionReason: ruleResult.reason }
+      }
+    }
+
+    return {
+      behavior: 'ask',
+      message: 'This operation requires user input',
+      suggestions: [],
+    }
   }
 
   protected getInputSchema(): ToolInputSchema {

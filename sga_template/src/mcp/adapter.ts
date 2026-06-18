@@ -41,6 +41,10 @@ export class MCPToolAdapter implements Tool {
     return false
   }
 
+  requiresUserInteraction(): boolean {
+    return false
+  }
+
   validateInput(input: unknown): ValidationResult {
     if (!input || typeof input !== 'object') {
       return { success: true }

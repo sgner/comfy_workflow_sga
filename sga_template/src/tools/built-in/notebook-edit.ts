@@ -1,4 +1,5 @@
-import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult } from '../base.js'
+import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult, type PermissionResult } from '../base.js'
+import { isSensitivePath } from './sensitive-paths.js'
 
 export class NotebookEditTool extends BaseTool<{
   notebook_path: string
@@ -30,6 +31,22 @@ export class NotebookEditTool extends BaseTool<{
       return { success: false, error: 'operation must be replace, insert, or delete' }
     }
     return { success: true }
+  }
+
+  async checkPermissions(input: { notebook_path: string }, _context: ToolUseContext): Promise<PermissionResult> {
+    const sensitive = isSensitivePath(input.notebook_path)
+    if (sensitive) {
+      return {
+        behavior: 'ask',
+        message: `Editing notebook in sensitive path: ${input.notebook_path}. Reason: ${sensitive.reason}. Please confirm.`,
+        suggestions: ['Allow once', 'Deny'],
+      }
+    }
+    return {
+      behavior: 'ask',
+      message: `Notebook edit requires approval: ${input.notebook_path}`,
+      suggestions: ['Allow once', 'Deny'],
+    }
   }
 
   protected getInputSchema(): ToolInputSchema {

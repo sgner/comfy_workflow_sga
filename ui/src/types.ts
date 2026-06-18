@@ -68,6 +68,7 @@ export interface ChatMessage {
     timestamp: Date;
     metadata?: {
         thinking?: boolean;
+        interrupted?: boolean;
         workflowUpdate?: boolean;
         missingNodes?: string[];
         groundingSources?: Array<{ uri: string; title: string }>;
@@ -82,6 +83,19 @@ export interface AgentStatus {
     displayText: string;
     status: 'processing' | 'done' | 'error';
     details?: any;
+}
+
+export interface AgentActivity {
+    id: string;
+    type: 'thinking' | 'status' | 'tool_start' | 'tool_result' | 'content' | 'error' | 'done' | 'turn_end';
+    timestamp: number;
+    label: string;
+    node?: string;
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+    toolOutput?: string;
+    status?: 'processing' | 'done' | 'error';
+    duration?: number;
 }
 
 export interface GeminiResponseSchema {
@@ -100,8 +114,7 @@ export type Language = 'en' | 'zh' | 'ja' | 'ko';
 
 export interface CustomConfig {
     endpoint?: string;
-    headers?: string; // JSON string
-    body?: string; // JSON string
+    headers?: string;
 }
 
 export interface AppSettings {
@@ -136,9 +149,11 @@ export interface WorkflowIssue {
     currentInputs?: Record<string, unknown>;
     isRuntimeError?: boolean;
     source?: IssueSource;
+    modelName?: string;
+    modelFolder?: string;
 }
 
-export type VisualizerTab = 'preview' | 'analysis' | 'json' | 'context';
+export type VisualizerTab = 'preview' | 'analysis' | 'json' | 'context' | 'mcp' | 'skills';
 
 export type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'zhipu' | 'moonshot' | 'qwen' | 'google' | 'custom';
 
@@ -147,6 +162,31 @@ export interface ProviderExtension {
     requestTransformer?: string;
     responseTransformer?: string;
     streamChunkTransformer?: string;
+}
+
+export interface ModelConfig {
+    id: string;
+    displayName?: string;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    inputPricePerMToken?: number;
+    outputPricePerMToken?: number;
+    /** Price unit: 'M' = per million tokens (default), 'K' = per thousand tokens */
+    priceUnit?: 'M' | 'K';
+    supportsVision?: boolean;
+    supportsToolUse?: boolean;
+    supportsStreaming?: boolean;
+    supportsThinking?: boolean;
+    supportsReasoningEffort?: boolean;
+    defaultMaxTokens?: number;
+    defaultTemperature?: number;
+    maxTemperature?: number;
+    thinkingBudget?: number;
+    baseUrl?: string;
+    streamingBaseUrl?: string;
+    apiKey?: string;
+    headers?: Record<string, string>;
+    extra?: Record<string, unknown>;
 }
 
 // Backend Configuration Types
@@ -166,6 +206,7 @@ export interface BackendConfig {
   headers?: Record<string, string>;
   extension?: ProviderExtension;
   custom_config?: CustomConfig;
+  model_configs?: Record<string, ModelConfig>;
   has_api_key?: boolean;
 }
 
@@ -183,6 +224,7 @@ export interface BackendConfigCreate {
     headers?: Record<string, string>;
     extension?: ProviderExtension;
     custom_config?: CustomConfig;
+    model_configs?: Record<string, ModelConfig>;
 }
 
 export interface GitHubTokenStatus {
@@ -224,6 +266,79 @@ export interface ToolCallInfo {
     toolName: string;
     toolUseId?: string;
     status: 'running' | 'completed' | 'error';
+    toolInput?: Record<string, unknown>;
+    toolOutput?: string;
+    startTime?: number;
+    endTime?: number;
+}
+
+export interface TokenUsage {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+    totalTokens: number;
+    totalCostUsd: number;
+}
+
+export interface MCPServerInfo {
+    name: string;
+    status: string;
+    transport: string;
+    command?: string;
+    url?: string;
+    toolCount: number;
+    error?: string;
+    connectedAt?: string;
+}
+
+export interface SkillInfo {
+    name: string;
+    description: string;
+    whenToUse?: string;
+    userInvocable?: boolean;
+    source?: string;
+    argumentHint?: string;
+}
+
+export interface FeatureGateInfo {
+    name: string;
+    description: string;
+    enabled: boolean;
+    source: string;
+}
+
+export interface TelemetryStatus {
+    enabled: boolean;
+    sessionId: string;
+}
+
+export interface CircuitBreakerStats {
+    state: string;
+    consecutiveFailures: number;
+    consecutiveSuccesses: number;
+    totalFailures: number;
+    totalSuccesses: number;
+    timeUntilCooldown: number;
+}
+
+export interface CostTrackerInfo {
+    sessionId: string;
+    totalCostUsd: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    isOverBudget: boolean;
+    isNearBudget: boolean;
+    remainingBudget: number | undefined;
+}
+
+export interface MemoryInfo {
+    path: string;
+    type: string;
+    scope: string;
+    description: string;
+    mtimeMs: number;
+    sizeBytes: number;
 }
 
 // Workflow Context Data (from ComfyUI frontend, mirroring RightSidePanel data sources)

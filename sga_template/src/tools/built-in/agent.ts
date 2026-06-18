@@ -1,11 +1,11 @@
 import type { Tool, ToolUseContext, ValidationResult, ToolInputSchema, PermissionResult } from '../base.js'
 import type { AgentDefinition } from '../../agents/definition.js'
-import type { Message, UsageMetrics } from '../../core/types.js'
+import type { Message, UsageMetrics, AgentStreamEvent } from '../../core/types.js'
 import { BaseTool } from '../base.js'
 import { filterToolsForAgent, findToolByName } from '../base.js'
 import { ALL_AGENT_DISALLOWED_TOOLS, CUSTOM_AGENT_DISALLOWED_TOOLS } from '../../agents/definition.js'
 import { runAgent, type AgentRunResult } from '../../agents/runner.js'
-import { createSubagentContext, FORK_BOILERPLATE } from '../../agents/fork.js'
+import { createSubagentContext, FORK_BOILERPLATE, isForkRecursion } from '../../agents/fork.js'
 import { createLogger } from '../../utils/logger.js'
 
 const logger = createLogger('agent-tool')
@@ -33,6 +33,14 @@ export interface AgentToolOutput {
   error?: string
 }
 
+export type TaskNotificationCallback = (notification: {
+  taskId: string
+  status: 'completed' | 'failed' | 'killed'
+  summary: string
+  result?: string
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
+}) => void
+
 interface RunningAgentTask {
   id: string
   agentType: string
@@ -43,20 +51,65 @@ interface RunningAgentTask {
   result?: AgentToolOutput
   resolve?: (result: AgentToolOutput) => void
   reject?: (error: Error) => void
+  _pendingMessages?: Array<{ role: string; content: string }>
 }
 
 const runningTasks: Map<string, RunningAgentTask> = new Map()
 
+const MAX_CONCURRENT_WORKERS = 5
+
 let taskCounter = 0
+
+let globalTaskNotificationCallback: TaskNotificationCallback | null = null
+
+const pendingNotifications: Array<{
+  taskId: string
+  status: 'completed' | 'failed' | 'killed'
+  summary: string
+  result?: string
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
+}> = []
 
 function generateTaskId(): string {
   taskCounter++
-  return `agent-task-${Date.now()}-${taskCounter}`
+  return `agent-${Date.now().toString(36)}-${taskCounter}`
+}
+
+export function setTaskNotificationCallback(cb: TaskNotificationCallback | null): void {
+  globalTaskNotificationCallback = cb
+}
+
+export function drainPendingNotifications(): Array<{
+  taskId: string
+  status: 'completed' | 'failed' | 'killed'
+  summary: string
+  result?: string
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
+}> {
+  const drained = [...pendingNotifications]
+  pendingNotifications.length = 0
+  return drained
+}
+
+export function hasPendingNotifications(): boolean {
+  return pendingNotifications.length > 0
+}
+
+function formatTaskNotificationXml(taskId: string, status: string, summary: string, result?: string, usage?: { totalTokens: number; toolUses: number; durationMs: number }): string {
+  let xml = `<task-notification>\n<task-id>${taskId}</task-id>\n<status>${status}</status>\n<summary>${summary}</summary>\n`
+  if (result) {
+    xml += `<result>${result}</result>\n`
+  }
+  if (usage) {
+    xml += `<usage>\n  <total_tokens>${usage.totalTokens}</total_tokens>\n  <tool_uses>${usage.toolUses}</tool_uses>\n  <duration_ms>${usage.durationMs}</duration_ms>\n</usage>\n`
+  }
+  xml += `</task-notification>`
+  return xml
 }
 
 export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
   name = 'Agent'
-  description = 'Launch a sub-agent to perform a task. Supports synchronous (wait for result), asynchronous (background), and fork (isolated context) modes.'
+  description = 'Launch a worker (sub-agent) to perform a task. Workers run asynchronously by default — results arrive as task-notification messages. Use SendMessage to continue a worker, TaskStop to stop one.'
   searchHint = 'delegate subagent spawn worker'
 
   private agentDefinitions: AgentDefinition[]
@@ -136,7 +189,28 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
       }
     }
 
+    if (context.messages && isForkRecursion(context.messages)) {
+      return {
+        status: 'failed',
+        agentType: agentDef.name,
+        content: '',
+        error: 'Cannot spawn sub-agent from within a forked agent — recursive forking is not allowed',
+      }
+    }
+
     const spawnMode = this.resolveSpawnMode(modeParam, run_in_background, agentDef)
+
+    if (spawnMode === 'async') {
+      const currentRunning = [...runningTasks.values()].filter(t => t.status === 'running').length
+      if (currentRunning >= MAX_CONCURRENT_WORKERS) {
+        return {
+          status: 'failed',
+          agentType: agentDef.name,
+          content: '',
+          error: `Maximum concurrent workers reached (${MAX_CONCURRENT_WORKERS}). Wait for a worker to complete before launching more. Use Plan({ action: "status" }) to check running workers.`,
+        }
+      }
+    }
 
     const agentTools = this.resolveAgentTools(agentDef, context.tools)
 
@@ -197,6 +271,21 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
     return (appState as Record<string, unknown>)['provider'] ?? null
   }
 
+  private emitTaskNotification(
+    taskId: string,
+    status: 'completed' | 'failed' | 'killed',
+    summary: string,
+    result?: string,
+    usage?: { totalTokens: number; toolUses: number; durationMs: number },
+  ): void {
+    const notification = { taskId, status, summary, result, usage }
+    pendingNotifications.push(notification)
+
+    if (globalTaskNotificationCallback) {
+      globalTaskNotificationCallback(notification)
+    }
+  }
+
   private async spawnSync(
     agentDef: AgentDefinition,
     prompt: string,
@@ -229,6 +318,10 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
         error: error instanceof Error ? error.message : String(error),
         durationMs: Date.now() - startTime,
       }
+    } finally {
+      if (context.permissionChecker) {
+        context.permissionChecker.exitAutoMode()
+      }
     }
   }
 
@@ -251,6 +344,7 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
       status: 'running',
       startTime: Date.now(),
       abortController,
+      _pendingMessages: [],
     }
 
     runningTasks.set(taskId, task)
@@ -268,25 +362,58 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
           turnCount: result.turnCount,
           toolUseCount: result.totalToolUseCount,
           durationMs: Date.now() - task.startTime,
+          taskId,
         }
+
+        const notificationSummary = `Agent "${description}" completed`
+        const notificationUsage = {
+          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          toolUses: result.totalToolUseCount,
+          durationMs: Date.now() - task.startTime,
+        }
+
+        this.emitTaskNotification(taskId, 'completed', notificationSummary, result.content, notificationUsage)
+
         task.resolve?.(task.result)
       })
       .catch(error => {
-        task.status = 'failed'
-        task.result = {
-          status: 'failed',
-          agentType: agentDef.name,
-          content: '',
-          error: error instanceof Error ? error.message : String(error),
-          durationMs: Date.now() - task.startTime,
+        if (abortController.signal.aborted) {
+          task.status = 'killed'
+          task.result = {
+            status: 'failed',
+            agentType: agentDef.name,
+            content: '',
+            error: 'Agent was stopped',
+            durationMs: Date.now() - task.startTime,
+            taskId,
+          }
+
+          this.emitTaskNotification(taskId, 'killed', `Agent "${description}" was stopped`)
+        } else {
+          task.status = 'failed'
+          task.result = {
+            status: 'failed',
+            agentType: agentDef.name,
+            content: '',
+            error: error instanceof Error ? error.message : String(error),
+            durationMs: Date.now() - task.startTime,
+            taskId,
+          }
+
+          const errorMsg = error instanceof Error ? error.message : String(error)
+          this.emitTaskNotification(taskId, 'failed', `Agent "${description}" failed: ${errorMsg}`)
         }
+
         task.reject?.(error)
+      })
+      .finally(() => {
+        cleanupSubagentResources(taskId, task)
       })
 
     return {
       status: 'running',
       agentType: agentDef.name,
-      content: `Agent "${agentDef.name}" started in background. Task ID: ${taskId}`,
+      content: `Agent "${agentDef.name}" started. Task ID: ${taskId}`,
       taskId,
     }
   }
@@ -338,6 +465,10 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
         error: error instanceof Error ? error.message : String(error),
         durationMs: Date.now() - startTime,
       }
+    } finally {
+      if (forkedContext.permissionChecker) {
+        forkedContext.permissionChecker.exitAutoMode()
+      }
     }
   }
 
@@ -368,6 +499,14 @@ export class AgentTool extends BaseTool<Record<string, unknown>, unknown> {
 
 export function getRunningTask(taskId: string): RunningAgentTask | undefined {
   return runningTasks.get(taskId)
+}
+
+export function appendPendingMessage(taskId: string, message: { role: string; content: string }): boolean {
+  const task = runningTasks.get(taskId)
+  if (!task) return false
+  if (!task._pendingMessages) task._pendingMessages = []
+  task._pendingMessages.push(message)
+  return true
 }
 
 export function getAllRunningTasks(): RunningAgentTask[] {
@@ -401,4 +540,20 @@ export function cleanupCompletedTasks(maxAge: number = 60 * 60 * 1000): void {
       runningTasks.delete(id)
     }
   }
+}
+
+export { formatTaskNotificationXml }
+
+function cleanupSubagentResources(taskId: string, task: RunningAgentTask): void {
+  try {
+    if (task.abortController && !task.abortController.signal.aborted) {
+      task.abortController.abort()
+    }
+  } catch {
+    // abort may already be aborted
+  }
+
+  task._pendingMessages = []
+
+  logger.debug(`[AgentTool] Cleaned up resources for task ${taskId}`)
 }

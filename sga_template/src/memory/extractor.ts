@@ -12,6 +12,7 @@ export interface MemoryExtractorConfig {
   enabled: boolean
   maxTurnsBetweenExtractions: number
   maxConversationChars: number
+  forceScope?: MemoryScope
 }
 
 export const DEFAULT_EXTRACTOR_CONFIG: MemoryExtractorConfig = {
@@ -181,7 +182,7 @@ Output format for each memory:
           continue
         }
 
-        const scope = block.scope ?? this.inferScopeFromContent(block.type, block.description, block.content)
+        const scope = this.config.forceScope ?? block.scope ?? this.inferScopeFromContent(block.type, block.description, block.content)
         await this.memoryManager.saveMemoryFile(
           block.filename,
           block.type,

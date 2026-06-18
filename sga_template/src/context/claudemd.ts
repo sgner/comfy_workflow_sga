@@ -14,8 +14,21 @@ export interface SgaMdConfig {
 /** @deprecated Use SgaMdConfig instead */
 export type ClaudeMdConfig = SgaMdConfig
 
+function getGlobalPaths(): string[] {
+  const paths: string[] = []
+  if (process.platform === 'win32') {
+    const programData = process.env.ProgramData ?? 'C:\\ProgramData'
+    paths.push(join(programData, 'sga', 'SGA.md'))
+    paths.push(join(programData, 'claude-code', 'CLAUDE.md'))
+  } else {
+    paths.push('/etc/sga/SGA.md')
+    paths.push('/etc/claude-code/CLAUDE.md')
+  }
+  return paths
+}
+
 export const DEFAULT_SGA_MD_PATHS: SgaMdConfig = {
-  globalPaths: ['/etc/sga/SGA.md', '/etc/claude-code/CLAUDE.md'],
+  get globalPaths() { return getGlobalPaths() },
   userPath: join(getSgaHome(), 'SGA.md'),
   projectPaths: [],
   localPath: 'SGA.local.md',

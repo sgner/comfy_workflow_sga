@@ -14,7 +14,7 @@ export interface ContextBuildOptions {
   userQuery: string
   messages?: Array<{ role: string; content: string }>
   focusMode?: FocusMode
-  budgetConfig?: ContextBudgetConfig
+  budgetConfig?: Partial<ContextBudgetConfig>
   maxMemoryItems?: number
   enableDedup?: boolean
   enableCompression?: boolean

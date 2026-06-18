@@ -1,4 +1,5 @@
-import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult } from '../base.js'
+import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult, type PermissionResult } from '../base.js'
+import { isSensitivePath } from './sensitive-paths.js'
 
 export class FileEditTool extends BaseTool<{ path: string; old_str: string; new_str: string }, string> {
   name = 'Edit'
@@ -21,6 +22,22 @@ export class FileEditTool extends BaseTool<{ path: string; old_str: string; new_
     if (new_str === undefined || new_str === null) return { success: false, error: 'new_str is required' }
     if (old_str === new_str) return { success: false, error: 'old_str and new_str must be different' }
     return { success: true }
+  }
+
+  async checkPermissions(input: { path: string }, _context: ToolUseContext): Promise<PermissionResult> {
+    const sensitive = isSensitivePath(input.path)
+    if (sensitive) {
+      return {
+        behavior: 'ask',
+        message: `Editing a sensitive file: ${input.path}. Reason: ${sensitive.reason}. Please confirm.`,
+        suggestions: ['Allow once', 'Deny'],
+      }
+    }
+    return {
+      behavior: 'ask',
+      message: `File edit requires approval: ${input.path}`,
+      suggestions: ['Allow once', 'Always allow edits to this file', 'Deny'],
+    }
   }
 
   protected getInputSchema(): ToolInputSchema {

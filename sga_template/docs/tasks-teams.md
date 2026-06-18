@@ -182,15 +182,86 @@ data: {"taskId":"task-1","status":"completed","summary":"Task \"代码审查\" c
 
 ## 多 Agent 编排
 
-### Coordinator 模式
+### Coordinator Agent 模式
 
-Coordinator 模式参考 cc-haha-main 的实现，支持多 Agent 并行调度与结果汇总。详见 [自定义 Agent](custom-agent.md#agent-编排--coordinator-模式)。
+> 📄 相关源文件：`src/agents/coordinator-mode.ts`（CoordinatorAgent 类）、`src/agents/plan-manager.ts`（PlanManager）、`src/tools/built-in/plan.ts`（PlanTool）
+
+Coordinator 已从独立类重构为 Agent 模式，通过系统提示 + 工具驱动实现多 Agent 编排。当检测到复杂任务时，系统自动路由到 Coordinator Agent。
+
+### 自动路由机制
+
+系统通过任务复杂度检测自动决定是否使用 Coordinator：
+
+| 检测标准 | 阈值 | 示例 |
+|---------|------|------|
+| 关键词匹配 | 包含"实现"、"重构"、"修复并测试"等 | "实现用户认证功能" |
+| 句子数量 | ≥ 3 句 | "调查问题。分析原因。修复代码。" |
+| 动作数量 | ≥ 2 个"and/然后"连接 | "搜索代码然后修复 bug" |
 
 ### 编排流程
 
 ```
-用户查询 → Coordinator → 分解任务 → 并行/串行调度 Agent → 汇总结果
+用户查询 → 复杂度检测 → Coordinator Agent → Plan(create) → Agent(spawn workers) → 通知注入 → Plan(update) → 综合结果
 ```
+
+### Coordinator 工具集
+
+| 工具 | 说明 |
+|------|------|
+| **Plan** | 创建/更新/查询结构化计划，管理任务依赖和状态 |
+| **Agent** | 启动子 Agent（sync/async/fork 三种模式） |
+| **SendMessage** | 向运行中的 Worker 发送消息 |
+| **TaskStop** | 停止运行中的 Worker |
+
+### 结构化计划（PlanManager）
+
+Coordinator 在启动任何 Worker 之前必须先创建计划：
+
+```typescript
+// Plan 工具调用示例
+Plan({
+  action: "create",
+  query: "修复 auth 模块中的空指针异常",
+  strategy: "hybrid",
+  tasks: [
+    { description: "调查 auth 模块", phase: "research", agentType: "Explore", prompt: "..." },
+    { description: "设计修复方案", phase: "synthesis", agentType: "Plan", prompt: "...", dependsOn: ["调查 auth 模块"] },
+    { description: "实现修复", phase: "implementation", agentType: "general-purpose", prompt: "...", dependsOn: ["设计修复方案"] },
+    { description: "验证修复", phase: "verification", agentType: "verification", prompt: "...", dependsOn: ["实现修复"] },
+  ]
+})
+```
+
+PlanManager 核心方法：
+
+| 方法 | 说明 |
+|------|------|
+| `createPlan(query, steps, strategy)` | 创建结构化计划 |
+| `updateTaskStatus(taskId, status, result?)` | 更新任务状态 |
+| `getReadyTasks()` | 获取依赖已满足的可执行任务 |
+| `canLaunchMore()` | 检查是否还能启动更多 Worker |
+| `getProgress()` | 获取计划进度（完成/运行/待执行数量） |
+| `saveSnapshot()` | 持久化计划到 `.sga/snapshots/` |
+| `formatPlanSummary()` | 生成人类可读的计划摘要 |
+
+### 任务通知注入
+
+异步 Worker 完成后，任务通知自动注入回 Coordinator 的消息流：
+
+1. Worker 完成 → `emitTaskNotification()` → 加入 `pendingNotifications` 队列
+2. `runner.ts` 每轮循环开始时 → `drainPendingNotifications()` → 格式化为 XML
+3. 注入为 `user` 角色消息 → Coordinator LLM 在下一轮看到通知
+4. Coordinator 调用 `Plan({ action: "update" })` 更新任务状态
+
+### 并发控制
+
+系统限制同时运行的 Worker 数量，防止资源耗尽：
+
+| 机制 | 说明 |
+|------|------|
+| `MAX_CONCURRENT_WORKERS` | 最大并发数 = 5 |
+| 超限拒绝 | async spawn 时检查运行数，超限返回错误信息 |
+| `Plan({ action: "status" })` | Coordinator 可查看当前运行数和是否可启动更多 |
 
 ### 工作阶段
 
@@ -211,79 +282,51 @@ Coordinator 模式参考 cc-haha-main 的实现，支持多 Agent 并行调度�
 
 ### 动态规划
 
-Coordinator 支持两种规划方式：
-
-- **静态规划** — `createCoordinatorPlanFromUserQuery()` 基于模板生成固定步骤
-- **动态规划** — `generateDynamicPlan()` 让 LLM 根据查询内容和可用 Agent 智能生成最优计划
+Coordinator Agent 通过系统提示引导 LLM 自主决定任务分解和 Agent 调度，无需预定义模板。LLM 根据查询内容和可用 Agent 列表智能生成最优计划。
 
 ```typescript
-import { generateDynamicPlan, getAllAgentDefinitions } from 'SGA-Template'
+import { getAllAgentDefinitions } from 'SGA-Template'
 
-const agentDefs = await getAllAgentDefinitions()
-const plan = await generateDynamicPlan('Rust 异步编程有哪些坑？', agentDefs, provider, 'sonnet')
+// Coordinator Agent 由系统自动路由
+// 当检测到复杂任务时，routes.ts 自动调用 CoordinatorAgent
+// LLM 自主分析查询，生成计划，调度 Agent
 ```
-
-详见 [自定义 Agent - 动态规划](custom-agent.md#动态规划--llm-智能生成计划)。
 
 ### 上下文注入
 
 当任务声明了 `dependsOn` 依赖关系时，Coordinator 会自动将依赖步骤的结果注入到当前步骤的 prompt 前面，确保后续 Agent 能看到前一步的输出。
 
-详见 [自定义 Agent - 上下文注入](custom-agent.md#上下文注入--自动传递步骤结果)。
-
-### 计划动态更新
-
-Coordinator 支持在执行过程中动态修改计划：
-
-```typescript
-coordinator.addStep({ description: '补充安全审查', phase: 'verification', agentType: 'SecurityScanner', prompt: '...' })
-coordinator.skipTask('coord-task-xxx', '不再需要')
-coordinator.updateTaskPrompt('coord-task-xxx', '更新后的 prompt')
-```
-
-详见 [自定义 Agent - 计划动态更新](custom-agent.md#计划动态更新)。
-
 ### 计划持久化与断点续跑
 
-Coordinator 在执行过程中自动保存快照到 `.sga/snapshots/`，支持从断点恢复执行：
+PlanManager 在执行过程中自动保存快照到 `.sga/snapshots/`，支持从断点恢复执行：
 
 ```typescript
-import { Coordinator, listSnapshots } from 'SGA-Template'
+import { getPlanManager, listSnapshots } from 'SGA-Template'
 
+const planManager = getPlanManager()
+
+// 保存快照
+const snapshotPath = planManager.saveSnapshot()
+
+// 查看所有快照
 const snapshots = listSnapshots()
-const coordinator = new Coordinator(config)
-const result = await coordinator.resumeFromSnapshot('.sga/snapshots/plan-xxx.json')
-```
 
-详见 [自定义 Agent - 计划持久化与断点续跑](custom-agent.md#计划持久化与断点续跑)。
+// 从快照恢复
+const plan = planManager.loadSnapshot(snapshotPath)
+```
 
 ### 使用示例
 
 ```typescript
-import { Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan, getAllAgentDefinitions } from 'SGA-Template'
+// Coordinator Agent 由系统自动路由，无需手动调用
+// 当用户发送复杂任务时，routes.ts 自动检测并路由到 Coordinator
 
-const agentDefs = await getAllAgentDefinitions()
-
-// 静态规划
-const plan = createCoordinatorPlanFromUserQuery('修复 auth 模块中的空指针异常', agentDefs)
-
-// 动态规划
-const dynamicPlan = await generateDynamicPlan('修复 auth 模块中的空指针异常', agentDefs, provider, 'sonnet')
-
-const coordinator = new Coordinator({
-  maxConcurrency: 3,
-  defaultModel: 'sonnet',
-  provider: myProvider,
-  tools: toolPool,
-  agentDefinitions: agentDefs,
-  onTaskStart: (task) => console.log(`Started: ${task.description}`),
-  onTaskComplete: (task) => console.log(`Completed: ${task.description}`),
-  onTaskFailed: (task) => console.log(`Failed: ${task.description}: ${task.error}`),
-  onPlanUpdated: (plan) => console.log(`Plan updated: ${plan.tasks.length} tasks`),
-})
-
-const result = await coordinator.execute(plan)
-console.log(result.synthesis)
+// 也可以通过 API 直接触发
+POST /api/v1/sessions/:sessionId/message
+{
+  "content": "实现用户认证功能并编写测试",
+  "agentType": "coordinator"
+}
 ```
 
 ## Agent Tool — 子代理调度
@@ -311,10 +354,9 @@ Agent Tool 允许一个 Agent 在运行过程中启动另一个 Agent 执行子�
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/v1/coordinate` | POST | 执行 Coordinator 编排（`dynamic: true` 启用 LLM 动态规划） |
-| `/api/v1/coordinate/plan` | POST | 仅生成动态计划（不执行，可预览） |
+| `/api/v1/sessions/:id/message` | POST | 发送消息（自动检测复杂度，复杂任务路由到 Coordinator） |
+| `/api/v1/sessions/:id/stream` | POST (SSE) | 流式发送消息（同上，支持实时事件推送） |
 | `/api/v1/coordinate/snapshots` | GET | 列出所有快照 |
-| `/api/v1/coordinate/resume` | POST | 从快照恢复执行 |
 
 ## 相关文档
 

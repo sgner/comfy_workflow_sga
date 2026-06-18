@@ -109,3 +109,73 @@ export type AgentEvent =
   | { type: 'turn_end'; turnCount: number }
   | { type: 'tool_use'; toolName: string }
   | { type: 'stop'; reason: StopReason }
+
+export type ToolProgressData =
+  | { type: 'stdout'; text: string }
+  | { type: 'stderr'; text: string }
+  | { type: 'progress'; message: string; percentage?: number }
+  | { type: 'status'; message: string }
+  | { type: 'custom'; [key: string]: unknown }
+
+export type BashProgressData =
+  | ToolProgressData
+  | { type: 'bash_progress'; output: string; fullOutput: string; elapsedTimeSeconds: number; totalLines: number; totalBytes: number; taskId?: string; timeoutMs?: number }
+
+export type AgentStreamEvent =
+  | { type: 'session_start'; sessionId: string; model: string; agentType?: string }
+  | { type: 'turn_start'; turnCount: number }
+  | { type: 'api_call_start'; turnCount: number }
+  | { type: 'stream_delta'; text: string }
+  | { type: 'thinking_delta'; text: string }
+  | { type: 'tool_use_start'; toolName: string; toolUseId: string }
+  | { type: 'tool_progress'; toolName: string; toolUseId: string; data: ToolProgressData; parentToolUseId?: string }
+  | { type: 'tool_use_end'; toolName: string; toolUseId: string; isError: boolean }
+  | { type: 'tool_use_result'; toolName: string; result: { toolUseId: string; content: string; isError: boolean } }
+  | { type: 'turn_end'; turnCount: number; usage: UsageMetrics }
+  | { type: 'approval_required'; actionId: string; toolName: string; toolInput: Record<string, unknown>; toolCallId: string; message: string; suggestions?: string[] }
+  | { type: 'human_input_required'; actionId: string; message: string; context?: string; options?: Array<{ label: string; value: string; description?: string }> }
+  | { type: 'compact_start'; reason: string }
+  | { type: 'compact_end'; messagesRemoved: number }
+  | { type: 'task_started'; taskId: string; description: string; taskType?: string; toolUseId?: string }
+  | { type: 'task_progress'; taskId: string; description: string; usage: { totalTokens: number; toolUses: number; durationMs: number }; lastToolName?: string; summary?: string }
+  | { type: 'task_notification'; taskId: string; toolUseId?: string; status: 'completed' | 'failed' | 'stopped'; summary: string }
+  | { type: 'recovery'; error: Error; attempt: number }
+  | { type: 'workflow_updated'; workflowJson: string; actionType: string }
+  | { type: 'stop'; reason: StopReason }
+  | { type: 'coordinator_start'; data: { query: string } }
+  | { type: 'coordinator_plan'; data: { planId: string; strategy: string; taskCount: number } }
+  | { type: 'coordinator_task_start'; data: { id: string; description: string; phase: string; agentType: string } }
+  | { type: 'coordinator_task_complete'; data: { id: string; description: string } }
+  | { type: 'coordinator_task_failed'; data: { id: string; description: string; error: string | undefined } }
+  | { type: 'coordinator_end'; data: { planId: string; totalTasks: number; completedTasks: number } }
+  | { type: 'coordinator_fallback'; data: { reason: string } }
+  | { type: 'done'; data: { content: string; usage: UsageMetrics } | null }
+  | { type: 'error'; data: string }
+  | { type: 'coordinator_start'; data: { planId: string; taskType: string; phaseCount: number; strategy: string } }
+  | { type: 'coordinator_phase_change'; data: { phase: string; description: string; agentType: string; taskId: string } }
+  | { type: 'coordinator_task_complete'; data: { phase: string; description: string; status: string } }
+  | { type: 'coordinator_task_failed'; data: { phase: string; description: string; error: string | undefined } }
+  | { type: 'coordinator_complete'; data: { synthesis: string; totalDurationMs: number; taskResults: Array<{ phase: string; description: string; status: string }> } }
+  | { type: 'verification_result'; data: { verdict: string; strategy: string; summary: string; checks: Array<{ name: string; passed: boolean; message: string; severity: string }> } }
+  | { type: 'plan_update'; data: {
+      type: 'plan_created' | 'task_updated' | 'task_added' | 'task_removed'
+      planId: string
+      taskId?: string
+      taskDescription?: string
+      taskStatus?: string
+      taskPhase?: string
+      taskAgentType?: string
+      progress?: { total: number; pending: number; running: number; completed: number; failed: number; skipped: number; percentComplete: number }
+      tasks?: Array<{ id: string; description: string; phase: string; status: string; agentType: string }>
+    } }
+  | { type: 'task_created'; data: { taskId: string; name: string; kind: string; agentType?: string } }
+  | { type: 'task_status_update'; data: { taskId: string; status: string; summary?: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number; totalCostUsd: number }; durationMs?: number } }
+
+export type SSEEventType = AgentStreamEvent['type']
+
+export interface SSEEvent<T extends AgentStreamEvent = AgentStreamEvent> {
+  event: SSEEventType
+  data: T
+  id?: string
+  retry?: number
+}

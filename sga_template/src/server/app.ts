@@ -25,6 +25,62 @@ import {
   handleRemoveProvider,
   handleSetDefaultProvider,
   handleHealth,
+  handleGetPermissionRules,
+  handleUpdatePermissionMode,
+  handleAddPermissionRule,
+  handleRemovePermissionRule,
+  handleCheckPermission,
+  handleListHooks,
+  handleAddHook,
+  handleRemoveHook,
+  handleTestHook,
+  handleClassifyPermission,
+  handleComfyUIChatStream,
+  handleComfyUIChatHistory,
+  handleComfyUIChatAbort,
+  handleComfyUIWorkflowParse,
+  handleComfyUIWorkflowAnalyze,
+  handleComfyUIActionExecute,
+  handleComfyUIActionUndo,
+  handleComfyUIUserInput,
+  handleComfyUIListConfigs,
+  handleComfyUICreateConfig,
+  handleComfyUIGetConfig,
+  handleComfyUIUpdateConfig,
+  handleComfyUIDeleteConfig,
+  handleComfyUISetDefaultConfig,
+  handleComfyUIGetGitHubToken,
+  handleComfyUIUpdateGitHubToken,
+  handleComfyUIDeleteGitHubToken,
+  handleComfyUIFork,
+  handleComfyUICoordinator,
+  handleComfyUIAutoDream,
+  handleComfyUICost,
+  handleListFeatureGates,
+  handleGetFeatureGate,
+  handleOverrideFeatureGate,
+  handleResetFeatureGate,
+  handleResetAllFeatureGates,
+  handleRegisterFeatureGate,
+  handleGetTelemetryStatus,
+  handleToggleTelemetry,
+  handleFlushTelemetry,
+  handleGetTelemetryEvents,
+  handleClassifyBashCommand,
+  handleClassifyError,
+  handlePreviewSystemPrompt,
+  handleGetConfig,
+  handleGetConfigSection,
+  handleGetCostTracker,
+  handleSetBudget,
+  handleListMemories,
+  handleGetMemory,
+  handleSearchMemories,
+  handleDeleteMemory,
+  handleExtractMemories,
+  handleGetCircuitBreakerStatus,
+  handleResetCircuitBreaker,
+  handleGetContextBudget,
 } from './routes.js'
 import {
   handleListSkills,
@@ -105,6 +161,53 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.get(`${base}/tasks/notifications`, handleTaskNotifications)
   app.get(`${base}/tools`, handleListTools)
 
+  app.get(`${base}/permissions/rules`, handleGetPermissionRules)
+  app.put(`${base}/permissions/mode`, handleUpdatePermissionMode)
+  app.post(`${base}/permissions/rules`, handleAddPermissionRule)
+  app.delete(`${base}/permissions/rules`, handleRemovePermissionRule)
+  app.post(`${base}/permissions/check`, handleCheckPermission)
+
+  app.get(`${base}/hooks`, handleListHooks)
+  app.post(`${base}/hooks`, handleAddHook)
+  app.delete(`${base}/hooks`, handleRemoveHook)
+  app.post(`${base}/hooks/test`, handleTestHook)
+
+  app.post(`${base}/permissions/classify`, handleClassifyPermission)
+
+  app.get(`${base}/feature-gates`, handleListFeatureGates)
+  app.get(`${base}/feature-gates/:name`, handleGetFeatureGate)
+  app.post(`${base}/feature-gates/override`, handleOverrideFeatureGate)
+  app.post(`${base}/feature-gates/reset`, handleResetFeatureGate)
+  app.post(`${base}/feature-gates/reset-all`, handleResetAllFeatureGates)
+  app.post(`${base}/feature-gates`, handleRegisterFeatureGate)
+
+  app.get(`${base}/telemetry/status`, handleGetTelemetryStatus)
+  app.post(`${base}/telemetry/toggle`, handleToggleTelemetry)
+  app.post(`${base}/telemetry/flush`, handleFlushTelemetry)
+  app.get(`${base}/telemetry/events`, handleGetTelemetryEvents)
+
+  app.post(`${base}/classify/bash`, handleClassifyBashCommand)
+  app.post(`${base}/classify/error`, handleClassifyError)
+
+  app.post(`${base}/system-prompt/preview`, handlePreviewSystemPrompt)
+
+  app.get(`${base}/config`, handleGetConfig)
+  app.get(`${base}/config/:section`, handleGetConfigSection)
+
+  app.get(`${base}/sessions/:sessionId/cost`, handleGetCostTracker)
+  app.put(`${base}/sessions/:sessionId/budget`, handleSetBudget)
+
+  app.get(`${base}/memories`, handleListMemories)
+  app.get(`${base}/memories/:name`, handleGetMemory)
+  app.post(`${base}/memories/search`, handleSearchMemories)
+  app.delete(`${base}/memories/:scope`, handleDeleteMemory)
+  app.post(`${base}/memories/extract`, handleExtractMemories)
+
+  app.get(`${base}/circuit-breaker`, handleGetCircuitBreakerStatus)
+  app.post(`${base}/circuit-breaker/reset`, handleResetCircuitBreaker)
+
+  app.get(`${base}/context-budget`, handleGetContextBudget)
+
   app.get(`${base}/providers`, handleListConfiguredProviders)
   app.post(`${base}/providers`, handleAddProvider)
   app.delete(`${base}/providers/:name`, handleRemoveProvider)
@@ -123,6 +226,37 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/mcp/servers/:name/connect`, handleConnectMCPServer)
   app.post(`${base}/mcp/servers/:name/disconnect`, handleDisconnectMCPServer)
   app.get(`${base}/mcp/tools`, handleListMCPTools)
+
+  app.post('/api/chat/stream', handleComfyUIChatStream)
+  app.get('/api/chat/history/:sessionId', handleComfyUIChatHistory)
+  app.post('/api/chat/abort/:sessionId', handleComfyUIChatAbort)
+
+  app.post('/api/workflow/parse', handleComfyUIWorkflowParse)
+  app.post('/api/workflow/analyze', handleComfyUIWorkflowAnalyze)
+
+  app.post('/api/actions/execute', handleComfyUIActionExecute)
+  app.post('/api/actions/undo', handleComfyUIActionUndo)
+  app.post('/api/user-input', handleComfyUIUserInput)
+
+  app.get('/api/configs', handleComfyUIListConfigs)
+  app.post('/api/configs', handleComfyUICreateConfig)
+  app.get('/api/configs/:configId', handleComfyUIGetConfig)
+  app.put('/api/configs/:configId', handleComfyUIUpdateConfig)
+  app.delete('/api/configs/:configId', handleComfyUIDeleteConfig)
+  app.post('/api/configs/set-default', handleComfyUISetDefaultConfig)
+
+  app.get('/api/github-token', handleComfyUIGetGitHubToken)
+  app.put('/api/github-token', handleComfyUIUpdateGitHubToken)
+  app.delete('/api/github-token', handleComfyUIDeleteGitHubToken)
+
+  app.post('/api/fork', handleComfyUIFork)
+  app.post('/api/coordinator', handleComfyUICoordinator)
+  app.post('/api/auto-dream', handleComfyUIAutoDream)
+  app.get('/api/cost', handleComfyUICost)
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok', service: 'comfyui-workflow-agent', version: '2.0.0' })
+  })
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' })
@@ -201,6 +335,23 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     }
   }
 
+  try {
+    const { registerMCPServer } = await import('../mcp/index.js')
+    const comfyuiMcpConfig: import('../mcp/index.js').MCPServerConfig = {
+      name: 'comfyui',
+      command: 'npx',
+      args: ['tsx', join(process.cwd(), 'src', 'comfyui', 'mcp-server', 'index.ts')],
+      transport: 'stdio',
+      restartOnFailure: true,
+      maxRestartAttempts: 3,
+      disabled: false,
+      alwaysAllow: ['comfyui_list_models', 'comfyui_get_queue', 'comfyui_get_history', 'comfyui_get_system_stats', 'comfyui_list_nodes'],
+    }
+    registerMCPServer(comfyuiMcpConfig)
+  } catch {
+    // ComfyUI MCP server registration is optional
+  }
+
   const { connectAllMCPServers } = await import('../mcp/index.js')
   try {
     const connectedServers = await connectAllMCPServers()
@@ -212,6 +363,23 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     // MCP connection failures are non-fatal
   }
 
+  try {
+    const { initTelemetry } = await import('../telemetry/index.js')
+    const { FeatureGateManager } = await import('../feature-gate/index.js')
+    const gate = FeatureGateManager.getInstance()
+    gate.override('telemetry', true)
+    initTelemetry({ enabled: true })
+  } catch {
+    // telemetry initialization is optional
+  }
+
+  try {
+    const { ensureComfyUITeam } = await import('../comfyui/team-config.js')
+    await ensureComfyUITeam(process.cwd())
+  } catch {
+    // ComfyUI team initialization is optional
+  }
+
   const { getDefaultProvider } = await import('../providers/provider-store.js')
   const defaultProvider = getDefaultProvider()
   if (defaultProvider) {
@@ -219,6 +387,13 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     if (memoryManager) {
       memoryManager.setProvider(defaultProvider, defaultProvider.config.defaultModel)
     }
+  }
+
+  const { ComfyUIConfigStore } = await import('./routes.js')
+  const configStore = new ComfyUIConfigStore()
+  const githubToken = configStore.getGitHubToken()
+  if (githubToken) {
+    process.env.GITHUB_TOKEN = githubToken
   }
 
   const port = config.port ?? 3000

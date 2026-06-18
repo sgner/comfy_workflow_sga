@@ -11,8 +11,8 @@ const enableFileLog = process.env.LOG_ENABLE_FILE !== 'false'
 initFileLogging(logDir, enableFileLog)
 
 const serverConfig: ServerConfig = {
-  port: parseInt(process.env.PORT ?? '3000', 10),
-  host: process.env.HOST ?? '0.0.0.0',
+  port: parseInt(process.env.PORT ?? '8000', 10),
+  host: process.env.HOST ?? '127.0.0.1',
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   apiKey: process.env.SGA_API_KEY ?? undefined,
   basePath: process.env.BASE_PATH ?? '/api/v1',

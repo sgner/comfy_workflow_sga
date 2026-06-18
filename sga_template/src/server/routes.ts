@@ -1,34 +1,109 @@
 import type { Request, Response } from 'express'
 import type { Session, CreateSessionRequest, SendMessageRequest, SendMessageResponse, StreamEventPayload, UserInputRequest } from './session.js'
-import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput } from './session.js'
-import type { Message } from '../core/types.js'
+import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput, formatSSE } from './session.js'
+import type { Message, AgentStreamEvent } from '../core/types.js'
 import type { PendingAction, UserApprovalResponse, UserInputResponse, SuspendedContext } from './interaction.js'
+import { createApprovalRequest, createHumanInputRequest, pendingResolvers } from './interaction.js'
 import { createLogger } from '../utils/logger.js'
 import { getSessionStore } from './session-store.js'
 import { getMemoryManager } from '../memory/manager.js'
-import { MemoryExtractor } from '../memory/extractor.js'
+import { MemoryExtractor, DEFAULT_EXTRACTOR_CONFIG } from '../memory/extractor.js'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'fs'
+import { join } from 'path'
+import { getSgaHome } from '../memory/paths.js'
+import { undoLastAction } from '../tools/built-in/workflow-action.js'
+import { getWorkingSet, initWorkingSet } from '../memory/working-set-registry.js'
+import { config as dotenvConfig } from 'dotenv'
+import { resolve } from 'path'
+
+dotenvConfig({ path: resolve(process.cwd(), '.env'), override: true })
 
 const logger = createLogger('routes')
-import { createApprovalRequest, createHumanInputRequest } from './interaction.js'
 import { createBuiltinTools } from '../tools/built-in/index.js'
 import { assembleToolPool } from '../tools/registry.js'
 import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
 import { createAllMCPToolAdapters } from '../mcp/adapter.js'
-import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, Coordinator, createCoordinatorPlanFromUserQuery, generateDynamicPlan, listSnapshots, getCoordinatorSystemPrompt } from '../agents/index.js'
+import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, getCoordinatorAgentDefinition, isCoordinatorMode, setCoordinatorMode, getCoordinatorSystemPrompt, listSnapshots, getPlanManager } from '../agents/index.js'
 import { getTaskManager } from '../tasks/index.js'
-import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks } from '../tools/built-in/agent.js'
+import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks, setTaskNotificationCallback, formatTaskNotificationXml } from '../tools/built-in/agent.js'
+import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
+import { getAgentExtensions } from '../comfyui/agent-extensions.js'
 import { CostTracker } from '../utils/cost-tracker.js'
 import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider } from '../providers/provider-store.js'
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
 import type { PermissionResult } from '../tools/base.js'
+import {
+  loadPermissionRules,
+  savePermissionRules,
+  addRuleToConfig,
+  removeRuleFromConfig,
+  listRulesFromConfig,
+  ruleFileToRuleSet,
+  createPermissionCheckerFromConfig,
+  createDefaultClassifier,
+} from '../permissions/index.js'
+import type { PermissionRuleFile } from '../permissions/index.js'
+import {
+  loadHookConfig,
+  addHookToConfig,
+  removeHookFromConfig,
+  listHooksFromConfig,
+} from '../hooks/config.js'
+import { HookRegistry, HookExecutor } from '../hooks/executor.js'
+import type { HookEventType, HookExecutionContext } from '../hooks/types.js'
+import { FeatureGateManager, isFeatureEnabled } from '../feature-gate/index.js'
+import type { FeatureGateConfig } from '../feature-gate/index.js'
+import { TelemetryManager, initTelemetry } from '../telemetry/index.js'
+import { classifyBashCommand, classifyError } from '../permissions/index.js'
+import { buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context/system-prompt.js'
 
-const costTrackers: Map<string, CostTracker> = new Map()
-const pendingResolvers: Map<string, {
-  resolve: (response: unknown) => void
-  reject: (error: Error) => void
-}> = new Map()
 const activeSSEConnections: Map<string, Response> = new Map()
+const activeAbortControllers: Map<string, AbortController> = new Map()
+const costTrackers: Map<string, CostTracker> = new Map()
+
+function initSSEResponse(res: Response): void {
+  if (!res.headersSent) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+  }
+}
+
+function sendComfyUIEvent(res: Response, event: AgentStreamEvent): void {
+  try {
+    if (res.writableEnded) return
+    if (!res.headersSent) {
+      initSSEResponse(res)
+    }
+    res.write(formatSSE(event))
+  } catch {
+    // connection closed
+  }
+}
+
+function closeSSEConnection(sessionId: string): void {
+  const existing = activeSSEConnections.get(sessionId)
+  if (existing) {
+    try {
+      existing.end()
+    } catch {
+      // already closed
+    }
+    activeSSEConnections.delete(sessionId)
+  }
+
+  const abortCtrl = activeAbortControllers.get(sessionId)
+  if (abortCtrl) {
+    try {
+      abortCtrl.abort()
+    } catch {
+      // already aborted
+    }
+    activeAbortControllers.delete(sessionId)
+  }
+}
 
 function getSessionId(req: Request): string {
   return req.params.sessionId as string
@@ -53,6 +128,45 @@ async function buildToolPoolWithAgents(): Promise<import('../tools/base.js').Too
   return assembleToolPool(builtinTools, mcpToolAdapters)
 }
 
+const COMPLEXITY_KEYWORDS = [
+  'implement', 'refactor', 'migrate', 'redesign', 'architect', 'rewrite',
+  'integrate', 'build', 'create a', 'develop', 'design and implement',
+  'end-to-end', 'full-stack', 'multi-step', 'comprehensive',
+  '实现', '重构', '迁移', '重新设计', '架构', '重写',
+  '集成', '构建', '开发', '设计并实现', '端到端', '全栈',
+  '多步骤', '综合', '完整实现', '从零开始',
+]
+
+const SIMPLE_KEYWORDS = [
+  'what is', 'explain', 'show me', 'list', 'how does', 'where is',
+  'read', 'cat', 'echo', 'print', 'tell me',
+  '什么是', '解释', '列出', '怎么', '在哪', '读取', '显示',
+]
+
+function shouldUseCoordinator(query: string, agentType?: string): boolean {
+  if (!isFeatureEnabled('auto_coordinator')) return false
+
+  if (agentType && agentType !== 'general-purpose') return false
+
+  const lowerQuery = query.toLowerCase()
+
+  const simpleScore = SIMPLE_KEYWORDS.reduce((acc, kw) => acc + (lowerQuery.includes(kw) ? 1 : 0), 0)
+  if (simpleScore >= 2 && !lowerQuery.includes('and')) return false
+
+  if (lowerQuery.length < 30) return false
+
+  const complexScore = COMPLEXITY_KEYWORDS.reduce((acc, kw) => acc + (lowerQuery.includes(kw) ? 1 : 0), 0)
+  if (complexScore >= 2) return true
+
+  const sentenceCount = query.split(/[.!?。！？]+/).filter(s => s.trim().length > 5).length
+  if (sentenceCount >= 3) return true
+
+  const hasMultipleActions = (lowerQuery.match(/\band\b|&|，|；|然后|接着|之后/g) || []).length >= 2
+  if (hasMultipleActions) return true
+
+  return false
+}
+
 export function handleListSessions(_req: Request, res: Response): void {
   const store = getSessionStore()
   const list = Array.from(store.values()).map(s => ({
@@ -70,16 +184,29 @@ export function handleListSessions(_req: Request, res: Response): void {
   res.json({ sessions: list })
 }
 
-export function handleCreateSession(req: Request, res: Response): void {
+export async function handleCreateSession(req: Request, res: Response): Promise<void> {
   const body: CreateSessionRequest = req.body
 
   if (body.providerName) {
     const available = getAllProviderNames()
     if (!available.includes(body.providerName)) {
-      res.status(400).json({
-        error: `Provider "${body.providerName}" is not configured. Available providers: ${available.join(', ') || 'none'}`,
-      })
-      return
+      if (body.providerName.startsWith('comfyui-')) {
+        const configId = body.providerName.slice('comfyui-'.length)
+        const config = comfyUIConfigStore.getConfigById(configId)
+        if (config) {
+          await ensureSgaProvider(config)
+        } else {
+          res.status(400).json({
+            error: `ComfyUI config "${configId}" not found. Available configs: ${comfyUIConfigStore.getConfigs().map(c => c.id).join(', ') || 'none'}`,
+          })
+          return
+        }
+      } else {
+        res.status(400).json({
+          error: `Provider "${body.providerName}" is not configured. Available providers: ${available.join(', ') || 'none'}`,
+        })
+        return
+      }
     }
   }
 
@@ -95,7 +222,7 @@ export function handleCreateSession(req: Request, res: Response): void {
     providerName: body.providerName,
   })
   store.set(session)
-  costTrackers.set(session.id, new CostTracker({ maxBudgetUsd: body.maxBudgetUsd }))
+  getOrCreateCostManager(session.id, body.maxBudgetUsd)
   res.status(201).json({ session })
 }
 
@@ -136,7 +263,7 @@ export function handleDeleteSession(req: Request, res: Response): void {
     return
   }
   store.delete(sessionId)
-  costTrackers.delete(sessionId)
+  removeCostManager(sessionId)
   pendingResolvers.delete(sessionId)
   activeSSEConnections.delete(sessionId)
   res.json({ success: true })
@@ -172,6 +299,62 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
 
   logger.info(`Session ${sessionId}: received message, content length=${body.content.length}, stream=${useStream}`)
 
+  if (session.config.agentType === 'comfyui-workflow' || body.agentType === 'comfyui-workflow') {
+    let ws = getWorkingSet()
+    if (!ws) {
+      ws = initWorkingSet()
+    }
+    const workflowMatch = body.content.match(/\[FULL WORKFLOW JSON\]\s*([\s\S]*?)(?:\n\[|$)/)
+    if (workflowMatch) {
+      try {
+        const workflowObj = JSON.parse(workflowMatch[1].trim())
+        const nodes = (workflowObj?.nodes ?? []) as Array<Record<string, unknown>>
+        ws.pin(
+          `workflow-${sessionId}`,
+          `ComfyUI Workflow (${nodes.length} nodes)`,
+          JSON.stringify(workflowObj),
+          'comfyui-workflow',
+          'critical',
+          20_000,
+        )
+
+        const nodeTypes = nodes.map(n => n.type as string).filter(Boolean)
+        const uniqueTypes = [...new Set(nodeTypes)]
+        const typeCounts = new Map<string, number>()
+        for (const t of nodeTypes) {
+          typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1)
+        }
+        const summaryLines = [
+          `Total nodes: ${nodes.length}`,
+          `Unique node types: ${uniqueTypes.length}`,
+          `Node types: ${uniqueTypes.map(t => `${t}(${typeCounts.get(t)})`).join(', ')}`,
+        ]
+        ws.pin(
+          `workflow-summary-${sessionId}`,
+          `Workflow Summary`,
+          summaryLines.join('\n'),
+          'comfyui-workflow',
+          'high',
+          1_000,
+        )
+      } catch {
+        // not valid JSON, skip
+      }
+    }
+
+    const errorMatch = body.content.match(/\[RUNTIME ERRORS\]\s*([\s\S]*?)(?:\n\[|$)/)
+    if (errorMatch && errorMatch[1].trim()) {
+      ws.pin(
+        `error-log-${sessionId}`,
+        `Runtime Errors`,
+        errorMatch[1].trim(),
+        'comfyui-workflow',
+        'high',
+        3_000,
+      )
+    }
+  }
+
   const userMessage: Message = {
     id: `msg-${Date.now()}`,
     role: 'user',
@@ -199,6 +382,64 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     if (!agentDef) {
       res.status(500).json({ error: 'No agent definition available' })
       return
+    }
+
+    if (shouldUseCoordinator(body.content, body.agentType)) {
+      logger.info(`Session ${sessionId}: complex task detected, routing to Coordinator agent`)
+
+      try {
+        const allAgentDefs = await getAllAgentDefinitions()
+        const toolPool = await buildToolPoolWithAgents()
+        const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
+
+        setCoordinatorMode(true)
+
+        const pendingNotifications: Array<{ taskId: string; status: string; summary: string; result?: string }> = []
+
+        setTaskNotificationCallback((notification) => {
+          pendingNotifications.push(notification)
+        })
+
+        const result = await runAgent({
+          agentDefinition: coordinatorDef,
+          prompt: body.content,
+          messages: session.messages,
+          tools: toolPool,
+          model,
+          provider,
+          maxTurns: session.config.maxTurns ?? 50,
+          maxBudgetUsd: session.config.maxBudgetUsd,
+          agentDefinitions: allAgentDefs,
+        })
+
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+
+        const assistantMessage: Message = {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: result.content }],
+          timestamp: Date.now(),
+        }
+        store.appendMessage(session.id, assistantMessage)
+        store.appendUsage(session.id, result.usage)
+
+        triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
+
+        const response: SendMessageResponse = {
+          sessionId: session.id,
+          content: result.content,
+          usage: result.usage,
+          messages: session.messages,
+        }
+
+        res.json(response)
+        return
+      } catch (coordError) {
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        logger.warn(`Coordinator agent failed, falling back to direct agent: ${coordError instanceof Error ? coordError.message : String(coordError)}`)
+      }
     }
 
     const requestApproval = async (event: import('../agents/runner.js').ApprovalEvent): Promise<import('../agents/runner.js').ApprovalResponse> => {
@@ -251,6 +492,7 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
           decision: userResponse.decision,
           updatedInput: userResponse.updatedInput,
           reason: userResponse.reason,
+          permissionUpdate: userResponse.permissionUpdate,
         }
       } catch (error) {
         clearSessionWaitingInput(session)
@@ -337,7 +579,7 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     store.appendMessage(session.id, assistantMessage)
     store.appendUsage(session.id, result.usage)
 
-    triggerMemoryExtraction(session.messages, provider, model)
+    triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
 
     const response: SendMessageResponse = {
       sessionId: session.id,
@@ -361,20 +603,26 @@ async function handleStreamResponse(
   session: Session,
   body: SendMessageRequest,
 ): Promise<void> {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
+  const abortController = activeAbortControllers.get(session.id) ?? new AbortController()
+  activeAbortControllers.set(session.id, abortController)
+
+  initSSEResponse(res)
 
   activeSSEConnections.set(session.id, res)
 
-  const sendEvent = (event: StreamEventPayload) => {
+  const sendEvent = (event: AgentStreamEvent) => {
     try {
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
+      if (res.writableEnded || abortController.signal.aborted) return
+      if (!res.headersSent) {
+        initSSEResponse(res)
+      }
+      res.write(formatSSE(event))
     } catch {
       // connection closed
     }
   }
+
+  let partialText = ''
 
   try {
     const provider = getProviderForSession(session, body.providerName)
@@ -384,6 +632,8 @@ async function handleStreamResponse(
     const agentDef = body.agentType
       ? getAgentDefinitionByName(body.agentType, agentDefs)
       : agentDefs[0]
+
+    sendEvent({ type: 'session_start', sessionId: session.id, model, agentType: body.agentType })
 
     if (!agentDef) {
       sendEvent({ type: 'error', data: 'No agent definition available' })
@@ -411,7 +661,12 @@ async function handleStreamResponse(
 
       sendEvent({
         type: 'approval_required',
-        data: approvalReq,
+        actionId: approvalReq.id,
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        toolCallId: event.toolCallId,
+        message: event.message,
+        suggestions: event.suggestions,
       })
 
       const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
@@ -453,6 +708,7 @@ async function handleStreamResponse(
           decision: userResponse.decision,
           updatedInput: userResponse.updatedInput,
           reason: userResponse.reason,
+          permissionUpdate: userResponse.permissionUpdate,
         }
       } catch (error) {
         clearSessionWaitingInput(session)
@@ -474,7 +730,10 @@ async function handleStreamResponse(
 
       sendEvent({
         type: 'human_input_required',
-        data: inputReq,
+        actionId: inputReq.id,
+        message: event.message,
+        context: event.context,
+        options: event.options,
       })
 
       const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
@@ -521,6 +780,79 @@ async function handleStreamResponse(
       }
     }
 
+    if (shouldUseCoordinator(body.content, body.agentType)) {
+      logger.info(`Session ${session.id} (stream): complex task detected, routing to Coordinator agent`)
+
+      sendEvent({ type: 'coordinator_start', data: { query: body.content } })
+
+      try {
+        const allAgentDefs = await getAllAgentDefinitions()
+        const toolPool = await buildToolPoolWithAgents()
+        const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
+
+        setCoordinatorMode(true)
+
+        setTaskNotificationCallback((notification) => {
+          sendEvent({
+            type: 'task_notification',
+            taskId: notification.taskId,
+            status: notification.status === 'killed' ? 'stopped' : notification.status,
+            summary: notification.summary,
+          })
+        })
+
+        const planMgr = getPlanManager()
+        planMgr.setNotificationCallback((event) => {
+          sendEvent({
+            type: 'plan_update',
+            data: event,
+          } as unknown as AgentStreamEvent)
+        })
+
+        const result = await runAgent({
+          agentDefinition: coordinatorDef,
+          prompt: body.content,
+          messages: session.messages,
+          tools: toolPool,
+          model,
+          provider,
+          maxTurns: session.config.maxTurns ?? 50,
+          maxBudgetUsd: session.config.maxBudgetUsd,
+          agentDefinitions: allAgentDefs,
+          signal: abortController.signal,
+          requestApproval,
+          requestHumanInput,
+        })
+
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        planMgr.setNotificationCallback(null)
+
+        const assistantMessage: Message = {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: result.content }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, assistantMessage)
+        getSessionStore().appendUsage(session.id, result.usage)
+
+        triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
+
+        sendEvent({ type: 'coordinator_end', data: { planId: 'coordinator-agent', totalTasks: 0, completedTasks: 0 } })
+        sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
+      } catch (coordError) {
+        setCoordinatorMode(false)
+        setTaskNotificationCallback(null)
+        logger.warn(`Coordinator agent failed (stream), falling back to direct agent: ${coordError instanceof Error ? coordError.message : String(coordError)}`)
+        sendEvent({ type: 'coordinator_fallback', data: { reason: coordError instanceof Error ? coordError.message : String(coordError) } })
+      }
+
+      res.end()
+      activeSSEConnections.delete(session.id)
+      return
+    }
+
     const result = await runAgent({
       agentDefinition: agentDef,
       prompt: body.content,
@@ -531,25 +863,12 @@ async function handleStreamResponse(
       maxTurns: session.config.maxTurns,
       maxBudgetUsd: session.config.maxBudgetUsd,
       stream: true,
-      onProgress: (event: unknown) => {
-        const e = event as { type: string; text?: string; toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; toolCallId?: string; message?: string; suggestions?: string[]; reason?: unknown }
-        switch (e.type) {
-          case 'stream_delta':
-            sendEvent({ type: 'text_delta', data: e.text ?? '' })
-            break
-          case 'thinking_delta':
-            sendEvent({ type: 'thinking_delta', data: e.text ?? '' })
-            break
-          case 'tool_use_start':
-            sendEvent({ type: 'tool_use_start', data: { toolName: e.toolName, toolUseId: e.toolUseId } })
-            break
-          case 'tool_use_result':
-            sendEvent({ type: 'tool_use_result', data: e })
-            break
-          case 'turn_end':
-            sendEvent({ type: 'turn_end', data: e })
-            break
+      signal: abortController.signal,
+      onProgress: (event: AgentStreamEvent) => {
+        if (event.type === 'stream_delta' && event.text) {
+          partialText += event.text
         }
+        sendEvent(event)
       },
       requestApproval,
       requestHumanInput,
@@ -564,17 +883,137 @@ async function handleStreamResponse(
     getSessionStore().appendMessage(session.id, assistantMessage)
     getSessionStore().appendUsage(session.id, result.usage)
 
-    triggerMemoryExtraction(session.messages, provider, model)
+    const costMgr = getCostManager(session.id)
+    if (costMgr) {
+      costMgr.recordUsage(result.usage)
+    }
+
+    try {
+      const taskMgr = getTaskManager()
+      const existingTask = taskMgr.get(session.id)
+      if (existingTask) {
+        taskMgr.completeWithUsage(
+          session.id,
+          result.content.slice(0, 200),
+          {
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+            totalCostUsd: costMgr?.getReport().totalCostUsd ?? 0,
+          },
+          Date.now() - existingTask.createdAt,
+        )
+      }
+    } catch {
+      // task completion tracking is optional
+    }
+
+    triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
+
+    try {
+      const { extractWorkflowJSON, validateWorkflowJSON } = await import('../comfyui/verification-strategies.js')
+      const workflowJson = extractWorkflowJSON(result.content)
+      if (workflowJson) {
+        // 发送 workflow_updated 事件让前端立刻应用工作流
+        sendEvent({ type: 'workflow_updated', workflowJson: JSON.stringify(workflowJson), actionType: 'agent_response' })
+        const validationResult = validateWorkflowJSON(workflowJson)
+        sendEvent({
+          type: 'verification_result',
+          data: {
+            verdict: validationResult.verdict,
+            strategy: validationResult.strategy,
+            summary: validationResult.summary,
+            checks: validationResult.checks,
+          },
+        } as AgentStreamEvent)
+      }
+    } catch (e) {
+      logger.debug(`Workflow verification skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
     sendEvent({ type: 'done', data: { content: result.content, usage: result.usage } })
+
+    TelemetryManager.getInstance().trackEvent('comfyui_chat_complete', {
+      sessionId: session.id,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      contentLength: result.content.length,
+      hasWorkflowJson: /\{.*"nodes".*\}/s.test(result.content),
+    })
+
+    try {
+      const extensions = getAgentExtensions(session.config.agentType ?? 'comfyui-workflow')
+      if (extensions?.enableAutoDream) {
+        const memoryManager = getMemoryManager()
+        if (memoryManager) {
+          const { executeAutoDream, DEFAULT_AUTO_DREAM_CONFIG } = await import('../memory/consolidation/auto-dream.js')
+          const { buildComfyUIConsolidationPrompt } = await import('../comfyui/consolidation-prompt.js')
+          const extConfig = extensions.autoDreamConfig ?? {}
+          const autoDreamConfig = {
+            ...DEFAULT_AUTO_DREAM_CONFIG,
+            ...extConfig,
+            customPromptBuilder: buildComfyUIConsolidationPrompt,
+          }
+          const sessionCount = getSessionStore().size()
+          executeAutoDream(memoryManager, provider, sessionCount, autoDreamConfig).catch(e => {
+            logger.debug(`AutoDream background error: ${e instanceof Error ? e.message : String(e)}`)
+          })
+        }
+      }
+    } catch (e) {
+      logger.debug(`AutoDream trigger skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    try {
+      const extensions = getAgentExtensions(session.config.agentType ?? 'comfyui-workflow')
+      if (extensions?.enableTeamSync) {
+        const memoryManager = getMemoryManager()
+        if (memoryManager) {
+          const { TeamMemorySync } = await import('../memory/team-memory-sync.js')
+          const { COMFYUI_TEAM_MEMORY_SYNC_CONFIG } = await import('../comfyui/team-config.js')
+          const syncConfig = {
+            ...COMFYUI_TEAM_MEMORY_SYNC_CONFIG,
+            ...extensions.teamSyncConfig,
+          }
+          const sync = new TeamMemorySync(
+            session.config.agentType ?? 'comfyui-workflow',
+            session.id,
+            syncConfig,
+          )
+          if (sync.shouldSync()) {
+            sync.syncWithTeam(memoryManager).catch(e => {
+              logger.debug(`Team memory sync error: ${e instanceof Error ? e.message : String(e)}`)
+            })
+          }
+        }
+      }
+    } catch (e) {
+      logger.debug(`Team memory sync skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
   } catch (error) {
-    getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
-    sendEvent({ type: 'error', data: session.error })
-    sendEvent({ type: 'done', data: null })
+    if (abortController.signal.aborted) {
+      logger.info(`Session ${session.id}: agent run was aborted`)
+      if (partialText.trim()) {
+        const partialMsg: Message = {
+          id: `msg-partial-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: partialText + '\n\n[Response interrupted - workflow was switched]' }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, partialMsg)
+      }
+    } else {
+      getSessionStore().updateStatus(session.id, 'error', error instanceof Error ? error.message : String(error))
+      sendEvent({ type: 'error', data: session.error ?? 'Unknown error' })
+      sendEvent({ type: 'done', data: null })
+    }
   }
 
-  res.end()
+  if (!res.writableEnded) {
+    res.end()
+  }
   activeSSEConnections.delete(session.id)
+  activeAbortControllers.delete(session.id)
 }
 
 export function handleUserInput(req: Request, res: Response): void {
@@ -612,6 +1051,7 @@ export function handleUserInput(req: Request, res: Response): void {
       decision: body.decision ?? 'deny',
       updatedInput: body.updatedInput,
       reason: body.reason,
+      permissionUpdate: body.permissionUpdate,
     }
     pendingResolver.resolve(response)
   } else {
@@ -629,6 +1069,181 @@ export function handleUserInput(req: Request, res: Response): void {
     success: true,
     sessionId: session.id,
     message: 'Input received, agent execution will resume',
+  })
+}
+
+export async function handleComfyUIFork(req: Request, res: Response): Promise<void> {
+  const { session_id, directive, max_turns } = req.body as Record<string, unknown>
+
+  const store = getSessionStore()
+  const session = store.get(session_id as string)
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  try {
+    const { buildForkedMessagesFromParentContext } = await import('../agents/fork.js')
+    const { runComfyUIAgent } = await import('../comfyui/adapter.js')
+
+    const provider = getProviderForSession(session)
+    const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+    const tools = buildToolPool()
+    const agentDefs = await getAllAgentDefinitions()
+    const agentDef = agentDefs.find(a => a.name === 'comfyui-workflow') ?? agentDefs[0]
+
+    if (!agentDef) {
+      res.status(500).json({ error: 'No agent definition available' })
+      return
+    }
+
+    const forkedMessages = buildForkedMessagesFromParentContext(
+      directive as string,
+      session.messages,
+    )
+
+    const result = await runComfyUIAgent({
+      agentDefinition: agentDef,
+      prompt: directive as string,
+      messages: forkedMessages,
+      tools,
+      model,
+      provider,
+      maxTurns: (max_turns as number) ?? 5,
+    })
+
+    res.json({
+      success: true,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`Fork failed: ${msg}`)
+    res.status(500).json({ error: msg })
+  }
+}
+
+export async function handleComfyUICoordinator(req: Request, res: Response): Promise<void> {
+  const { session_id, query, strategy } = req.body as Record<string, unknown>
+
+  const store = getSessionStore()
+  const session = store.get(session_id as string)
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  try {
+    const allAgentDefs = await getAllAgentDefinitions()
+    const provider = getProviderForSession(session)
+    const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+    const toolPool = await buildToolPoolWithAgents()
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
+
+    setCoordinatorMode(true)
+
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: query as string,
+      tools: toolPool,
+      model,
+      provider,
+      maxTurns: 50,
+      agentDefinitions: allAgentDefs,
+    })
+
+    setCoordinatorMode(false)
+
+    res.json({
+      success: true,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
+      totalDurationMs: result.totalDurationMs,
+    })
+  } catch (error) {
+    setCoordinatorMode(false)
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`Coordinator failed: ${msg}`)
+    res.status(500).json({ error: msg })
+  }
+}
+
+export async function handleComfyUIAutoDream(req: Request, res: Response): Promise<void> {
+  const { session_id } = req.body as Record<string, unknown>
+
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(500).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  try {
+    const { shouldConsolidate, executeAutoDream } = await import('../memory/consolidation/auto-dream.js')
+
+    const store = getSessionStore()
+    const session = session_id ? store.get(session_id as string) : null
+    const provider = session ? getProviderForSession(session) : null
+
+    if (!provider) {
+      res.status(500).json({ error: 'No provider available' })
+      return
+    }
+
+    const sessionCount = store.size()
+
+    const { shouldRun, hoursSinceLast } = shouldConsolidate(
+      memoryManager.getMemoryDir(),
+      sessionCount,
+    )
+
+    if (!shouldRun) {
+      res.json({
+        success: true,
+        consolidated: false,
+        hoursSinceLast,
+        sessionCount,
+        message: `Not enough time or sessions since last consolidation (${hoursSinceLast.toFixed(1)}h, ${sessionCount} sessions)`,
+      })
+      return
+    }
+
+    const result = await executeAutoDream(memoryManager, provider, sessionCount)
+
+    res.json({
+      success: true,
+      consolidated: result.consolidated,
+      hoursSinceLast: result.hoursSinceLast,
+      sessionsReviewed: result.sessionsReviewed,
+      summary: result.summary,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`Auto-dream failed: ${msg}`)
+    res.status(500).json({ error: msg })
+  }
+}
+
+export function handleComfyUICost(req: Request, res: Response): void {
+  const { session_id } = req.query as Record<string, unknown>
+  const store = getSessionStore()
+  const session = session_id ? store.get(session_id as string) : null
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+  const costMgr = getCostManager(session.id)
+  const report = costMgr?.getReport()
+  res.json({
+    session_id: session.id,
+    usage: session.usage,
+    costReport: report?.report ?? 'No cost tracker',
+    totalCostUsd: report?.totalCostUsd ?? 0,
+    isOverBudget: report?.isOverBudget ?? false,
+    isNearBudget: report?.isNearBudget ?? false,
+    remainingBudget: report?.remainingBudget,
   })
 }
 
@@ -651,10 +1266,10 @@ export function handleGetUsage(req: Request, res: Response): void {
     res.status(404).json({ error: 'Session not found' })
     return
   }
-  const tracker = costTrackers.get(sessionId)
+  const costMgr = getCostManager(sessionId)
   res.json({
     usage: session.usage,
-    costReport: tracker?.getUsageReport() ?? 'No cost tracker',
+    costReport: costMgr?.getReport().report ?? 'No cost tracker',
   })
 }
 
@@ -700,7 +1315,7 @@ export async function handleCreateAgent(req: Request, res: Response): Promise<vo
 }
 
 export async function handleCoordinate(req: Request, res: Response): Promise<void> {
-  const { query, strategy, maxConcurrency, model, providerName, dynamic } = req.body
+  const { query, model, providerName } = req.body
 
   if (!query) {
     res.status(400).json({ error: 'query is required' })
@@ -720,61 +1335,32 @@ export async function handleCoordinate(req: Request, res: Response): Promise<voi
 
     const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
     const toolPool = await buildToolPoolWithAgents()
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
-    let plan: import('../agents/coordinator.js').CoordinatorPlan
-    if (dynamic) {
-      plan = await generateDynamicPlan(query, allAgentDefs, provider, resolvedModel)
-    } else {
-      plan = createCoordinatorPlanFromUserQuery(query, allAgentDefs)
-    }
-    if (strategy) plan.strategy = strategy
+    setCoordinatorMode(true)
 
-    const coordinator = new Coordinator({
-      maxConcurrency: maxConcurrency ?? 3,
-      defaultModel: resolvedModel,
-      provider,
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: query,
       tools: toolPool,
+      model: resolvedModel,
+      provider,
+      maxTurns: 50,
       agentDefinitions: allAgentDefs,
     })
 
-    const result = await coordinator.execute(plan)
+    setCoordinatorMode(false)
 
     res.json({
-      plan: {
-        id: result.plan.id,
-        query: result.plan.query,
-        strategy: result.plan.strategy,
-        tasks: result.plan.tasks.map(t => ({
-          id: t.id,
-          description: t.description,
-          phase: t.phase,
-          agentType: t.agentType,
-          dependsOn: t.dependsOn,
-        })),
-        createdAt: result.plan.createdAt,
-        updatedAt: result.plan.updatedAt,
-      },
-      tasks: result.tasks.map(t => ({
-        id: t.id,
-        description: t.description,
-        phase: t.phase,
-        agentType: t.agentType,
-        status: t.status,
-        result: t.result ? {
-          content: t.result.content,
-          durationMs: t.result.durationMs,
-          turnCount: t.result.turnCount,
-          toolUseCount: t.result.toolUseCount,
-        } : undefined,
-        error: t.error,
-      })),
-      synthesis: result.synthesis,
-      totalUsage: result.totalUsage,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
       totalDurationMs: result.totalDurationMs,
     })
   } catch (error) {
+    setCoordinatorMode(false)
     const errMsg = error instanceof Error ? error.message : String(error)
-    logger.error(`Coordinator execution failed: ${errMsg}`)
+    logger.error(`Coordinator agent failed: ${errMsg}`)
     res.status(500).json({ error: errMsg })
   }
 }
@@ -799,24 +1385,20 @@ export async function handleGeneratePlan(req: Request, res: Response): Promise<v
     }
 
     const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
-    const plan = await generateDynamicPlan(query, allAgentDefs, provider, resolvedModel)
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
     res.json({
-      plan: {
-        id: plan.id,
-        query: plan.query,
-        strategy: plan.strategy,
-        tasks: plan.tasks.map(t => ({
-          id: t.id,
-          description: t.description,
-          phase: t.phase,
-          agentType: t.agentType,
-          prompt: t.prompt,
-          dependsOn: t.dependsOn,
-        })),
-        createdAt: plan.createdAt,
-        updatedAt: plan.updatedAt,
+      message: 'Plan generation is now handled by the Coordinator agent at runtime. Use the /coordinate endpoint to execute tasks.',
+      coordinatorAgent: {
+        name: coordinatorDef.name,
+        description: coordinatorDef.description,
+        subagentType: coordinatorDef.subagentType,
       },
+      availableAgents: allAgentDefs.map(a => ({
+        name: a.name,
+        description: a.description,
+        subagentType: a.subagentType,
+      })),
     })
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
@@ -831,7 +1413,7 @@ export function handleListSnapshots(_req: Request, res: Response): void {
 }
 
 export async function handleResumePlan(req: Request, res: Response): Promise<void> {
-  const { snapshotPath, maxConcurrency, model, providerName } = req.body
+  const { snapshotPath, model, providerName } = req.body
 
   if (!snapshotPath) {
     res.status(400).json({ error: 'snapshotPath is required' })
@@ -851,49 +1433,30 @@ export async function handleResumePlan(req: Request, res: Response): Promise<voi
     const resolvedModel = model ?? provider.config.defaultModel ?? 'sonnet'
     const allAgentDefs = await getAllAgentDefinitions()
     const toolPool = await buildToolPoolWithAgents()
+    const coordinatorDef = getCoordinatorAgentDefinition(allAgentDefs)
 
-    const coordinator = new Coordinator({
-      maxConcurrency: maxConcurrency ?? 3,
-      defaultModel: resolvedModel,
-      provider,
+    setCoordinatorMode(true)
+
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: `Resume the previously saved coordination plan from snapshot: ${snapshotPath}. Read the snapshot file, understand what was done and what remains, then continue the work.`,
       tools: toolPool,
+      model: resolvedModel,
+      provider,
+      maxTurns: 50,
       agentDefinitions: allAgentDefs,
     })
 
-    const result = await coordinator.resumeFromSnapshot(snapshotPath)
+    setCoordinatorMode(false)
 
     res.json({
-      plan: {
-        id: result.plan.id,
-        query: result.plan.query,
-        strategy: result.plan.strategy,
-        tasks: result.plan.tasks.map(t => ({
-          id: t.id,
-          description: t.description,
-          phase: t.phase,
-          agentType: t.agentType,
-          dependsOn: t.dependsOn,
-        })),
-      },
-      tasks: result.tasks.map(t => ({
-        id: t.id,
-        description: t.description,
-        phase: t.phase,
-        agentType: t.agentType,
-        status: t.status,
-        result: t.result ? {
-          content: t.result.content,
-          durationMs: t.result.durationMs,
-          turnCount: t.result.turnCount,
-          toolUseCount: t.result.toolUseCount,
-        } : undefined,
-        error: t.error,
-      })),
-      synthesis: result.synthesis,
-      totalUsage: result.totalUsage,
+      content: result.content,
+      usage: result.usage,
+      turnCount: result.turnCount,
       totalDurationMs: result.totalDurationMs,
     })
   } catch (error) {
+    setCoordinatorMode(false)
     const errMsg = error instanceof Error ? error.message : String(error)
     logger.error(`Resume plan failed: ${errMsg}`)
     res.status(500).json({ error: errMsg })
@@ -971,7 +1534,7 @@ export function handleTaskNotifications(req: Request, res: Response): void {
 
   const handler = (notification: import('../tasks/types.js').TaskNotification) => {
     try {
-      res.write(`data: ${JSON.stringify(notification)}\n\n`)
+      res.write(`event: task_notification\ndata: ${JSON.stringify(notification)}\n\n`)
     } catch {
       // connection closed
     }
@@ -1062,9 +1625,9 @@ export function handleListConfiguredProviders(_req: Request, res: Response): voi
 }
 
 export async function handleAddProvider(req: Request, res: Response): Promise<void> {
-  const config: StoredProviderConfig = req.body
+  const { normalizeProviderConfig, validateProviderConfig } = await import('../providers/provider-store.js')
+  const config = normalizeProviderConfig(req.body as Record<string, unknown>)
 
-  const { validateProviderConfig } = await import('../providers/provider-store.js')
   const validation = validateProviderConfig(config)
 
   if (!validation.valid) {
@@ -1076,7 +1639,7 @@ export async function handleAddProvider(req: Request, res: Response): Promise<vo
     return
   }
 
-  const setAsDefault = req.body.setAsDefault === true
+  const setAsDefault = req.body.setAsDefault === true || req.body.is_default === true
   try {
     const provider = await addProvider(config, setAsDefault)
     res.status(201).json({
@@ -1128,16 +1691,1916 @@ function triggerMemoryExtraction(
   messages: Message[],
   provider: LLMProvider,
   model: string,
+  sessionId: string,
+  agentType?: string,
 ): void {
   const memoryManager = getMemoryManager()
   if (!memoryManager) return
 
-  const extractor = new MemoryExtractor(memoryManager)
+  if (memoryManager.getSessionId() !== sessionId) {
+    memoryManager.setSessionId(sessionId)
+  }
+
+  memoryManager.setProvider(provider, model)
+
+  const isComfyUIAgent = agentType === 'comfyui-workflow'
+  const extractorConfig = isComfyUIAgent
+    ? { ...DEFAULT_EXTRACTOR_CONFIG, forceScope: 'session' as const }
+    : DEFAULT_EXTRACTOR_CONFIG
+
+  const extractor = new MemoryExtractor(memoryManager, extractorConfig)
   extractor.setProvider(provider, model)
 
   if (!extractor.shouldExtract(messages.length)) return
 
   extractor.extractMemories(messages).catch(err => {
     logger.warn(`Background memory extraction failed: ${err instanceof Error ? err.message : String(err)}`)
+  })
+}
+
+export function handleGetPermissionRules(_req: Request, res: Response): void {
+  const rules = listRulesFromConfig()
+  res.json({ rules })
+}
+
+export function handleUpdatePermissionMode(req: Request, res: Response): void {
+  const { mode } = req.body as { mode: string }
+  const validModes = ['default', 'plan', 'acceptEdits', 'bypassPermissions', 'auto', 'bubble', 'dontAsk']
+  if (!mode || !validModes.includes(mode)) {
+    res.status(400).json({ error: `Invalid permission mode. Valid modes: ${validModes.join(', ')}` })
+    return
+  }
+
+  const ruleFile = loadPermissionRules()
+  ruleFile.mode = mode as PermissionRuleFile['mode']
+  savePermissionRules(ruleFile)
+  res.json({ mode: ruleFile.mode, rules: ruleFile })
+}
+
+export function handleAddPermissionRule(req: Request, res: Response): void {
+  const { tool, pattern, behavior, reason } = req.body as {
+    tool: string
+    pattern?: string
+    behavior: 'allow' | 'deny' | 'ask'
+    reason?: string
+  }
+
+  if (!tool || !behavior) {
+    res.status(400).json({ error: 'tool and behavior are required' })
+    return
+  }
+
+  if (!['allow', 'deny', 'ask'].includes(behavior)) {
+    res.status(400).json({ error: 'behavior must be one of: allow, deny, ask' })
+    return
+  }
+
+  addRuleToConfig({ tool, pattern, behavior, reason })
+  const rules = listRulesFromConfig()
+  res.json({ rules })
+}
+
+export function handleRemovePermissionRule(req: Request, res: Response): void {
+  const { tool, pattern, behavior } = req.body as {
+    tool: string
+    pattern?: string
+    behavior: 'allow' | 'deny' | 'ask'
+  }
+
+  if (!tool || !behavior) {
+    res.status(400).json({ error: 'tool and behavior are required' })
+    return
+  }
+
+  removeRuleFromConfig(behavior, tool, pattern)
+  const rules = listRulesFromConfig()
+  res.json({ rules })
+}
+
+export function handleCheckPermission(req: Request, res: Response): void {
+  const { toolName, input } = req.body as { toolName: string; input?: Record<string, unknown> }
+
+  if (!toolName) {
+    res.status(400).json({ error: 'toolName is required' })
+    return
+  }
+
+  const checker = createPermissionCheckerFromConfig()
+  const result = checker.check(toolName, input)
+  res.json({ result })
+}
+
+export function handleListHooks(_req: Request, res: Response): void {
+  const hooks = listHooksFromConfig()
+  res.json({ hooks })
+}
+
+export function handleAddHook(req: Request, res: Response): void {
+  const { event, matcher, command, once, timeout } = req.body as {
+    event: string
+    matcher?: string
+    command: string
+    once?: boolean
+    timeout?: number
+  }
+
+  const validEvents = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStart', 'SubagentStop', 'Cancel', 'Stop', 'TaskCompleted', 'SessionEnd']
+  if (!event || !validEvents.includes(event)) {
+    res.status(400).json({ error: `event is required and must be one of: ${validEvents.join(', ')}` })
+    return
+  }
+  if (!command || typeof command !== 'string') {
+    res.status(400).json({ error: 'command is required and must be a string' })
+    return
+  }
+
+  addHookToConfig({
+    event: event as HookEventType,
+    matcher,
+    command,
+    once,
+    timeout,
+  })
+
+  const hooks = listHooksFromConfig()
+  res.json({ hooks })
+}
+
+export function handleRemoveHook(req: Request, res: Response): void {
+  const { event, command } = req.body as { event: string; command: string }
+
+  if (!event || !command) {
+    res.status(400).json({ error: 'event and command are required' })
+    return
+  }
+
+  removeHookFromConfig(event as HookEventType, command)
+
+  const hooks = listHooksFromConfig()
+  res.json({ hooks })
+}
+
+export function handleTestHook(req: Request, res: Response): void {
+  const { event, toolName, toolInput } = req.body as {
+    event: string
+    toolName?: string
+    toolInput?: Record<string, unknown>
+  }
+
+  const validEvents = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStart', 'SubagentStop', 'Cancel', 'Stop', 'TaskCompleted', 'SessionEnd']
+  if (!event || !validEvents.includes(event)) {
+    res.status(400).json({ error: `event is required and must be one of: ${validEvents.join(', ')}` })
+    return
+  }
+
+  const config = loadHookConfig()
+  const registry = new HookRegistry()
+  for (const hookDef of config.hooks) {
+    registry.register(hookDef)
+  }
+  const executor = new HookExecutor(registry)
+
+  const context: HookExecutionContext = {
+    toolName,
+    toolInput,
+    cwd: process.cwd(),
+  }
+
+  executor.execute(event as HookEventType, context)
+    .then(results => {
+      res.json({ results })
+    })
+    .catch(error => {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+    })
+}
+
+export function handleClassifyPermission(req: Request, res: Response): void {
+  const { toolName, input, permissionMode } = req.body as {
+    toolName: string
+    input?: Record<string, unknown>
+    permissionMode?: string
+  }
+
+  if (!toolName) {
+    res.status(400).json({ error: 'toolName is required' })
+    return
+  }
+
+  const classifier = createDefaultClassifier()
+
+  const context: import('../tools/base.js').ToolUseContext = {
+    tools: [],
+    messages: [],
+    abortController: new AbortController(),
+    getAppState: () => ({}),
+    setAppState: () => {},
+    permissionMode: permissionMode ?? 'default',
+  }
+
+  const result = classifier.classify(toolName, input ?? {}, context)
+  res.json({ classification: result })
+}
+
+export interface ComfyUIModelConfig {
+  id: string
+  displayName?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  inputPricePerMToken?: number
+  outputPricePerMToken?: number
+  /** Price unit: 'M' = per million tokens (default), 'K' = per thousand tokens */
+  priceUnit?: 'M' | 'K'
+  supportsVision?: boolean
+  supportsToolUse?: boolean
+  supportsStreaming?: boolean
+  supportsThinking?: boolean
+  supportsReasoningEffort?: boolean
+  defaultMaxTokens?: number
+  defaultTemperature?: number
+  maxTemperature?: number
+  thinkingBudget?: number
+  baseUrl?: string
+  streamingBaseUrl?: string
+  apiKey?: string
+  headers?: Record<string, string>
+  extra?: Record<string, unknown>
+}
+
+export interface ComfyUIProviderConfig {
+  id: string
+  provider: string
+  name: string
+  api_key: string
+  default_model: string
+  base_url?: string
+  is_default: boolean
+  default_max_tokens?: number
+  default_temperature?: number
+  retries?: number
+  retry_delay?: number
+  headers?: Record<string, string>
+  custom_config?: Record<string, unknown>
+  model_configs?: Record<string, ComfyUIModelConfig>
+  created_at: number
+  updated_at: number
+}
+
+export class ComfyUIConfigStore {
+  private configDir: string
+  private configFile: string
+  private githubTokenFile: string
+
+  constructor() {
+    const baseDir = process.env.COMFYUI_CONFIG_DIR ?? join(getSgaHome(), 'comfyui')
+    this.configDir = join(baseDir, 'api_configs')
+    this.configFile = join(this.configDir, 'providers.json')
+    this.githubTokenFile = join(this.configDir, 'github_token.json')
+
+    if (!existsSync(baseDir)) {
+      mkdirSync(baseDir, { recursive: true })
+    }
+    if (!existsSync(this.configDir)) {
+      mkdirSync(this.configDir, { recursive: true })
+    }
+  }
+
+  private loadConfigs(): ComfyUIProviderConfig[] {
+    if (!existsSync(this.configFile)) {
+      return []
+    }
+
+    try {
+      const content = readFileSync(this.configFile, 'utf-8')
+      const data = JSON.parse(content)
+      return Array.isArray(data) ? data : []
+    } catch (e) {
+      logger.error(`Error loading configs: ${e instanceof Error ? e.message : String(e)}`)
+      return []
+    }
+  }
+
+  private saveConfigs(configs: ComfyUIProviderConfig[]): void {
+    try {
+      writeFileSync(this.configFile, JSON.stringify(configs, null, 2), 'utf-8')
+    } catch (e) {
+      logger.error(`Error saving configs: ${e instanceof Error ? e.message : String(e)}`)
+      throw new Error(`Error saving configs: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  getConfigs(): ComfyUIProviderConfig[] {
+    return this.loadConfigs()
+  }
+
+  getConfigById(id: string): ComfyUIProviderConfig | undefined {
+    return this.loadConfigs().find(c => c.id === id)
+  }
+
+  getDefaultConfig(): ComfyUIProviderConfig | undefined {
+    const configs = this.loadConfigs()
+    const defaultConfig = configs.find(c => c.is_default)
+    if (defaultConfig) return defaultConfig
+    return configs.length > 0 ? configs[0] : undefined
+  }
+
+  createConfig(input: {
+    provider: string
+    name: string
+    api_key: string
+    default_model?: string
+    base_url?: string
+    is_default: boolean
+    default_max_tokens?: number
+    default_temperature?: number
+    retries?: number
+    retry_delay?: number
+    headers?: Record<string, string>
+    custom_config?: Record<string, unknown>
+    model_configs?: Record<string, ComfyUIModelConfig>
+  }): ComfyUIProviderConfig {
+    const configs = this.loadConfigs()
+    const now = Date.now() / 1000
+    const id = crypto.randomUUID()
+
+    if (input.is_default) {
+      for (const c of configs) {
+        c.is_default = false
+      }
+    }
+
+    let resolvedDefaultModel = input.default_model || ''
+    if (!resolvedDefaultModel && input.model_configs) {
+      const firstKey = Object.keys(input.model_configs)[0]
+      if (firstKey) {
+        resolvedDefaultModel = input.model_configs[firstKey].id
+      }
+    }
+
+    const newConfig: ComfyUIProviderConfig = {
+      id,
+      provider: input.provider,
+      name: input.name,
+      api_key: input.api_key,
+      default_model: resolvedDefaultModel,
+      base_url: input.base_url,
+      is_default: input.is_default,
+      default_max_tokens: input.default_max_tokens,
+      default_temperature: input.default_temperature,
+      retries: input.retries,
+      retry_delay: input.retry_delay,
+      headers: input.headers,
+      custom_config: input.custom_config,
+      model_configs: input.model_configs,
+      created_at: now,
+      updated_at: now,
+    }
+
+    configs.push(newConfig)
+    this.saveConfigs(configs)
+    return newConfig
+  }
+
+  updateConfig(id: string, updates: Partial<ComfyUIProviderConfig>): ComfyUIProviderConfig | undefined {
+    const configs = this.loadConfigs()
+    const index = configs.findIndex(c => c.id === id)
+
+    if (index === -1) return undefined
+
+    const config = configs[index]
+
+    if (updates.provider !== undefined) config.provider = updates.provider
+    if (updates.name !== undefined) config.name = updates.name
+    if (updates.api_key !== undefined) config.api_key = updates.api_key
+    if (updates.default_model !== undefined) config.default_model = updates.default_model
+    if (updates.base_url !== undefined) config.base_url = updates.base_url
+    if (updates.default_max_tokens !== undefined) config.default_max_tokens = updates.default_max_tokens
+    if (updates.default_temperature !== undefined) config.default_temperature = updates.default_temperature
+    if (updates.retries !== undefined) config.retries = updates.retries
+    if (updates.retry_delay !== undefined) config.retry_delay = updates.retry_delay
+    if (updates.headers !== undefined) config.headers = updates.headers
+    if (updates.custom_config !== undefined) {
+      if (config.provider === 'custom') {
+        config.custom_config = updates.custom_config
+      } else {
+        config.custom_config = undefined
+      }
+    }
+    if (updates.model_configs !== undefined) config.model_configs = updates.model_configs
+
+    if (updates.is_default !== undefined) {
+      if (updates.is_default) {
+        for (const c of configs) {
+          c.is_default = false
+        }
+      }
+      config.is_default = updates.is_default
+    }
+
+    config.updated_at = Date.now() / 1000
+    configs[index] = config
+    this.saveConfigs(configs)
+    return config
+  }
+
+  deleteConfig(id: string): boolean {
+    const configs = this.loadConfigs()
+    const index = configs.findIndex(c => c.id === id)
+
+    if (index === -1) return false
+
+    configs.splice(index, 1)
+    this.saveConfigs(configs)
+    return true
+  }
+
+  setDefaultConfig(id: string): ComfyUIProviderConfig | undefined {
+    const configs = this.loadConfigs()
+    const target = configs.find(c => c.id === id)
+
+    if (!target) return undefined
+
+    for (const c of configs) {
+      c.is_default = false
+    }
+
+    target.is_default = true
+    target.updated_at = Date.now() / 1000
+    this.saveConfigs(configs)
+    return target
+  }
+
+  hasGitHubToken(): boolean {
+    return existsSync(this.githubTokenFile)
+  }
+
+  getGitHubToken(): string | undefined {
+    if (!existsSync(this.githubTokenFile)) return undefined
+
+    try {
+      const content = readFileSync(this.githubTokenFile, 'utf-8')
+      const data = JSON.parse(content)
+      return data.token as string
+    } catch {
+      return undefined
+    }
+  }
+
+  updateGitHubToken(token: string): void {
+    const data = { token, created_at: Date.now() / 1000, updated_at: Date.now() / 1000 }
+    writeFileSync(this.githubTokenFile, JSON.stringify(data, null, 2), 'utf-8')
+
+    process.env.GITHUB_TOKEN = token
+  }
+
+  deleteGitHubToken(): void {
+    if (existsSync(this.githubTokenFile)) {
+      unlinkSync(this.githubTokenFile)
+    }
+    delete process.env.GITHUB_TOKEN
+  }
+}
+
+const comfyUIConfigStore = new ComfyUIConfigStore()
+
+async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProvider> {
+  const providerName = `comfyui-${config.id}`
+  const existingNames = getAllProviderNames()
+
+  if (existingNames.includes(providerName)) {
+    removeProvider(providerName)
+  }
+
+  let effectiveBaseUrl = config.base_url
+  let resolvedHeaders: Record<string, string> = { ...config.headers }
+
+  if (config.provider === 'custom' && config.custom_config) {
+    const customConfig = config.custom_config
+    const endpoint = (customConfig.endpoint as string) || '/chat/completions'
+    const headersTemplate = customConfig.headers as string | undefined
+
+    const endpointWithoutChatCompletions = endpoint.replace(/\/chat\/completions$/, '').replace(/\/$/, '')
+    if (effectiveBaseUrl && endpointWithoutChatCompletions) {
+      effectiveBaseUrl = effectiveBaseUrl.replace(/\/$/, '') + endpointWithoutChatCompletions
+    }
+
+    if (headersTemplate) {
+      try {
+        const resolved = headersTemplate.replace(/\$apiKey/g, config.api_key)
+        const parsed = JSON.parse(resolved) as Record<string, unknown>
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'string' && v.startsWith('$')) continue
+          resolvedHeaders[k] = String(v)
+        }
+      } catch (e) {
+        console.warn('[SGA] Failed to parse headers template:', e)
+      }
+    }
+  }
+
+  const storedConfig: StoredProviderConfig = {
+    name: providerName,
+    apiKey: config.api_key,
+    baseUrl: effectiveBaseUrl,
+    defaultModel: config.default_model,
+    defaultMaxTokens: config.default_max_tokens,
+    defaultTemperature: config.default_temperature,
+    retries: config.retries,
+    retryDelay: config.retry_delay,
+    headers: Object.keys(resolvedHeaders).length > 0 ? resolvedHeaders : undefined,
+    modelConfigs: config.model_configs as Record<string, import('../providers/types.js').ModelConfig> | undefined,
+    extra: config.custom_config as Record<string, unknown> | undefined,
+  }
+
+  await addProvider(storedConfig)
+  return resolveProvider(providerName)
+}
+
+async function handleComfyUIChatStreamWithCoordinator(
+  _req: Request,
+  res: Response,
+  session: Session,
+  options: {
+    userMessage: string
+    errorLog?: string
+    providerName: string
+    model: string
+  },
+): Promise<void> {
+  const abortController = activeAbortControllers.get(session.id) ?? new AbortController()
+  activeAbortControllers.set(session.id, abortController)
+
+  initSSEResponse(res)
+
+  const sendEvent = (event: AgentStreamEvent) => {
+    try {
+      if (res.writableEnded || abortController.signal.aborted) return
+      if (!res.headersSent) {
+        initSSEResponse(res)
+      }
+      res.write(formatSSE(event))
+    } catch {
+      // connection closed
+    }
+  }
+
+  let partialText = ''
+
+  try {
+    const { detectTaskIntent, createComfyUICoordinatorPlan } = await import('../comfyui/coordinator-plans.js')
+    const intent = detectTaskIntent(options.userMessage)
+
+    const telemetry = TelemetryManager.getInstance()
+    telemetry.trackEvent('comfyui_coordinator_start', {
+      sessionId: session.id,
+      taskIntent: intent.type,
+      model: options.model,
+      hasErrorLog: !!options.errorLog,
+    })
+
+    const provider = resolveProvider(options.providerName)
+    const toolPool = await buildToolPoolWithAgents()
+    const agentDefs = await getAllAgentDefinitions()
+
+    const coordinatorDef = getCoordinatorAgentDefinition(agentDefs)
+
+    const approvalPromiseMap: Map<string, {
+      resolve: (response: unknown) => void
+      reject: (error: Error) => void
+    }> = new Map()
+
+    const requestApproval = async (event: import('../agents/runner.js').ApprovalEvent): Promise<import('../agents/runner.js').ApprovalResponse> => {
+      const approvalReq = createApprovalRequest({
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        message: event.message,
+        sessionId: session.id,
+        suggestions: event.suggestions,
+        isDestructive: true,
+        isReadOnly: false,
+      })
+
+      sendEvent({
+        type: 'approval_required',
+        actionId: approvalReq.id,
+        toolName: event.toolName,
+        toolInput: event.toolInput,
+        toolCallId: event.toolCallId,
+        message: event.message,
+        suggestions: event.suggestions,
+      })
+
+      const approvalPromise = new Promise<UserApprovalResponse>((resolve, reject) => {
+        const wrappedResolve = (resp: unknown) => resolve(resp as UserApprovalResponse)
+        const wrappedReject = (err: Error) => reject(err)
+        approvalPromiseMap.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
+        pendingResolvers.set(approvalReq.id, { resolve: wrappedResolve, reject: wrappedReject })
+      })
+
+      setSessionWaitingInput(session, {
+        type: 'approval',
+        request: approvalReq,
+        resolve: (resp: unknown) => {
+          approvalPromiseMap.get(approvalReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          approvalPromiseMap.get(approvalReq.id)?.reject(error)
+        },
+      } as PendingAction, {
+        actionId: approvalReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model: options.model,
+        systemPromptContent: '',
+        providerName: options.providerName,
+      })
+
+      try {
+        const userResponse = await approvalPromise
+        clearSessionWaitingInput(session)
+        return {
+          decision: userResponse.decision,
+          updatedInput: userResponse.updatedInput,
+          reason: userResponse.reason,
+          permissionUpdate: userResponse.permissionUpdate,
+        }
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return { decision: 'deny', reason: 'Approval request cancelled' }
+      } finally {
+        approvalPromiseMap.delete(approvalReq.id)
+        pendingResolvers.delete(approvalReq.id)
+      }
+    }
+
+    const requestHumanInput = async (event: import('../agents/runner.js').HumanInputEvent): Promise<string> => {
+      const inputReq = createHumanInputRequest({
+        message: event.message,
+        sessionId: session.id,
+        context: event.context,
+        options: event.options,
+        allowFreeText: true,
+      })
+
+      sendEvent({
+        type: 'human_input_required',
+        actionId: inputReq.id,
+        message: event.message,
+        context: event.context,
+        options: event.options,
+      })
+
+      const inputPromise = new Promise<UserInputResponse>((resolve, reject) => {
+        pendingResolvers.set(inputReq.id, {
+          resolve: (resp: unknown) => resolve(resp as UserInputResponse),
+          reject: (err: Error) => reject(err),
+        })
+      })
+
+      setSessionWaitingInput(session, {
+        type: 'human_input',
+        request: inputReq,
+        resolve: (resp: unknown) => {
+          pendingResolvers.get(inputReq.id)?.resolve(resp)
+        },
+        reject: (error: Error) => {
+          pendingResolvers.get(inputReq.id)?.reject(error)
+        },
+      } as PendingAction, {
+        actionId: inputReq.id,
+        sessionId: session.id,
+        messages: [...session.messages],
+        toolCalls: [],
+        pendingToolCallIndex: 0,
+        turnCount: 0,
+        usage: session.usage,
+        model: options.model,
+        systemPromptContent: '',
+        providerName: options.providerName,
+      })
+
+      try {
+        const userResponse = await inputPromise
+        clearSessionWaitingInput(session)
+        return userResponse.value
+      } catch (error) {
+        clearSessionWaitingInput(session)
+        return '[Input request cancelled]'
+      } finally {
+        pendingResolvers.delete(inputReq.id)
+      }
+    }
+
+    setCoordinatorMode(true)
+
+    const planMgr = getPlanManager()
+    planMgr.setNotificationCallback((event) => {
+      sendEvent({
+        type: 'plan_update',
+        data: event,
+      } as unknown as AgentStreamEvent)
+    })
+
+    const result = await runAgent({
+      agentDefinition: coordinatorDef,
+      prompt: options.userMessage,
+      tools: toolPool,
+      model: options.model,
+      provider,
+      maxTurns: 50,
+      agentDefinitions: agentDefs,
+      signal: abortController.signal,
+      onProgress: (event: AgentStreamEvent) => {
+        if (event.type === 'stream_delta' && event.text) {
+          partialText += event.text
+        }
+        sendEvent(event)
+      },
+      requestApproval,
+      requestHumanInput,
+    })
+
+    setCoordinatorMode(false)
+    planMgr.setNotificationCallback(null)
+
+    const synthesis = result.content
+
+    const assistantMessage: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'assistant',
+      content: [{ type: 'text', text: synthesis }],
+      timestamp: Date.now(),
+    }
+    getSessionStore().appendMessage(session.id, assistantMessage)
+    getSessionStore().appendUsage(session.id, result.usage)
+
+    const costMgr = getCostManager(session.id)
+    if (costMgr) {
+      costMgr.recordUsage(result.usage)
+    }
+
+    try {
+      const taskMgr = getTaskManager()
+      const existingTask = taskMgr.get(session.id)
+      if (existingTask) {
+        taskMgr.completeWithUsage(
+          session.id,
+          synthesis.slice(0, 200),
+          {
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+            totalCostUsd: costMgr?.getReport().totalCostUsd ?? 0,
+          },
+          result.totalDurationMs,
+        )
+      }
+    } catch {
+      // task completion tracking is optional
+    }
+
+    triggerMemoryExtraction(session.messages, provider, options.model, session.id, session.config.agentType)
+
+    // 从最终回复中提取工作流 JSON 并发送 workflow_updated 事件
+    try {
+      const { extractWorkflowJSON } = await import('../comfyui/verification-strategies.js')
+      const workflowJson = extractWorkflowJSON(synthesis)
+      if (workflowJson) {
+        sendEvent({ type: 'workflow_updated', workflowJson: JSON.stringify(workflowJson), actionType: 'coordinator_synthesis' })
+      }
+    } catch (e) {
+      logger.debug(`Workflow JSON extraction from coordinator synthesis skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    sendEvent({
+      type: 'coordinator_complete',
+      data: {
+        synthesis,
+        totalDurationMs: result.totalDurationMs,
+      },
+    } as AgentStreamEvent)
+
+    sendEvent({ type: 'done', data: { content: synthesis, usage: result.usage } })
+
+    telemetry.trackEvent('comfyui_coordinator_complete', {
+      sessionId: session.id,
+      totalDurationMs: result.totalDurationMs,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+    })
+
+    try {
+      const extensions = getAgentExtensions(session.config.agentType ?? 'comfyui-workflow')
+      if (extensions?.enableAutoDream) {
+        const memoryManager = getMemoryManager()
+        if (memoryManager) {
+          const { executeAutoDream, DEFAULT_AUTO_DREAM_CONFIG } = await import('../memory/consolidation/auto-dream.js')
+          const { buildComfyUIConsolidationPrompt } = await import('../comfyui/consolidation-prompt.js')
+          const extConfig = extensions.autoDreamConfig ?? {}
+          const autoDreamConfig = {
+            ...DEFAULT_AUTO_DREAM_CONFIG,
+            ...extConfig,
+            customPromptBuilder: buildComfyUIConsolidationPrompt,
+          }
+          const sessionCount = getSessionStore().size()
+          executeAutoDream(memoryManager, provider, sessionCount, autoDreamConfig).catch(e => {
+            logger.debug(`AutoDream background error: ${e instanceof Error ? e.message : String(e)}`)
+          })
+        }
+      }
+    } catch (e) {
+      logger.debug(`AutoDream trigger skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      logger.info(`Session ${session.id}: coordinator agent run was aborted`)
+      if (partialText.trim()) {
+        const partialMsg: Message = {
+          id: `msg-partial-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: partialText + '\n\n[Response interrupted - workflow was switched]' }],
+          timestamp: Date.now(),
+        }
+        getSessionStore().appendMessage(session.id, partialMsg)
+      }
+    } else {
+      logger.error(`Coordinator stream error: ${error instanceof Error ? error.message : String(error)}`)
+      sendEvent({ type: 'error', data: error instanceof Error ? error.message : String(error) })
+      sendEvent({ type: 'done', data: null })
+    }
+  }
+
+  activeSSEConnections.delete(session.id)
+  activeAbortControllers.delete(session.id)
+  if (!res.writableEnded) {
+    res.end()
+  }
+}
+
+export async function handleComfyUIChatStream(req: Request, res: Response): Promise<void> {
+  const { message, workflow, session_id, error_log, language, config_id, workflow_context_text } = req.body as Record<string, unknown>
+  const sessionId = session_id as string
+  const userMessage = message as string
+  const errorLog = error_log as string | undefined
+  const lang = (language as string) ?? 'en'
+  const configId = config_id as string | undefined
+  const workflowContextText = workflow_context_text as string | undefined
+
+  closeSSEConnection(sessionId)
+  initSSEResponse(res)
+  activeSSEConnections.set(sessionId, res)
+
+  const abortController = new AbortController()
+  activeAbortControllers.set(sessionId, abortController)
+
+  const onConnectionClose = () => {
+    activeSSEConnections.delete(sessionId)
+    abortController.abort()
+    activeAbortControllers.delete(sessionId)
+  }
+  req.on('close', onConnectionClose)
+  res.on('close', onConnectionClose)
+
+  try {
+    const config = configId ? comfyUIConfigStore.getConfigById(configId) : comfyUIConfigStore.getDefaultConfig()
+
+    if (!config) {
+      sendComfyUIEvent(res, { type: 'error', data: 'No provider configuration found. Please configure a provider in settings.' })
+      res.write(formatSSE({ type: 'done', data: null }))
+      res.end()
+      activeAbortControllers.delete(sessionId)
+      return
+    }
+
+    await ensureSgaProvider(config)
+    const providerName = `comfyui-${config.id}`
+    const model = config.default_model ?? 'sonnet'
+
+    const telemetry = TelemetryManager.getInstance()
+    telemetry.trackEvent('comfyui_chat_start', {
+      sessionId,
+      model,
+      hasErrorLog: !!errorLog,
+      language: lang,
+      hasWorkflowContext: !!workflowContextText,
+    })
+
+    const store = getSessionStore()
+    let session = store.get(sessionId)
+    if (!session) {
+      session = createSession({
+        model,
+        providerName,
+        agentType: 'comfyui-workflow',
+      })
+      session.id = sessionId
+      store.set(session)
+    }
+
+    getOrCreateCostManager(session.id)
+
+    try {
+      const taskMgr = getTaskManager()
+      if (!taskMgr.get(session.id)) {
+        const task = taskMgr.create({
+          id: session.id,
+          name: `ComfyUI Chat: ${userMessage.slice(0, 50)}`,
+          kind: 'agent',
+          agentType: 'comfyui-workflow',
+        })
+        taskMgr.onNotification((notification) => {
+          try {
+            sendComfyUIEvent(res, {
+              type: 'task_status_update',
+              data: {
+                taskId: notification.taskId,
+                status: notification.status,
+                summary: notification.summary,
+                usage: notification.usage,
+                durationMs: notification.durationMs,
+              },
+            })
+          } catch {
+            // SSE connection may be closed
+          }
+        })
+        sendComfyUIEvent(res, {
+          type: 'task_created',
+          data: {
+            taskId: task.id,
+            name: task.name ?? '',
+            kind: task.kind,
+            agentType: task.agentType,
+          },
+        })
+      }
+    } catch {
+      // task creation is optional
+    }
+
+    try {
+      const { registerComfyUIHooks } = await import('../comfyui/hooks.js')
+      registerComfyUIHooks()
+    } catch (hookErr) {
+      logger.debug(`ComfyUI hooks registration skipped: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`)
+    }
+
+    let ws = getWorkingSet()
+    if (!ws) {
+      ws = initWorkingSet()
+    }
+
+    if (workflow) {
+      const workflowStr = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+      const workflowObj = workflow as Record<string, unknown> | undefined
+      const nodes = (workflowObj?.nodes ?? []) as Array<Record<string, unknown>>
+      ws.pin(
+        `workflow-${sessionId}`,
+        `ComfyUI Workflow (${nodes.length} nodes)`,
+        workflowStr,
+        'comfyui-workflow',
+        'critical',
+        20_000,
+      )
+
+      const nodeTypes = nodes.map(n => n.type as string).filter(Boolean)
+      const uniqueTypes = [...new Set(nodeTypes)]
+      const typeCounts = new Map<string, number>()
+      for (const t of nodeTypes) {
+        typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1)
+      }
+      const summaryLines = [
+        `Total nodes: ${nodes.length}`,
+        `Unique node types: ${uniqueTypes.length}`,
+        `Node types: ${uniqueTypes.map(t => `${t}(${typeCounts.get(t)})`).join(', ')}`,
+      ]
+      const lastNodeId = workflowObj?.last_node_id ?? 'unknown'
+      const lastLinkId = workflowObj?.last_link_id ?? 'unknown'
+      summaryLines.push(`Last node ID: ${lastNodeId}, Last link ID: ${lastLinkId}`)
+
+      ws.pin(
+        `workflow-summary-${sessionId}`,
+        `Workflow Summary`,
+        summaryLines.join('\n'),
+        'comfyui-workflow',
+        'high',
+        1_000,
+      )
+    }
+
+    if (workflowContextText) {
+      ws.pin(
+        `workflow-panel-context-${sessionId}`,
+        `Workflow Panel Context`,
+        workflowContextText,
+        'comfyui-workflow',
+        'high',
+        5_000,
+      )
+    }
+
+    if (errorLog) {
+      ws.pin(
+        `error-log-${sessionId}`,
+        `Runtime Errors`,
+        errorLog,
+        'comfyui-workflow',
+        'high',
+        3_000,
+      )
+    }
+
+    let contextParts: string[] = []
+    if (lang && lang !== 'en') {
+      contextParts.push(`IMPORTANT: You MUST respond in the following language code: "${lang}". Translate your advice and interface text accordingly.`)
+    }
+
+    const fullContent = contextParts.length > 0
+      ? `${contextParts.join('\n\n')}\n\n${userMessage}`
+      : userMessage
+
+    const userMsg: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: [{ type: 'text', text: fullContent }],
+      timestamp: Date.now(),
+    }
+    store.appendMessage(session.id, userMsg)
+
+    const contextInjector = new ComfyUIContextInjector()
+    await contextInjector.onSessionStart(session.messages)
+
+    const { shouldUseCoordinator, detectTaskIntent, createComfyUICoordinatorPlan } = await import('../comfyui/coordinator-plans.js')
+    const useCoordinator = shouldUseCoordinator(userMessage, errorLog)
+
+    if (useCoordinator) {
+      await handleComfyUIChatStreamWithCoordinator(req, res, session, {
+        userMessage,
+        errorLog,
+        providerName,
+        model,
+      })
+    } else {
+      await handleStreamResponse(req, res, session, {
+        content: '',
+        stream: true,
+        agentType: 'comfyui-workflow',
+        providerName,
+        model,
+      })
+    }
+  } catch (error) {
+    logger.error(`Chat stream error: ${error instanceof Error ? error.message : String(error)}`)
+    if (!res.writableEnded) {
+      sendComfyUIEvent(res, { type: 'error', data: error instanceof Error ? error.message : String(error) })
+      sendComfyUIEvent(res, { type: 'done', data: null })
+      res.end()
+    }
+  }
+}
+
+export function handleComfyUIChatHistory(req: Request, res: Response): void {
+  const sessionId = req.params.sessionId as string
+  const store = getSessionStore()
+  const session = store.get(sessionId)
+
+  if (!session) {
+    res.json([])
+    return
+  }
+
+  const history = session.messages
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => {
+      let text = m.content
+        .filter(c => c.type === 'text' && c.text)
+        .map(c => c.text!)
+        .join('\n')
+      if (m.role === 'user') {
+        const requestMatch = text.match(/\[USER REQUEST\]\s*"([^"]*)"/)
+        if (requestMatch) {
+          text = requestMatch[1]
+        } else {
+          text = text
+            .replace(/\[FULL WORKFLOW JSON\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[WORKFLOW PANEL CONTEXT[^\]]*\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[RUNTIME ERRORS\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[Current Workflow Context\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/IMPORTANT: You MUST respond in the following language code: "[^"]*"\.[^\n]*\n?/, '')
+            .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/, '')
+            .replace(/\[USER REQUEST\]\s*"?/, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+        }
+      } else if (m.role === 'assistant') {
+        text = text
+          .replace(/=== TASK PLANNING GUIDANCE ===[\s\S]*?=== END TASK PLANNING ===/, '')
+          .replace(/=== TASK PLANNING GUIDANCE ===[\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/, '')
+          .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/, '')
+          .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\n[A-Z]|\n\n$|$)/, '')
+          .replace(/SUGGESTED_ACTIONS:\s*\[.*?\]/, '')
+          .replace(/RELATED_QUESTIONS:\s*(?:```(?:json)?\s*)?\[[\s\S]*?\](?:\s*```)?/, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim()
+      }
+      return {
+        sender: m.role === 'user' ? 'user' : 'ai',
+        text,
+        timestamp: m.timestamp,
+        metadata: m.role === 'assistant' ? { provider: 'sga' } : undefined,
+      }
+    })
+
+  res.json({ messages: history, isActive: activeAbortControllers.has(sessionId) })
+}
+
+export function handleComfyUIChatAbort(req: Request, res: Response): void {
+  const sessionId = req.params.sessionId as string
+
+  const abortCtrl = activeAbortControllers.get(sessionId)
+  if (!abortCtrl) {
+    res.json({ success: true, message: 'No active agent running for this session' })
+    return
+  }
+
+  try {
+    abortCtrl.abort()
+  } catch {
+    // already aborted
+  }
+  activeAbortControllers.delete(sessionId)
+
+  const existing = activeSSEConnections.get(sessionId)
+  if (existing) {
+    try {
+      existing.end()
+    } catch {
+      // already closed
+    }
+    activeSSEConnections.delete(sessionId)
+  }
+
+  logger.info(`Session ${sessionId}: agent aborted via API`)
+  res.json({ success: true, message: 'Agent aborted successfully' })
+}
+
+export async function handleComfyUIWorkflowAnalyze(req: Request, res: Response): Promise<void> {
+  const { workflow, language } = req.body as Record<string, unknown>
+
+  try {
+    const tools = buildToolPool()
+    const analyzerTool = tools.find(t => t.name === 'workflow_analyzer')
+
+    if (!analyzerTool) {
+      res.json({ issues: [] })
+      return
+    }
+
+    const workflowJson = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+    const result = await analyzerTool.call(
+      { workflow_json: workflowJson, language: (language as string) ?? 'en' },
+      {
+        tools,
+        messages: [],
+        abortController: new AbortController(),
+        getAppState: () => ({}),
+        setAppState: () => {},
+      },
+    )
+
+    const analysis = JSON.parse(result as string)
+    res.json({ issues: analysis.issues ?? [], analysis })
+  } catch (error) {
+    logger.error(`Workflow analyze error: ${error instanceof Error ? error.message : String(error)}`)
+    res.json({ issues: [] })
+  }
+}
+
+export async function handleComfyUIWorkflowParse(req: Request, res: Response): Promise<void> {
+  const { workflow, language } = req.body as Record<string, unknown>
+
+  try {
+    const tools = buildToolPool()
+    const analyzerTool = tools.find(t => t.name === 'workflow_analyzer')
+
+    if (!analyzerTool) {
+      res.json({ analysis: { summary: '', data_flow: [], key_nodes: [], issues: [], suggestions: [] }, workflow_json: workflow })
+      return
+    }
+
+    const workflowJson = typeof workflow === 'string' ? workflow : JSON.stringify(workflow)
+    const result = await analyzerTool.call(
+      { workflow_json: workflowJson, language: (language as string) ?? 'en' },
+      {
+        tools,
+        messages: [],
+        abortController: new AbortController(),
+        getAppState: () => ({}),
+        setAppState: () => {},
+      },
+    )
+
+    const analysis = JSON.parse(result as string)
+    res.json({ analysis, workflow_json: workflow })
+  } catch (error) {
+    logger.error(`Workflow parse error: ${error instanceof Error ? error.message : String(error)}`)
+    res.json({ analysis: { summary: '', data_flow: [], key_nodes: [], issues: [], suggestions: [] }, workflow_json: workflow })
+  }
+}
+
+export function handleComfyUIActionExecute(req: Request, res: Response): void {
+  const { action_type, action_data } = req.body as Record<string, unknown>
+
+  try {
+    res.json({
+      success: true,
+      message: `Action ${action_type as string} executed successfully`,
+      data: action_data,
+      can_undo: true,
+      undo_action: 'undo',
+    })
+  } catch (error) {
+    res.json({
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+export function handleComfyUIActionUndo(_req: Request, res: Response): void {
+  try {
+    const lastAction = undoLastAction()
+    if (lastAction) {
+      res.json({
+        success: true,
+        message: 'Action undone successfully',
+        restored_state: lastAction.workflow_before,
+      })
+    } else {
+      res.json({
+        success: false,
+        message: 'No action to undo',
+      })
+    }
+  } catch (error) {
+    res.json({
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+function toFrontendConfig(config: ComfyUIProviderConfig): Record<string, unknown> {
+  return {
+    id: config.id,
+    provider: config.provider,
+    name: config.name,
+    default_model: config.default_model,
+    base_url: config.base_url,
+    is_default: config.is_default,
+    default_max_tokens: config.default_max_tokens,
+    default_temperature: config.default_temperature,
+    retries: config.retries,
+    retry_delay: config.retry_delay,
+    headers: config.headers,
+    custom_config: config.custom_config,
+    model_configs: config.model_configs,
+    extension: config.provider === 'custom' && config.custom_config
+      ? { providerModule: undefined }
+      : undefined,
+    has_api_key: !!config.api_key,
+    created_at: new Date(config.created_at * 1000).toISOString(),
+  }
+}
+
+export function handleComfyUIListConfigs(_req: Request, res: Response): void {
+  const configs = comfyUIConfigStore.getConfigs()
+  res.json({ configs: configs.map(toFrontendConfig), total: configs.length })
+}
+
+export function handleComfyUICreateConfig(req: Request, res: Response): void {
+  try {
+    const body = req.body as Record<string, unknown>
+    const provider = body.provider as string
+    const custom_config = body.custom_config as Record<string, unknown> | undefined
+
+    if (provider !== 'custom' && custom_config) {
+      res.status(400).json({ error: 'custom_config is only allowed for custom provider' })
+      return
+    }
+
+    const config = comfyUIConfigStore.createConfig({
+      provider,
+      name: body.name as string,
+      api_key: body.api_key as string,
+      default_model: body.default_model as string | undefined,
+      base_url: body.base_url as string | undefined,
+      is_default: (body.is_default as boolean) ?? false,
+      default_max_tokens: body.default_max_tokens as number | undefined,
+      default_temperature: body.default_temperature as number | undefined,
+      retries: body.retries as number | undefined,
+      retry_delay: body.retry_delay as number | undefined,
+      headers: body.headers as Record<string, string> | undefined,
+      custom_config,
+      model_configs: body.model_configs as Record<string, ComfyUIModelConfig> | undefined,
+    })
+
+    res.json(toFrontendConfig(config))
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export function handleComfyUIGetConfig(req: Request, res: Response): void {
+  const configId = req.params.configId as string
+  const config = comfyUIConfigStore.getConfigById(configId)
+  if (!config) {
+    res.status(404).json({ error: 'Config not found' })
+    return
+  }
+  res.json(toFrontendConfig(config))
+}
+
+export function handleComfyUIUpdateConfig(req: Request, res: Response): void {
+  try {
+    const configId = req.params.configId as string
+    const body = req.body as Record<string, unknown>
+
+    const updates: Partial<ComfyUIProviderConfig> = {}
+    if (body.provider !== undefined) updates.provider = body.provider as string
+    if (body.name !== undefined) updates.name = body.name as string
+    if (body.api_key !== undefined) updates.api_key = body.api_key as string
+    if (body.default_model !== undefined) updates.default_model = body.default_model as string
+    if (body.base_url !== undefined) updates.base_url = body.base_url as string | undefined
+    if (body.is_default !== undefined) updates.is_default = body.is_default as boolean
+    if (body.default_max_tokens !== undefined) updates.default_max_tokens = body.default_max_tokens as number | undefined
+    if (body.default_temperature !== undefined) updates.default_temperature = body.default_temperature as number | undefined
+    if (body.retries !== undefined) updates.retries = body.retries as number | undefined
+    if (body.retry_delay !== undefined) updates.retry_delay = body.retry_delay as number | undefined
+    if (body.headers !== undefined) updates.headers = body.headers as Record<string, string> | undefined
+    if (body.custom_config !== undefined) updates.custom_config = body.custom_config as Record<string, unknown> | undefined
+    if (body.model_configs !== undefined) updates.model_configs = body.model_configs as Record<string, ComfyUIModelConfig> | undefined
+
+    const config = comfyUIConfigStore.updateConfig(configId, updates)
+    if (!config) {
+      res.status(404).json({ error: 'Config not found' })
+      return
+    }
+    res.json(toFrontendConfig(config))
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export function handleComfyUIDeleteConfig(req: Request, res: Response): void {
+  const configId = req.params.configId as string
+  const success = comfyUIConfigStore.deleteConfig(configId)
+  res.json({ success, message: success ? 'Config deleted successfully' : 'Config not found' })
+}
+
+export function handleComfyUISetDefaultConfig(req: Request, res: Response): void {
+  const { config_id } = req.body as Record<string, unknown>
+  const config = comfyUIConfigStore.setDefaultConfig(config_id as string)
+  if (!config) {
+    res.status(404).json({ error: 'Config not found' })
+    return
+  }
+  res.json(toFrontendConfig(config))
+}
+
+export function handleComfyUIGetGitHubToken(_req: Request, res: Response): void {
+  const hasToken = comfyUIConfigStore.hasGitHubToken()
+  res.json({ has_token: hasToken })
+}
+
+export function handleComfyUIUpdateGitHubToken(req: Request, res: Response): void {
+  const { token } = req.body as Record<string, unknown>
+  comfyUIConfigStore.updateGitHubToken(token as string)
+  res.json({ success: true, message: 'GitHub token updated successfully', has_token: true })
+}
+
+export function handleComfyUIDeleteGitHubToken(_req: Request, res: Response): void {
+  comfyUIConfigStore.deleteGitHubToken()
+  res.json({ success: true, message: 'GitHub token deleted successfully', has_token: false })
+}
+
+export function handleComfyUIUserInput(req: Request, res: Response): void {
+  const { session_id, action_id, decision, updatedInput, reason, value, optionValue } = req.body as Record<string, unknown>
+
+  const store = getSessionStore()
+  const session = store.get(session_id as string)
+
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  if (session.status !== 'waiting_input') {
+    res.status(400).json({ error: 'Session is not waiting for input' })
+    return
+  }
+
+  if (!session.pendingAction) {
+    res.status(400).json({ error: 'No pending action found' })
+    return
+  }
+
+  const pendingResolver = pendingResolvers.get(action_id as string)
+  if (!pendingResolver) {
+    res.status(400).json({ error: 'Invalid or expired action ID' })
+    return
+  }
+
+  if (session.pendingAction.type === 'approval') {
+    const response: UserApprovalResponse = {
+      actionId: action_id as string,
+      decision: (decision as 'allow' | 'deny') ?? 'deny',
+      updatedInput: updatedInput as Record<string, unknown> | undefined,
+      reason: reason as string | undefined,
+    }
+    pendingResolver.resolve(response)
+  } else {
+    const response: UserInputResponse = {
+      actionId: action_id as string,
+      value: (value as string) ?? '',
+      optionValue: optionValue as string | undefined,
+    }
+    pendingResolver.resolve(response)
+  }
+
+  pendingResolvers.delete(action_id as string)
+
+  res.json({
+    success: true,
+    sessionId: session.id,
+    message: 'Input received, agent execution will resume',
+  })
+}
+
+export function handleListFeatureGates(_req: Request, res: Response): void {
+  const gate = FeatureGateManager.getInstance()
+  const gates = gate.listGates()
+  res.json({ gates })
+}
+
+export function handleGetFeatureGate(req: Request, res: Response): void {
+  const name = req.params.name as string
+  const gate = FeatureGateManager.getInstance()
+  const gates = gate.listGates()
+  const found = gates.find(g => g.name === name)
+  if (!found) {
+    res.status(404).json({ error: `Feature gate "${name}" not found` })
+    return
+  }
+  res.json({ gate: found })
+}
+
+export function handleOverrideFeatureGate(req: Request, res: Response): void {
+  const { name, enabled } = req.body as { name: string; enabled: boolean }
+
+  if (!name || typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'name and enabled (boolean) are required' })
+    return
+  }
+
+  const gate = FeatureGateManager.getInstance()
+  gate.override(name, enabled)
+  const gates = gate.listGates()
+  const updated = gates.find(g => g.name === name)
+  res.json({ gate: updated })
+}
+
+export function handleResetFeatureGate(req: Request, res: Response): void {
+  const { name } = req.body as { name: string }
+
+  if (!name) {
+    res.status(400).json({ error: 'name is required' })
+    return
+  }
+
+  const gate = FeatureGateManager.getInstance()
+  gate.clearOverride(name)
+  const gates = gate.listGates()
+  const updated = gates.find(g => g.name === name)
+  res.json({ gate: updated })
+}
+
+export function handleResetAllFeatureGates(_req: Request, res: Response): void {
+  const gate = FeatureGateManager.getInstance()
+  gate.clearAllOverrides()
+  const gates = gate.listGates()
+  res.json({ gates })
+}
+
+export function handleRegisterFeatureGate(req: Request, res: Response): void {
+  const { name, description, defaultEnabled, envVar } = req.body as {
+    name: string
+    description: string
+    defaultEnabled: boolean
+    envVar?: string
+  }
+
+  if (!name || !description || typeof defaultEnabled !== 'boolean') {
+    res.status(400).json({ error: 'name, description, and defaultEnabled (boolean) are required' })
+    return
+  }
+
+  const config: FeatureGateConfig = { name, description, defaultEnabled, envVar }
+  const gate = FeatureGateManager.getInstance()
+  gate.registerGate(config)
+  const gates = gate.listGates()
+  const created = gates.find(g => g.name === name)
+  res.status(201).json({ gate: created })
+}
+
+export function handleGetTelemetryStatus(_req: Request, res: Response): void {
+  const telemetry = TelemetryManager.getInstance()
+  res.json({
+    enabled: telemetry.isEnabled(),
+    sessionId: (telemetry as unknown as { sessionId: string }).sessionId,
+  })
+}
+
+export function handleToggleTelemetry(req: Request, res: Response): void {
+  const { enabled } = req.body as { enabled: boolean }
+
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled (boolean) is required' })
+    return
+  }
+
+  const telemetry = TelemetryManager.getInstance()
+  if (enabled) {
+    telemetry.enable()
+  } else {
+    telemetry.disable()
+  }
+
+  const gate = FeatureGateManager.getInstance()
+  gate.override('telemetry', enabled)
+
+  res.json({ enabled: telemetry.isEnabled() })
+}
+
+export function handleFlushTelemetry(_req: Request, res: Response): void {
+  const telemetry = TelemetryManager.getInstance()
+  telemetry.flush()
+    .then(() => res.json({ success: true }))
+    .catch(error => res.status(500).json({ error: error instanceof Error ? error.message : String(error) }))
+}
+
+export function handleGetTelemetryEvents(_req: Request, res: Response): void {
+  const telemetry = TelemetryManager.getInstance()
+  const queue = (telemetry as unknown as { eventQueue: Array<{ name: string; properties: Record<string, unknown>; timestamp: number; sessionId?: string }> }).eventQueue
+  res.json({
+    eventCount: queue.length,
+    events: queue.slice(-100),
+  })
+}
+
+export function handleClassifyBashCommand(req: Request, res: Response): void {
+  const { command } = req.body as { command: string }
+
+  if (!command || typeof command !== 'string') {
+    res.status(400).json({ error: 'command is required and must be a string' })
+    return
+  }
+
+  const result = classifyBashCommand(command)
+  res.json({ classification: result })
+}
+
+export function handleClassifyError(req: Request, res: Response): void {
+  const { error } = req.body as { error: string }
+
+  if (!error || typeof error !== 'string') {
+    res.status(400).json({ error: 'error is required and must be a string' })
+    return
+  }
+
+  const category = classifyError(error)
+  res.json({ category })
+}
+
+export async function handlePreviewSystemPrompt(req: Request, res: Response): Promise<void> {
+  const { model, enabledTools, languagePreference, mcpInstructions, skillList } = req.body as {
+    model?: string
+    enabledTools?: string[]
+    languagePreference?: string
+    mcpInstructions?: boolean
+    skillList?: boolean
+  }
+
+  const options: SystemPromptBuildOptions = {
+    model: model ?? 'sonnet',
+    enabledTools: new Set(enabledTools ?? ['Read', 'Write', 'Bash', 'Glob', 'Grep']),
+    languagePreference,
+    mcpInstructions: mcpInstructions ?? true,
+    skillList: skillList ?? true,
+  }
+
+  try {
+    const prompt = await buildFullSystemPrompt('', options)
+    const boundaryIndex = prompt.indexOf('---DYNAMIC_BOUNDARY---')
+    res.json({
+      fullPrompt: prompt,
+      totalLength: prompt.length,
+      staticPart: boundaryIndex > 0 ? prompt.slice(0, boundaryIndex).trim() : prompt,
+      dynamicPart: boundaryIndex > 0 ? prompt.slice(boundaryIndex + '---DYNAMIC_BOUNDARY---'.length).trim() : '',
+      hasDynamicBoundary: boundaryIndex > 0,
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export function handleGetConfig(_req: Request, res: Response): void {
+  const { getSgaConfig } = require('../config.js') as typeof import('../config.js')
+  const config = getSgaConfig()
+  res.json({ config })
+}
+
+export function handleGetConfigSection(req: Request, res: Response): void {
+  const { getSgaConfig } = require('../config.js') as typeof import('../config.js')
+  const config = getSgaConfig()
+  const section = req.params.section as string
+
+  if (!(section in config)) {
+    res.status(404).json({ error: `Config section "${section}" not found. Available: ${Object.keys(config).join(', ')}` })
+    return
+  }
+
+  res.json({ section, config: (config as unknown as Record<string, unknown>)[section] })
+}
+
+export function handleGetCostTracker(req: Request, res: Response): void {
+  const sessionId = req.params.sessionId as string
+  const tracker = costTrackers.get(sessionId)
+
+  if (!tracker) {
+    res.status(404).json({ error: `Cost tracker not found for session "${sessionId}"` })
+    return
+  }
+
+  res.json({
+    sessionId,
+    totalCostUsd: tracker.getTotalCostUsd(),
+    totalInputTokens: tracker.getTotalInputTokens(),
+    totalOutputTokens: tracker.getTotalOutputTokens(),
+    isOverBudget: tracker.isOverBudget(),
+    isNearBudget: tracker.isNearBudget(),
+    remainingBudget: tracker.getRemainingBudget(),
+    report: tracker.getUsageReport(),
+  })
+}
+
+export function handleSetBudget(req: Request, res: Response): void {
+  const sessionId = req.params.sessionId as string
+  const { maxBudgetUsd } = req.body as { maxBudgetUsd?: number }
+
+  if (typeof maxBudgetUsd !== 'number' || maxBudgetUsd < 0) {
+    res.status(400).json({ error: 'maxBudgetUsd must be a non-negative number' })
+    return
+  }
+
+  let tracker = costTrackers.get(sessionId)
+  if (!tracker) {
+    const store = getSessionStore()
+    if (!store.has(sessionId)) {
+      res.status(404).json({ error: `Session "${sessionId}" not found` })
+      return
+    }
+    tracker = new CostTracker({ maxBudgetUsd })
+    costTrackers.set(sessionId, tracker)
+  } else {
+    const oldTracker = tracker
+    tracker = new CostTracker({
+      maxBudgetUsd,
+      costPerInputToken: (oldTracker as unknown as { costPerInputToken: number }).costPerInputToken,
+      costPerOutputToken: (oldTracker as unknown as { costPerOutputToken: number }).costPerOutputToken,
+    })
+    tracker.addUsage({
+      inputTokens: oldTracker.getTotalInputTokens(),
+      outputTokens: oldTracker.getTotalOutputTokens(),
+    })
+    costTrackers.set(sessionId, tracker)
+  }
+
+  res.json({
+    sessionId,
+    maxBudgetUsd,
+    totalCostUsd: tracker.getTotalCostUsd(),
+    remainingBudget: tracker.getRemainingBudget(),
+  })
+}
+
+export function handleListMemories(_req: Request, res: Response): void {
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(503).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  Promise.all([
+    memoryManager.listGlobalMemories(),
+    memoryManager.listProjectMemories(),
+    memoryManager.listSessionMemories(),
+  ]).then(([global, project, session]) => {
+    const all = [...global, ...project, ...session]
+    res.json({
+      count: all.length,
+      global: global.length,
+      project: project.length,
+      session: session.length,
+      memories: all.map(m => ({
+        path: m.path,
+        type: m.type,
+        scope: m.frontmatter.scope ?? 'project',
+        description: m.description,
+        mtimeMs: m.mtimeMs,
+        sizeBytes: m.sizeBytes,
+      })),
+    })
+  }).catch(error => {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  })
+}
+
+export function handleGetMemory(req: Request, res: Response): void {
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(503).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  const name = req.params.name as string
+
+  Promise.all([
+    memoryManager.listGlobalMemories(),
+    memoryManager.listProjectMemories(),
+    memoryManager.listSessionMemories(),
+  ]).then(([global, project, session]) => {
+    const all = [...global, ...project, ...session]
+    const found = all.find(m => m.path.endsWith(`${name}.md`) || m.description === name)
+
+    if (!found) {
+      res.status(404).json({ error: `Memory "${name}" not found` })
+      return
+    }
+
+    res.json({
+      path: found.path,
+      type: found.type,
+      scope: found.frontmatter.scope ?? 'project',
+      description: found.description,
+      content: found.content,
+      frontmatter: found.frontmatter,
+      mtimeMs: found.mtimeMs,
+      sizeBytes: found.sizeBytes,
+    })
+  }).catch(error => {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  })
+}
+
+export async function handleSearchMemories(req: Request, res: Response): Promise<void> {
+  const { query } = req.body as { query: string }
+
+  if (!query || typeof query !== 'string') {
+    res.status(400).json({ error: 'query is required and must be a string' })
+    return
+  }
+
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(503).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  try {
+    const result = await memoryManager.findRelevant(query)
+    res.json({
+      query,
+      count: result.memories.length,
+      memories: result.memories.map(m => ({
+        path: m.path,
+        type: m.type,
+        scope: m.frontmatter.scope ?? 'project',
+        description: m.description,
+        content: m.content,
+        freshnessWarning: result.freshnessWarnings.get(m.path),
+      })),
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export async function handleDeleteMemory(req: Request, res: Response): Promise<void> {
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(503).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  const scope = req.params.scope as string
+  try {
+    if (scope === 'session') {
+      const deleted = await memoryManager.deleteSessionMemories()
+      res.json({ success: true, deleted, scope: 'session' })
+    } else {
+      res.status(400).json({ error: 'Only session scope deletion is supported. Use scope=session.' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export async function handleExtractMemories(req: Request, res: Response): Promise<void> {
+  const { sessionId } = req.body as { sessionId?: string }
+
+  const memoryManager = getMemoryManager()
+  if (!memoryManager) {
+    res.status(503).json({ error: 'Memory manager not initialized' })
+    return
+  }
+
+  const defaultProvider = getDefaultProvider()
+  if (!defaultProvider) {
+    res.status(503).json({ error: 'No default provider configured' })
+    return
+  }
+
+  const extractor = new MemoryExtractor(memoryManager)
+  extractor.setProvider(defaultProvider, defaultProvider.config.defaultModel)
+
+  let messages: Message[] = []
+  if (sessionId) {
+    const store = getSessionStore()
+    const session = store.get(sessionId)
+    if (!session) {
+      res.status(404).json({ error: `Session "${sessionId}" not found` })
+      return
+    }
+    messages = session.messages
+  }
+
+  try {
+    if (messages.length > 0 && extractor.shouldExtract(messages.length)) {
+      await extractor.extractMemories(messages)
+    }
+    res.json({ success: true, messageCount: messages.length })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export function handleGetCircuitBreakerStatus(_req: Request, res: Response): void {
+  const { CompactCircuitBreaker, ConsolidationCircuitBreaker } = require('../utils/circuit-breaker.js') as typeof import('../utils/circuit-breaker.js')
+
+  const compact = new CompactCircuitBreaker()
+  const consolidation = new ConsolidationCircuitBreaker()
+
+  res.json({
+    compact: compact.getStats(),
+    consolidation: consolidation.getStats(),
+  })
+}
+
+export function handleResetCircuitBreaker(req: Request, res: Response): void {
+  const { type } = req.body as { type?: 'compact' | 'consolidation' | 'all' }
+  const resetType = type ?? 'all'
+  const { CompactCircuitBreaker, ConsolidationCircuitBreaker } = require('../utils/circuit-breaker.js') as typeof import('../utils/circuit-breaker.js')
+
+  const results: Record<string, unknown> = {}
+
+  if (resetType === 'compact' || resetType === 'all') {
+    const cb = new CompactCircuitBreaker()
+    cb.reset()
+    results.compact = cb.getStats()
+  }
+
+  if (resetType === 'consolidation' || resetType === 'all') {
+    const cb = new ConsolidationCircuitBreaker()
+    cb.reset()
+    results.consolidation = cb.getStats()
+  }
+
+  res.json({ success: true, ...results })
+}
+
+export function handleGetContextBudget(_req: Request, res: Response): void {
+  const { getBudgetConfig, computeBudgetAllocation } = require('../memory/context-budget.js') as typeof import('../memory/context-budget.js')
+  const config = getBudgetConfig()
+  const allocation = computeBudgetAllocation(config)
+
+  res.json({
+    config,
+    allocation,
   })
 }

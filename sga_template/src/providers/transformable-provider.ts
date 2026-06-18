@@ -330,6 +330,14 @@ export class TransformableProvider implements LLMProvider {
   private normalizeStreamChunk(raw: Record<string, unknown>): ProviderStreamChunk {
     const chunk: ProviderStreamChunk = { type: 'stream_chunk', raw }
 
+    if (raw.usage) {
+      const rawUsage = raw.usage as Record<string, unknown>
+      chunk.usage = {
+        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
+        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
+      }
+    }
+
     const choices = raw.choices as Array<Record<string, unknown>> | undefined
     if (!choices || choices.length === 0) return chunk
 
@@ -366,17 +374,19 @@ export class TransformableProvider implements LLMProvider {
         length: 'max_tokens',
         tool_calls: 'tool_use',
       }
-      chunk.delta = {
-        type: 'message_delta',
-        stopReason: stopReasonMap[finishReason] ?? finishReason,
-      }
-    }
-
-    if (raw.usage) {
-      const rawUsage = raw.usage as Record<string, unknown>
-      chunk.usage = {
-        inputTokens: (rawUsage.prompt_tokens ?? rawUsage.input_tokens) as number | undefined,
-        outputTokens: (rawUsage.completion_tokens ?? rawUsage.output_tokens) as number | undefined,
+      const mappedStopReason = stopReasonMap[finishReason] ?? finishReason
+      if (chunk.delta && chunk.delta.type !== 'text_delta' && chunk.delta.type !== 'message_delta') {
+        chunk.delta.stopReason = mappedStopReason
+      } else if (!chunk.delta || (chunk.delta.type === 'text_delta' && !chunk.delta.text)) {
+        chunk.delta = {
+          type: 'message_delta',
+          stopReason: mappedStopReason,
+        }
+      } else {
+        chunk.delta = {
+          ...chunk.delta,
+          stopReason: mappedStopReason,
+        }
       }
     }
 

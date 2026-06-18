@@ -374,6 +374,102 @@ def _build_if_needed(sga_dir):
             raise
 
 
+def _ensure_ui_dependencies(ui_dir):
+    node_modules = os.path.join(ui_dir, "node_modules")
+    if not os.path.exists(node_modules):
+        print("📦 Installing dependencies for UI...")
+        try:
+            subprocess.run(
+                ["npm", "install"],
+                cwd=ui_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            print("✅ UI dependencies installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install UI dependencies: {e.stderr}")
+            raise
+        except FileNotFoundError:
+            print("❌ npm not found. Please install Node.js first.")
+            raise
+
+
+def _build_ui_if_needed(ui_dir):
+    web_dir = os.path.join(current_dir, "web")
+    if not os.path.exists(web_dir) or not os.listdir(web_dir):
+        print("🔨 Building UI (web folder not found or empty)...")
+        try:
+            _ensure_ui_dependencies(ui_dir)
+            subprocess.run(
+                ["npm", "run", "build"],
+                cwd=ui_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            print("✅ UI build completed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to build UI: {e.stderr}")
+            raise
+        except FileNotFoundError:
+            print("❌ npm not found. Please install Node.js first.")
+            raise
+
+
+def _ensure_mcp_config(sga_dir):
+    import json
+    sga_home = os.environ.get("SGA_HOME", os.path.join(os.path.expanduser("~"), ".sga"))
+    os.makedirs(sga_home, exist_ok=True)
+    mcp_config_path = os.path.join(sga_home, "mcp-servers.json")
+
+    existing_configs = []
+    if os.path.isfile(mcp_config_path):
+        try:
+            with open(mcp_config_path, "r", encoding="utf-8") as f:
+                existing_configs = json.load(f)
+        except Exception:
+            existing_configs = []
+
+    comfyui_entry = None
+    for cfg in existing_configs:
+        if cfg.get("name") == "comfyui-api":
+            comfyui_entry = cfg
+            break
+
+    comfyui_port = os.environ.get("COMFYUI_PORT", "8188")
+    comfyui_host = os.environ.get("COMFYUI_HOST", "127.0.0.1")
+    comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+
+    desired_entry = {
+        "name": "comfyui-api",
+        "transport": "streamable-http",
+        "url": f"{comfyui_url}/mcp",
+        "disabled": False,
+        "alwaysAllow": ["*"],
+        "restartOnFailure": True,
+        "maxRestartAttempts": 3,
+    }
+
+    if comfyui_entry:
+        needs_update = (
+            comfyui_entry.get("url") != desired_entry["url"]
+            or comfyui_entry.get("transport") != desired_entry["transport"]
+        )
+        if not needs_update:
+            return
+        comfyui_entry.update(desired_entry)
+    else:
+        existing_configs.append(desired_entry)
+
+    try:
+        with open(mcp_config_path, "w", encoding="utf-8") as f:
+            json.dump(existing_configs, f, indent=2, ensure_ascii=False)
+        print(f"✅ MCP config updated: {mcp_config_path}")
+    except Exception as e:
+        print(f"⚠️  Failed to write MCP config: {e}")
+
+
 def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
     global _backend_process, _backend_server
 
@@ -392,6 +488,7 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
             return None
 
     sga_dir = os.path.join(current_dir, "sga_template")
+    ui_dir = os.path.join(current_dir, "ui")
 
     if not os.path.isdir(sga_dir):
         print(f"❌ sga_template directory not found: {sga_dir}")
@@ -403,6 +500,15 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
     except Exception as e:
         print(f"❌ Failed to prepare sga_template: {e}")
         return None
+
+    if os.path.isdir(ui_dir):
+        try:
+            _build_ui_if_needed(ui_dir)
+        except Exception as e:
+            print(f"❌ Failed to build UI: {e}")
+            print("⚠️  The backend will still start, but the web UI may not be available.")
+
+    _ensure_mcp_config(sga_dir)
 
     print("=" * 60)
     print("🚀 Starting ComfyUI Workflow Agent Backend Server (SGA)")
@@ -420,8 +526,14 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
             env["PORT"] = str(port)
             env["HOST"] = host
 
+            comfyui_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+            if os.path.isfile(os.path.join(comfyui_root, "main.py")):
+                env["COMFYUI_BASE_DIR"] = comfyui_root
+            else:
+                env["COMFYUI_BASE_DIR"] = current_dir
+
             _backend_process = subprocess.Popen(
-                [node_path, "dist/server/comfyui-main.js"],
+                [node_path, "dist/server/main.js"],
                 cwd=sga_dir,
                 env=env,
                 stdout=subprocess.PIPE,

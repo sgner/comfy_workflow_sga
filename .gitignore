@@ -58,3 +58,14 @@ _comfyui_custom_backup/
 # Runtime logs
 logs.md
 ComfyUI_frontend-main/
+civitai.md
+
+# Generated docs & lock files
+SGA_CAPABILITY_PLAN.md
+enums.md
+models.md
+model-versions.md
+tags.md
+uv.lock
+comfy_workflow_agent.egg-info/
+.sga/

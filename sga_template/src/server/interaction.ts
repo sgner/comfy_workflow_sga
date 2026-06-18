@@ -1,3 +1,8 @@
+export const pendingResolvers: Map<string, {
+  resolve: (response: unknown) => void
+  reject: (error: Error) => void
+}> = new Map()
+
 export interface ApprovalRequest {
   id: string
   type: 'approval_required'
@@ -32,6 +37,14 @@ export interface UserApprovalResponse {
   actionId: string
   decision: 'allow' | 'deny'
   updatedInput?: Record<string, unknown>
+  reason?: string
+  permissionUpdate?: PermissionUpdate
+}
+
+export interface PermissionUpdate {
+  type: 'always_allow' | 'always_deny' | 'allow_pattern'
+  toolName: string
+  pattern?: string
   reason?: string
 }
 

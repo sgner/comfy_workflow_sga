@@ -183,6 +183,8 @@
   font-size: 0.85em;
   color: #e2e8f0;
   font-family: 'JetBrains Mono', monospace;
+  word-break: break-all;
+  overflow-wrap: break-word;
 }
 .markdown-content pre {
   background-color: rgba(0, 0, 0, 0.4);
@@ -192,12 +194,16 @@
   margin-top: 0.35rem;
   overflow-x: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  max-width: 100%;
 }
 .markdown-content pre code {
   background-color: transparent;
   padding: 0;
   color: #cbd5e1;
   font-size: 0.8em;
+  word-break: break-all;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .markdown-content h1, 
@@ -253,4 +259,71 @@
   background-color: rgba(0, 0, 0, 0.2);
   font-weight: 600;
   color: #e2e8f0;
+}
+
+/* IDE-style Code Block with Line Numbers */
+.code-block-wrapper {
+  background-color: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  max-width: 100%;
+}
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.35rem 0.75rem;
+  background-color: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.code-lang {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.code-block-body {
+  display: flex;
+  overflow-x: auto;
+}
+.line-numbers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 0.5rem 0.5rem 0.5rem 0.6rem;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+  flex-shrink: 0;
+}
+.line-number {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  color: #64748b;
+  min-width: 2em;
+  text-align: right;
+}
+.code-pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  background-color: transparent;
+  border: none;
+  overflow-x: auto;
+  min-width: 0;
+}
+.code-pre code {
+  background-color: transparent;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
 }

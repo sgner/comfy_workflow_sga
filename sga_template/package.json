@@ -1,5 +1,5 @@
 {
-  "name": "cc-contron",
+  "name": "sga-template",
   "version": "1.0.0",
   "description": "A reusable Agent framework extracted from Claude Code, supporting multi-agent orchestration, memory, skills, and more.",
   "type": "module",
@@ -18,9 +18,9 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "start": "node --loader ts-node/esm src/server/main.ts",
+    "start": "tsx src/server/main.ts",
     "start:dist": "node dist/server/main.js",
-    "dev": "node --loader ts-node/esm --watch src/server/main.ts"
+    "dev": "tsx watch src/server/main.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": ">=0.80.0",
@@ -31,6 +31,7 @@
     "p-map": "^7.0.4",
     "picomatch": "^4.0.4",
     "proper-lockfile": "^4.1.2",
+    "tsx": "^4.19.0",
     "uuid": "^10.0.0",
     "yaml": "^2.8.3",
     "zod": "^3.23.0"
@@ -41,7 +42,6 @@
     "@types/node": "^22.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/uuid": "^10.0.0",
-    "ts-node": "^10.9.2",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
