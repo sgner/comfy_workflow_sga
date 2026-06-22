@@ -1,4 +1,4 @@
-# Codex Agent 集成 — 实施文档
+﻿# Codex Agent 集成 — 实施文档
 
 > 版本: v0.7 · 日期: 2026-06-19 · 状态: Sprint 1-5 已完成 / 全链路可用 + 自动下载预编译 binary
 > 目标: 把 Codex (本项目内嵌的第二个 coding agent) 作为本项目的**第二个可选后端 agent**,用户可在 SGA 与 Codex 之间二选一作为消息处理后端。
@@ -9,7 +9,7 @@
 |-----------|-----------|
 | 新用户需手动编译或安装 Codex 桌面客户端 | **三级自动获取**: 探测 → 下载预编译 → cargo build |
 | 无下载配置机制 | **三级 URL 配置**: env `CODEX_DOWNLOAD_URL` > env `CODEX_RELEASE_URL` > `codex/download-url.txt` > 默认 |
-| 下载的 binary 不在探测链中 | **探测链新增 `codex/bin/`**: Python + TS 双端同步 |
+| 下载的 binary 不在探测链中 | **探测链新增 `sga_template/codex-rs/target/release/`**: Python + TS 双端同步 |
 | 下载失败只打印指引 | **下载失败自动 cargo build**: `cargo build --release -p codex-app-server`, 30 分钟超时 |
 | 无跳过机制 | **`CODEX_SKIP_DOWNLOAD=1`** 跳过下载, **`CODEX_SKIP_BUILD=1`** 跳过编译 |
 
@@ -37,7 +37,7 @@
 
 | 旧方案 (v0.3) | v0.4 调整 |
 |----------------|----------------|
-| Codex 独立维护 | **Codex 迁入本项目根目录** `<项目根>/codex/`,与 `sga_template/` 同级 |
+| Codex 独立维护 | **Codex 已 vendor 到本项目** `<项目根>/sga_template/codex-rs/`,作为 SGA 后端的一部分 |
 | 用户需自行下载 release / `cargo build` | SGA 启动时自动探测 codex binary (官方安装路径优先) |
 | Codex 与 ComfyUI 解耦 | **随 ComfyUI 启动链**: ComfyUI 加载 custom_node → SGA Express 启动 → SGA 拉起 codex 子进程 |
 | 独立 cargo 工程 | Codex 源码在项目内, 可做轻量级改造 |
@@ -54,7 +54,7 @@
 | **v0.4** | **2026-06-18** | **部署形态重定向**: Codex 迁入项目根, 随 ComfyUI 启动, SGA 探测本地 binary. 新增 `§3.5 启动链`, 重写 `§4` 决策 §10 文件布局, 风险表去 WSL 风险, 加轻量改造占位 |
 | **v0.5** | **2026-06-19** | **Sprint 2+3 完成**: CodexBackend 完整实现, 登录去除, Provider 共享 (proxy), 消息派发, provider 变化自动重启. E2E mock 6/6 PASS. |
 | **v0.6** | **2026-06-19** | **Sprint 4 完成**: 前端 ChatPanel SGA/Codex 切换按钮, Codex 崩溃自动重启, MCP 工具注入 config.toml, 真供应商 e2e 测试脚本. 前后端 tsc 均通过. |
-| **v0.7** | **2026-06-19** | **Sprint 5 完成**: 三级自动获取 codex binary (探测→下载预编译→cargo build). `_download_codex_binary()` + `_build_codex_with_cargo()` + 三级 URL 配置 + 进度显示 + `--version` 验证. 探测链新增 `codex/bin/` (Python + TS). `CODEX_SKIP_DOWNLOAD=1` / `CODEX_SKIP_BUILD=1` 跳过. `.gitignore` 排除 `codex/bin/`. |
+| **v0.7** | **2026-06-19** | **Sprint 5 完成**: vendored codex-rs (Apache-2.0, 探测→cargo build 即可). `_download_codex_binary()` + `_build_codex_with_cargo()` + 保留 cargo build 流程, 不再下载预编译二进制. 探测链新增 `sga_template/codex-rs/target/release/` (Python + TS). `CODEX_SKIP_DOWNLOAD=1` / `CODEX_SKIP_BUILD=1` 跳过. `.gitignore` 排除 `sga_template/codex-rs/target/`. |
 
 ---
 

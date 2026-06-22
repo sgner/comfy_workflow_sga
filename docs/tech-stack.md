@@ -1,4 +1,4 @@
-# 技术栈总览
+﻿# 技术栈总览
 
 > 版本: v0.7 · 最后更新: 2026-06-22
 > 范围: `comfy_workflow_agent` ComfyUI 自定义节点 + SGA Agent 框架 + Codex Agent 子模块
@@ -107,10 +107,8 @@ comfy_workflow_agent/
 │   │   └── config.ts                    # 全局配置
 │   ├── package.json                     # @anthropic-ai/sdk, express, cors, dotenv, zod, chalk, p-map, picomatch, proper-lockfile, uuid, yaml
 │   └── tsconfig.json                    # ESNext + ES2022 + strict
-├── codex/                               # Rust 子模块（git submodule）
-│   ├── codex-rs/                        # Rust workspace（app-server, cli, core, mcp, tui, …）
-│   ├── codex-cli/                       # Node.js 封装的 CLI 入口
-│   └── .github/workflows/               # CI: ci.yml / rust-ci.yml / sdk.yml / cla.yml / bazel.yml
+├── scripts/                             # 构建脚本
+│   └── build-codex.mjs                  # 编译 vendored codex-app-server 一键脚本
 ├── ui/                                  # React + Vite 前端
 │   ├── src/
 │   │   ├── components/                  # ChatPanel, SettingsModal, WorkflowVisualizer
@@ -186,7 +184,7 @@ comfy_workflow_agent/
 
 ---
 
-## 5. Codex Rust 子模块 (codex/)
+## 5. Codex Rust 源码 (已 vendor 到 sga_template/codex-rs/)
 
 | Crate / 目录 | 用途 |
 |---|---|
@@ -233,7 +231,7 @@ comfy_workflow_agent/
      ▼
 ┌──────────────────────────────┐
 │  Codex app-server (Rust)     │
-│  - codex/codex-rs/app-server │
+│  - sga_template/codex-rs/app-server │
 │  - 接受 SGA 派发的任务       │
 │  - 调 SGA 注入的 MCP server  │
 │    (comfyui-api @ 8188/mcp)  │
@@ -303,9 +301,9 @@ npm run lint
 ### 8.4 可选：构建 Codex
 
 ```bash
-cd codex/codex-rs
+cd sga_template/codex-rs
 cargo build --release -p codex-app-server
-# 或 ./scripts/build-codex.ps1
+# 或 ` 或 node scripts/build-codex.mjs
 ```
 
 ---
