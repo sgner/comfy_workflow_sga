@@ -1,5 +1,21 @@
 import express from 'express'
 import cors from 'cors'
+import { config as dotenvConfig } from 'dotenv'
+import { resolve } from 'path'
+
+// 必须在所有依赖 env 的代码之前执行:从 sga_template/.env(及 cwd/.env)加载 SGA_HOME 等环境变量
+// 注意:历史代码把 dotenvConfig 放在 routes.ts 模块顶部,但 app.ts 在 routes.ts 之前就已经调用了
+// getSgaHome()/migrateIfNeeded(),导致 process.env.SGA_HOME 还没被设置,回退到了 ~/.sga
+try {
+  dotenvConfig({ path: resolve(process.cwd(), '.env'), override: true })
+  // 兜底: sga_template 内部自带的 .env(用于开发模式,跑 npx tsx 时 cwd 不是 sga_template)
+  const sgaTemplateEnv = resolve(process.cwd(), 'sga_template', '.env')
+  if (sgaTemplateEnv !== resolve(process.cwd(), '.env')) {
+    dotenvConfig({ path: sgaTemplateEnv, override: false })
+  }
+} catch {
+  // dotenv 可选,加载失败不影响主流程
+}
 import {
   handleListSessions,
   handleCreateSession,
@@ -15,6 +31,12 @@ import {
   handleGeneratePlan,
   handleListSnapshots,
   handleResumePlan,
+  // Sprint 1+2: AgentBackend 相关
+  handleListBackends,
+  handleBackendsHealth,
+  handleGetSessionAgent,
+  handleSwitchSessionAgent,
+  handleClearHandoff,
   handleListTasks,
   handleGetTask,
   handleKillTask,
@@ -24,6 +46,10 @@ import {
   handleAddProvider,
   handleRemoveProvider,
   handleSetDefaultProvider,
+  handleVerifyProviderAddress,
+  handleVerifyProviderProtocol,
+  handleFetchProviderModels,
+  handleVerifyAndAddProvider,
   handleHealth,
   handleGetPermissionRules,
   handleUpdatePermissionMode,
@@ -155,6 +181,14 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/coordinate/plan`, handleGeneratePlan)
   app.get(`${base}/coordinate/snapshots`, handleListSnapshots)
   app.post(`${base}/coordinate/resume`, handleResumePlan)
+
+  // ===== Sprint 1+2: Agent Backend (SGA / Codex) =====
+  app.get(`${base}/backends`, handleListBackends)
+  app.get(`${base}/backends/health`, handleBackendsHealth)
+  app.get(`${base}/sessions/:sessionId/agent`, handleGetSessionAgent)
+  app.post(`${base}/sessions/:sessionId/agent`, handleSwitchSessionAgent)
+  app.delete(`${base}/sessions/:sessionId/handoff`, handleClearHandoff)
+
   app.get(`${base}/tasks`, handleListTasks)
   app.get(`${base}/tasks/:taskId`, handleGetTask)
   app.delete(`${base}/tasks/:taskId`, handleKillTask)
@@ -212,6 +246,10 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/providers`, handleAddProvider)
   app.delete(`${base}/providers/:name`, handleRemoveProvider)
   app.put(`${base}/providers/:name/default`, handleSetDefaultProvider)
+  app.post(`${base}/providers/verify-address`, handleVerifyProviderAddress)
+  app.post(`${base}/providers/verify-protocol`, handleVerifyProviderProtocol)
+  app.post(`${base}/providers/fetch-models`, handleFetchProviderModels)
+  app.post(`${base}/providers/verify-and-add`, handleVerifyAndAddProvider)
 
   app.get(`${base}/skills`, handleListSkills)
   app.get(`${base}/skills/discover`, handleDiscoverSkills)
@@ -389,8 +427,8 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     }
   }
 
-  const { ComfyUIConfigStore } = await import('./routes.js')
-  const configStore = new ComfyUIConfigStore()
+  const { getComfyUIConfigStore } = await import('./routes.js')
+  const configStore = getComfyUIConfigStore()
   const githubToken = configStore.getGitHubToken()
   if (githubToken) {
     process.env.GITHUB_TOKEN = githubToken
@@ -404,5 +442,23 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
     console.log(`[sga-template] Server running at http://${host}:${port}`)
     console.log(`[sga-template] API base path: ${config.basePath ?? '/api/v1'}`)
     console.log(`[sga-template] Health check: http://${host}:${port}${config.basePath ?? '/api/v1'}/health`)
+
+    // Sprint 1+2: 启动 BackendRegistry, 默认 SGA backend 启动
+    ;(async () => {
+      try {
+        const { getBackendRegistry, getSgaBackend } = await import('../agents/index.js')
+        const registry = getBackendRegistry()
+        registry.init()
+        // 预热 SGA backend (Codex 暂不启动, 等 Sprint 3)
+        try {
+          await getSgaBackend().start({ cwd: process.cwd() })
+          console.log('[sga-template] AgentBackend (SGA) started')
+        } catch (err) {
+          console.warn(`[sga-template] SGA backend warmup failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      } catch (err) {
+        console.error(`[sga-template] BackendRegistry init failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
   })
 }

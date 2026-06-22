@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 780" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <title>Codex 集成流程 — Binary 获取 + Provider Proxy + 登录去除</title>
+  <desc>三级 binary 获取 (探测→下载→编译) → 启动反代 → 写 config.toml → spawn codex → JSON-RPC 通信 → SSE 翻译</desc>
+
+  <defs>
+    <linearGradient id="gEmerald" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#10b981"/><stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="gAmber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="gBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="gSlate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#475569"/><stop offset="1" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="gRed" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ef4444"/><stop offset="1" stop-color="#dc2626"/>
+    </linearGradient>
+    <marker id="cf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="cfE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#10b981"/>
+    </marker>
+    <marker id="cfR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ef4444"/>
+    </marker>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00015010"/>
+    </filter>
+    <style>
+      @keyframes dash { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
+      .flow { stroke-dasharray: 6 4; animation: dash 1.5s linear infinite; }
+      @keyframes breathe { 0%,100% { opacity: 0.9; } 50% { opacity: 1; } }
+      .breathe { animation: breathe 3s ease-in-out infinite; }
+    </style>
+  </defs>
+
+  <rect width="960" height="780" fill="#f8fafc" rx="10"/>
+
+  <!-- 标题 -->
+  <text x="480" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Codex 集成流程</text>
+  <text x="480" y="54" text-anchor="middle" font-size="12" fill="#64748b">Binary 三级获取 → Provider Proxy → config.toml 注入 → JSON-RPC → SSE 翻译 — 无需 OpenAI 登录</text>
+
+  <!-- ===== Phase 1: Binary 获取 (三级 fallback) ===== -->
+  <rect x="20" y="75" width="920" height="180" rx="10" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="95" font-size="12" font-weight="700" fill="#475569">Phase 1: Binary 获取 (ComfyUI 启动时, __init__.py)</text>
+
+  <!-- 探测 -->
+  <rect x="50" y="110" width="180" height="60" rx="8" fill="url(#gBlue)" filter="url(#sh)" class="breathe"/>
+  <text x="140" y="132" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">1. 探测 binary</text>
+  <text x="140" y="148" text-anchor="middle" font-size="9" fill="#dbeafe">env → release → debug</text>
+  <text x="140" y="160" text-anchor="middle" font-size="9" fill="#dbeafe">→ downloaded → official</text>
+
+  <text x="250" y="145" text-anchor="middle" font-size="16" fill="#10b981" font-weight="700">✓</text>
+  <text x="250" y="165" text-anchor="middle" font-size="9" fill="#10b981">找到</text>
+
+  <!-- 下载 -->
+  <rect x="280" y="110" width="200" height="60" rx="8" fill="url(#gAmber)" filter="url(#sh)"/>
+  <text x="380" y="132" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">2. 下载预编译</text>
+  <text x="380" y="148" text-anchor="middle" font-size="9" fill="#fef3c7">GitHub Releases</text>
+  <text x="380" y="160" text-anchor="middle" font-size="9" fill="#fef3c7">三级 URL 配置 + 进度 + 验证</text>
+
+  <text x="500" y="145" text-anchor="middle" font-size="16" fill="#10b981" font-weight="700">✓</text>
+  <text x="500" y="165" text-anchor="middle" font-size="9" fill="#10b981">成功</text>
+
+  <!-- cargo build -->
+  <rect x="530" y="110" width="200" height="60" rx="8" fill="url(#gAmber)" filter="url(#sh)"/>
+  <text x="630" y="132" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">3. cargo build</text>
+  <text x="630" y="148" text-anchor="middle" font-size="9" fill="#fef3c7">cargo build --release</text>
+  <text x="630" y="160" text-anchor="middle" font-size="9" fill="#fef3c7">-p codex-app-server (30min)</text>
+
+  <text x="750" y="145" text-anchor="middle" font-size="16" fill="#10b981" font-weight="700">✓</text>
+  <text x="750" y="165" text-anchor="middle" font-size="9" fill="#10b981">成功</text>
+
+  <!-- 失败 -->
+  <rect x="780" y="110" width="140" height="60" rx="8" fill="url(#gRed)" filter="url(#sh)"/>
+  <text x="850" y="132" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">全部失败</text>
+  <text x="850" y="148" text-anchor="middle" font-size="9" fill="#fecaca">打印手动指引</text>
+  <text x="850" y="160" text-anchor="middle" font-size="9" fill="#fecaca">SGA 不受影响</text>
+
+  <!-- 箭头 -->
+  <line x1="230" y1="140" x2="255" y2="140" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#cfR)"/>
+  <text x="242" y="130" text-anchor="middle" font-size="8" fill="#ef4444">未找到</text>
+  <line x1="480" y1="140" x2="505" y2="140" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#cfR)"/>
+  <text x="492" y="130" text-anchor="middle" font-size="8" fill="#ef4444">失败</text>
+  <line x1="730" y1="140" x2="755" y2="140" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#cfR)"/>
+  <text x="742" y="130" text-anchor="middle" font-size="8" fill="#ef4444">失败</text>
+
+  <!-- 跳过控制 -->
+  <rect x="50" y="185" width="870" height="28" rx="6" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="60" y="204" font-size="10" fill="#64748b">环境变量: </text>
+  <text x="130" y="204" font-size="10" font-weight="600" fill="#475569">CODEX_SKIP_DOWNLOAD=1</text>
+  <text x="290" y="204" font-size="10" fill="#64748b">跳过下载</text>
+  <text x="360" y="204" font-size="10" font-weight="600" fill="#475569">CODEX_SKIP_BUILD=1</text>
+  <text x="500" y="204" font-size="10" fill="#64748b">跳过编译</text>
+  <text x="570" y="204" font-size="10" font-weight="600" fill="#475569">CODEX_DOWNLOAD_URL</text>
+  <text x="720" y="204" font-size="10" fill="#64748b">自定义下载 URL</text>
+
+  <!-- ===== Phase 2: 启动链 (CodexBackend.start) ===== -->
+  <rect x="20" y="270" width="920" height="230" rx="10" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="290" font-size="12" font-weight="700" fill="#475569">Phase 2: 启动链 (CodexBackend.start — provider 变化时自动重启)</text>
+
+  <!-- start -->
+  <rect x="50" y="305" width="160" height="45" rx="8" fill="url(#gEmerald)" filter="url(#sh)" class="breathe"/>
+  <text x="130" y="325" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">start(opts)</text>
+  <text x="130" y="340" text-anchor="middle" font-size="9" fill="#d1fae5">opts.provider · opts.model</text>
+
+  <line x1="210" y1="327" x2="240" y2="327" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- provider 指纹 -->
+  <rect x="240" y="305" width="160" height="45" rx="8" fill="#fff" stroke="#10b981" stroke-width="1.4" filter="url(#sh)"/>
+  <text x="320" y="325" text-anchor="middle" font-size="11" font-weight="600" fill="#047857">provider 指纹检测</text>
+  <text x="320" y="340" text-anchor="middle" font-size="9" fill="#64748b">name@baseUrl#apiKey</text>
+
+  <line x1="400" y1="327" x2="430" y2="327" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- start proxy -->
+  <rect x="430" y="305" width="160" height="45" rx="8" fill="url(#gEmerald)" filter="url(#sh)"/>
+  <text x="510" y="325" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">startCodexProviderProxy</text>
+  <text x="510" y="340" text-anchor="middle" font-size="9" fill="#d1fae5">本地 HTTP 反代</text>
+
+  <line x1="590" y1="327" x2="620" y2="327" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- write config -->
+  <rect x="620" y="305" width="160" height="45" rx="8" fill="url(#gAmber)" filter="url(#sh)"/>
+  <text x="700" y="325" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">writeCodexConfig</text>
+  <text x="700" y="340" text-anchor="middle" font-size="9" fill="#fef3c7">临时 config.toml</text>
+
+  <line x1="780" y1="327" x2="810" y2="327" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- spawn -->
+  <rect x="810" y="305" width="120" height="45" rx="8" fill="url(#gSlate)" filter="url(#sh)"/>
+  <text x="870" y="325" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">spawn codex</text>
+  <text x="870" y="340" text-anchor="middle" font-size="9" fill="#cbd5e1">app-server --stdio</text>
+
+  <!-- config.toml 内容 -->
+  <rect x="50" y="365" width="400" height="120" rx="8" fill="#0f172a" filter="url(#sh)"/>
+  <text x="70" y="385" font-size="11" font-weight="700" fill="#94a3b8">config.toml (自动生成, 用完即删)</text>
+  <text x="70" y="405" font-size="10" fill="#e2e8f0" font-family="monospace">model = "deepseek-chat"</text>
+  <text x="70" y="420" font-size="10" fill="#e2e8f0" font-family="monospace">model_provider = "sga_deepseek"</text>
+  <text x="70" y="435" font-size="10" fill="#e2e8f0" font-family="monospace">approval_policy = "never"</text>
+  <text x="70" y="450" font-size="10" fill="#6ee7b7" font-family="monospace">[model_providers.sga_deepseek]</text>
+  <text x="70" y="465" font-size="10" fill="#e2e8f0" font-family="monospace">base_url = "http://127.0.0.1:PORT/v1"</text>
+  <text x="70" y="475" font-size="10" fill="#e2e8f0" font-family="monospace" font-size="9">wire_api = "responses"</text>
+  <text x="250" y="475" font-size="10" fill="#fcd34d" font-family="monospace" font-size="9">requires_openai_auth = false</text>
+
+  <!-- 环境变量 -->
+  <rect x="470" y="365" width="460" height="120" rx="8" fill="#f0fdfa" stroke="#5eead4" stroke-width="1.2"/>
+  <text x="490" y="385" font-size="11" font-weight="700" fill="#0f766e">子进程环境变量</text>
+  <text x="490" y="405" font-size="10" fill="#334155" font-family="monospace">CODEX_HOME = &lt;temp codexHome&gt;</text>
+  <text x="490" y="420" font-size="10" fill="#334155" font-family="monospace">OPENAI_API_KEY = &lt;provider apiKey&gt;</text>
+  <text x="490" y="435" font-size="10" fill="#334155" font-family="monospace">PATH = &lt;inherited&gt;</text>
+  <text x="490" y="460" font-size="10" font-weight="600" fill="#047857">关键: requires_openai_auth=false → codex 不检查 ChatGPT 登录</text>
+  <text x="490" y="475" font-size="10" font-weight="600" fill="#047857">关键: base_url 指向本地 proxy → codex 请求被反代拦截</text>
+
+  <!-- ===== Phase 3: 消息处理 (sendMessage) ===== -->
+  <rect x="20" y="515" width="920" height="245" rx="10" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="535" font-size="12" font-weight="700" fill="#475569">Phase 3: 消息处理 (sendMessage — JSON-RPC + SSE 翻译)</text>
+
+  <!-- sendMessage -->
+  <rect x="50" y="550" width="140" height="45" rx="8" fill="url(#gEmerald)" filter="url(#sh)" class="breathe"/>
+  <text x="120" y="570" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">sendMessage</text>
+  <text x="120" y="585" text-anchor="middle" font-size="9" fill="#d1fae5">prompt · model · provider</text>
+
+  <line x1="190" y1="572" x2="220" y2="572" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- turn/start -->
+  <rect x="220" y="550" width="140" height="45" rx="8" fill="#fff" stroke="#10b981" stroke-width="1.4" filter="url(#sh)"/>
+  <text x="290" y="570" text-anchor="middle" font-size="11" font-weight="600" fill="#047857">turn/start</text>
+  <text x="290" y="585" text-anchor="middle" font-size="9" fill="#64748b">JSON-RPC → codex</text>
+
+  <line x1="360" y1="572" x2="390" y2="572" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- codex → proxy -->
+  <rect x="390" y="550" width="160" height="45" rx="8" fill="#fff" stroke="#10b981" stroke-width="1.4" filter="url(#sh)"/>
+  <text x="470" y="570" text-anchor="middle" font-size="11" font-weight="600" fill="#047857">codex → proxy</text>
+  <text x="470" y="585" text-anchor="middle" font-size="9" fill="#64748b">POST /v1/responses</text>
+
+  <line x1="550" y1="572" x2="580" y2="572" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- proxy → LLM -->
+  <rect x="580" y="550" width="160" height="45" rx="8" fill="url(#gBlue)" filter="url(#sh)"/>
+  <text x="660" y="570" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">proxy → LLM</text>
+  <text x="660" y="585" text-anchor="middle" font-size="9" fill="#dbeafe">POST /v1/chat/completions</text>
+
+  <line x1="740" y1="572" x2="770" y2="572" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <!-- LLM 回复 -->
+  <rect x="770" y="550" width="140" height="45" rx="8" fill="url(#gBlue)" filter="url(#sh)"/>
+  <text x="840" y="570" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">LLM 流式回复</text>
+  <text x="840" y="585" text-anchor="middle" font-size="9" fill="#dbeafe">Chat Completions SSE</text>
+
+  <!-- 翻译层 -->
+  <rect x="50" y="615" width="860" height="55" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="480" y="635" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">Provider Proxy: SSE 事件翻译</text>
+  <text x="120" y="658" text-anchor="middle" font-size="10" fill="#64748b">Chat Completions delta</text>
+  <text x="290" y="658" text-anchor="middle" font-size="14" fill="#10b981">→</text>
+  <text x="430" y="658" text-anchor="middle" font-size="10" fill="#047857" font-weight="600">response.output_text.delta</text>
+  <text x="620" y="658" text-anchor="middle" font-size="14" fill="#10b981">→</text>
+  <text x="800" y="658" text-anchor="middle" font-size="10" fill="#047857" font-weight="600">response.completed</text>
+
+  <!-- 事件桥接 -->
+  <line x1="480" y1="670" x2="480" y2="690" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#cfE)"/>
+
+  <rect x="50" y="690" width="860" height="55" rx="8" fill="#fff" stroke="#10b981" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="480" y="710" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">Event Bridge: notification → AgentStreamEvent</text>
+  <text x="180" y="733" text-anchor="middle" font-size="10" fill="#64748b">item/completed</text>
+  <text x="340" y="733" text-anchor="middle" font-size="10" fill="#047857" font-weight="600">→ stream_delta</text>
+  <text x="520" y="733" text-anchor="middle" font-size="10" fill="#64748b">turn/completed</text>
+  <text x="660" y="733" text-anchor="middle" font-size="10" fill="#047857" font-weight="600">→ turn_end</text>
+  <text x="800" y="733" text-anchor="middle" font-size="10" fill="#64748b">tokenUsage → usage</text>
+</svg>

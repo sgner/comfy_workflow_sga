@@ -187,7 +187,9 @@ Common model folder mapping:
       return `Error: Could not create models directory at ${modelsDir}`
     }
 
-    const endpoint = useMirror ? 'https://hf-mirror.com' : 'https://huggingface.co'
+    const endpoint = useMirror
+      ? (process.env.HF_MIRROR_URL ?? 'https://hf-mirror.com')
+      : (process.env.HF_ORIGIN_URL ?? 'https://huggingface.co')
 
     try {
       let command: string
@@ -199,8 +201,8 @@ Common model folder mapping:
       }
 
       const result = execSync(command, {
-        timeout: 600000,
-        maxBuffer: 10 * 1024 * 1024,
+        timeout: parseInt(process.env.HF_DOWNLOAD_TIMEOUT ?? '600000', 10),
+        maxBuffer: parseInt(process.env.HF_MAX_BUFFER ?? String(10 * 1024 * 1024), 10),
         encoding: 'utf-8',
         shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
       })
@@ -223,8 +225,8 @@ Common model folder mapping:
         }
 
         const result = execSync(wgetCommand, {
-          timeout: 600000,
-          maxBuffer: 10 * 1024 * 1024,
+          timeout: parseInt(process.env.HF_DOWNLOAD_TIMEOUT ?? '600000', 10),
+          maxBuffer: parseInt(process.env.HF_MAX_BUFFER ?? String(10 * 1024 * 1024), 10),
           encoding: 'utf-8',
           shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
         })

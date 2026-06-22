@@ -1,12 +1,12 @@
 import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult, type PermissionResult } from '../base.js'
 
-const FETCH_TIMEOUT_MS = 30_000
+const FETCH_TIMEOUT_MS = parseInt(process.env.WEB_SEARCH_TIMEOUT ?? '30000', 10)
 
 export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: string[]; blocked_domains?: string[] }, string> {
   name = 'WebSearch'
   description = 'Search the web for current information using a search query'
   searchHint = 'search web internet find information online'
-  maxResultSizeChars = 100_000
+  maxResultSizeChars = parseInt(process.env.WEB_SEARCH_MAX_CHARS ?? '100000', 10)
   shouldDefer = true
 
   isReadOnly(): boolean {
@@ -42,9 +42,9 @@ export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: s
   }
 
   async call(input: { query: string; allowed_domains?: string[]; blocked_domains?: string[] }, _context: ToolUseContext): Promise<string> {
-    const searchUrl = new URL('https://api.search.brave.com/res/v1/web/search')
+    const searchUrl = new URL(process.env.BRAVE_SEARCH_API ?? 'https://api.search.brave.com/res/v1/web/search')
     searchUrl.searchParams.set('q', input.query)
-    searchUrl.searchParams.set('count', '10')
+    searchUrl.searchParams.set('count', process.env.WEB_SEARCH_COUNT ?? '10')
 
     const apiKey = process.env.BRAVE_SEARCH_API_KEY ?? process.env.WEB_SEARCH_API_KEY
 
@@ -75,11 +75,11 @@ export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: s
     }
 
     try {
-      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(input.query)}`
+      const ddgUrl = `${process.env.DUCKDUCKGO_SEARCH_URL ?? 'https://html.duckduckgo.com/html/'}?q=${encodeURIComponent(input.query)}`
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
       const response = await fetch(ddgUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CC-Contron/1.0)' },
+        headers: { 'User-Agent': process.env.SGA_WEB_USER_AGENT ?? 'Mozilla/5.0 (compatible; CC-Contron/1.0)' },
         signal: controller.signal,
       })
       clearTimeout(timeout)
@@ -88,7 +88,8 @@ export class WebSearchTool extends BaseTool<{ query: string; allowed_domains?: s
         const results: Array<{ title: string; url: string; snippet: string }> = []
         const resultRegex = /<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi
         let match
-        while ((match = resultRegex.exec(html)) !== null && results.length < 10) {
+        const maxResults = parseInt(process.env.WEB_SEARCH_COUNT ?? '10', 10)
+        while ((match = resultRegex.exec(html)) !== null && results.length < maxResults) {
           results.push({
             url: match[1] ?? '',
             title: match[2]?.replace(/<[^>]+>/g, '').trim() ?? '',

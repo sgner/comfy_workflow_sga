@@ -87,13 +87,13 @@ export const MEMORY_SCOPES: Record<MemoryScope, { label: string; description: st
 }
 
 export const DEFAULT_MEMORY_EXTRACT_CONFIG: MemoryExtractConfig = {
-  enabled: true,
-  maxTurnsBetweenExtractions: 3,
-  maxForkTurns: 5,
+  enabled: (process.env.SGA_MEMORY_EXTRACT_ENABLED ?? 'true') === 'true',
+  maxTurnsBetweenExtractions: parseInt(process.env.SGA_MEMORY_MAX_TURNS_BETWEEN_EXTRACTIONS ?? '3', 10),
+  maxForkTurns: parseInt(process.env.SGA_MEMORY_MAX_FORK_TURNS ?? '5', 10),
   allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
 }
 
-export const MEMORY_ENTRYPOINT_MAX_LINES = 200
-export const MEMORY_ENTRYPOINT_MAX_BYTES = 25_000
-export const MEMORY_MAX_FILES = 200
-export const MEMORY_MAX_RELEVANT = 5
+export const MEMORY_ENTRYPOINT_MAX_LINES = parseInt(process.env.SGA_MEMORY_ENTRYPOINT_MAX_LINES ?? '200', 10)
+export const MEMORY_ENTRYPOINT_MAX_BYTES = parseInt(process.env.SGA_MEMORY_ENTRYPOINT_MAX_BYTES ?? '25000', 10)
+export const MEMORY_MAX_FILES = parseInt(process.env.SGA_MEMORY_MAX_FILES ?? '200', 10)
+export const MEMORY_MAX_RELEVANT = parseInt(process.env.SGA_MEMORY_MAX_RELEVANT ?? '5', 10)

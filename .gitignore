@@ -31,6 +31,18 @@ dist-ssr
 # SGA data
 data/
 
+# Codex 子模块 (v0.4): 排除编译产物, 仅源码入库
+codex/target/
+codex/bin/
+codex/.codex-revision
+# 但保留 Cargo.lock 以保证可复现构建
+!codex/codex-rs/Cargo.lock
+!codex/codex-rs/**/Cargo.lock
+
+# Codex 临时数据(SGA 启动时按 hash 生成的临时目录,含 SQLite + config.toml)
+# 注意: 这是根级别双保险, sga_template/.gitignore 也已忽略 codex-tmp/
+sga_template/codex-tmp/
+
 # Node runtime
 .node-runtime/
 
@@ -51,6 +63,7 @@ web/
 *.tmp
 *.txt
 !requirements.txt
+!codex/download-url.txt
 
 # Migration backup
 _comfyui_custom_backup/

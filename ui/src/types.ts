@@ -128,6 +128,8 @@ export interface AppSettings {
     // Python Backend Settings
     usePythonBackend: boolean;
     pythonBackendUrl: string;
+    /** Active agent backend: 'sga' (default) or 'codex' */
+    activeAgent?: 'sga' | 'codex';
 }
 
 export type IssueSeverity = 'error' | 'warning' | 'info';

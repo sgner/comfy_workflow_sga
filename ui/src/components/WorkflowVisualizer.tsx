@@ -538,10 +538,10 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
         }}
       >
         <div className="absolute bottom-4 right-4 flex flex-col gap-2 z-20">
-          <button onClick={handleFixOverlaps} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700" title="Fix Overlaps & Expand">
+          <button onClick={handleFixOverlaps} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700" title={t(language, 'fixOverlaps')}>
             <Move size={16} />
           </button>
-          <button onClick={handleFitToScreen} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700" title="Fit to Screen">
+          <button onClick={handleFitToScreen} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700" title={t(language, 'fitToScreen')}>
             <Maximize size={16} />
           </button>
           <button onClick={() => setTransform((t) => ({ ...t, k: Math.min(t.k + 0.1, 5) }))} className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded shadow border border-slate-700">
@@ -758,7 +758,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
             <div className="flex items-center gap-2">
               <AlertCircle size={14} className="text-red-400" />
               <span className="text-xs font-bold text-red-300 uppercase tracking-wider">
-                Runtime Errors ({runtimeErrors.length})
+                {`${t(language, 'runtimeErrors')} (${runtimeErrors.length})`}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -781,7 +781,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                 }`}
               >
                 <Bot size={12} />
-                Send to AI
+                {t(language, 'sendToAi')}
               </button>
             </div>
           </div>
@@ -809,13 +809,13 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                   <p className="text-sm font-medium text-red-200">{issue.message}</p>
                   {issue.nodeType && (
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Node: {issue.nodeType}{issue.nodeId != null ? ` (#${issue.nodeId})` : ''}
+                      {t(language, 'nodePrefix')}{issue.nodeType}{issue.nodeId != null ? ` (#${issue.nodeId})` : ''}
                     </p>
                   )}
                   {issue.traceback && (
                     <details className="mt-1.5">
                       <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300">
-                        Traceback
+                        {t(language, 'traceback')}
                       </summary>
                       <pre className="mt-1 text-[10px] font-mono text-red-300/70 bg-slate-950/50 rounded p-2 overflow-x-auto max-h-32 overflow-y-auto">
                         {issue.traceback}
@@ -1109,7 +1109,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
       <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
         <div className="flex items-center gap-2 text-slate-400">
           <Database size={14} />
-          <span className="text-xs font-mono">{t(language, 'contextPanelTitle') || 'Workflow Context'}</span>
+          <span className="text-xs font-mono">{t(language, 'contextPanelTitle')}</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -1118,7 +1118,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RefreshCw size={12} className={contextLoading ? 'animate-spin' : ''} />
-            {contextLoading ? (t(language, 'loading') || 'Loading...') : (t(language, 'refresh') || 'Refresh')}
+            {contextLoading ? t(language, 'loading') : t(language, 'refresh')}
           </button>
           <button
             onClick={() => {
@@ -1129,7 +1129,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors"
           >
             <Copy size={12} />
-            {t(language, 'copyPrompt') || 'Copy Prompt'}
+            {t(language, 'copyPrompt')}
           </button>
         </div>
       </div>
@@ -1137,7 +1137,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
         {!contextData ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
             <Database size={32} className="opacity-20" />
-            <p className="text-xs">{t(language, 'clickRefreshToCollect') || 'Click Refresh to collect context'}</p>
+            <p className="text-xs">{t(language, 'clickRefreshToCollect')}</p>
           </div>
         ) : (
           <>
@@ -1149,55 +1149,55 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
               contextData.errors.missingModels.length === 0 &&
               contextData.errors.missingMedia.length === 0 &&
               contextData.errors.promptError === null ? (
-                <p className="text-xs text-emerald-400">{t(language, 'noErrors') || 'No errors detected'}</p>
+                <p className="text-xs text-emerald-400">{t(language, 'noErrors')}</p>
               ) : (
                 <div className="space-y-1.5">
                   {contextData.errors.executionErrors.map((e, i) => (
                     <div key={`exec-${i}`} className="text-[11px] text-red-300 bg-red-950/20 rounded px-2 py-1">
-                      <span className="font-mono text-red-400">Node #{e.nodeId}</span> ({e.nodeType}): {e.exceptionType}: {e.exceptionMessage}
+                      <span className="font-mono text-red-400">{t(language, 'nodeNumber')}{e.nodeId}</span> ({e.nodeType}): {e.exceptionType}: {e.exceptionMessage}
                     </div>
                   ))}
                   {contextData.errors.nodeValidationErrors.map((ne, i) => (
                     <div key={`valid-${i}`} className="space-y-0.5">
                       {ne.errors.map((e, j) => (
                         <div key={`valid-${i}-${j}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
-                          <span className="font-mono text-amber-400">Node #{ne.nodeId}</span> ({ne.classType}): [{e.type}] {e.message}{e.inputName ? ` (input: ${e.inputName})` : ''}
+                          <span className="font-mono text-amber-400">{t(language, 'nodeNumber')}{ne.nodeId}</span> ({ne.classType}): [{e.type}] {e.message}{e.inputName ? ` (input: ${e.inputName})` : ''}
                         </div>
                       ))}
                     </div>
                   ))}
                   {contextData.errors.promptError && (
                     <div className="text-[11px] text-red-300 bg-red-950/20 rounded px-2 py-1">
-                      Prompt Error: [{contextData.errors.promptError.type}] {contextData.errors.promptError.message}
+                      {t(language, 'promptErrorPrefix')}[{contextData.errors.promptError.type}] {contextData.errors.promptError.message}
                     </div>
                   )}
                   {contextData.errors.missingNodeTypes.map((mn, i) => (
                     <div key={`mn-${i}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
-                      Missing Node: {mn.type}{mn.nodeId ? ` (node ${mn.nodeId})` : ''}{mn.isReplaceable ? ' [replaceable]' : ''}
+                      {t(language, 'missingNodePrefix')}{mn.type}{mn.nodeId ? ` (node ${mn.nodeId})` : ''}{mn.isReplaceable ? ' [replaceable]' : ''}
                     </div>
                   ))}
                   {contextData.errors.missingModels.map((mm, i) => (
                     <div key={`mm-${i}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
-                      Missing Model: {mm.nodeName}/{mm.widgetName} in {mm.directory}
+                      {t(language, 'missingModelPrefix')}{mm.nodeName}/{mm.widgetName} in {mm.directory}
                     </div>
                   ))}
                   {contextData.errors.missingMedia.map((mm, i) => (
                     <div key={`media-${i}`} className="text-[11px] text-amber-300 bg-amber-950/20 rounded px-2 py-1">
-                      Missing Media: [{mm.mediaType}] {mm.name} (node {mm.nodeId}, widget: {mm.widgetName})
+                      {t(language, 'missingMediaPrefix')}[{mm.mediaType}] {mm.name} (node {mm.nodeId}, widget: {mm.widgetName})
                     </div>
                   ))}
                 </div>
               )
             )}
 
-            {renderContextSection('Parameters', 'parameters', contextData.parameters.length,
+            {renderContextSection(t(language, 'parametersLabel'), 'parameters', contextData.parameters.length,
               contextData.parameters.length === 0 ? (
-                <p className="text-xs text-slate-500">{t(language, 'noParameters') || 'No parameters collected'}</p>
+                <p className="text-xs text-slate-500">{t(language, 'noParameters')}</p>
               ) : (
                 <div className="space-y-1 max-h-64 overflow-y-auto">
                   {contextData.parameters.map((p, i) => (
                     <div key={i} className="text-[11px] bg-slate-800/50 rounded px-2 py-1">
-                      <span className="font-mono text-indigo-400">Node #{p.nodeId}</span> <span className="text-slate-300">({p.nodeType})</span> <span className="text-slate-400">"{p.nodeTitle}"</span>
+                      <span className="font-mono text-indigo-400">{t(language, 'nodeNumber')}{p.nodeId}</span> <span className="text-slate-300">({p.nodeType})</span> <span className="text-slate-400">"{p.nodeTitle}"</span>
                       {p.widgets.length > 0 && (
                         <div className="ml-3 text-slate-400">
                           Widgets: {p.widgets.map(w => `${w.name}=${JSON.stringify(w.value)}`).join(', ')}
@@ -1209,7 +1209,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
               )
             )}
 
-            {renderContextSection('Nodes', 'nodes', contextData.nodes.length,
+            {renderContextSection(t(language, 'nodesLabel'), 'nodes', contextData.nodes.length,
               <div className="text-[11px] text-slate-300 flex flex-wrap gap-1">
                 {contextData.nodes.map((n, i) => (
                   <span key={i} className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400 font-mono">{n.nodeType}#{n.nodeId}</span>
@@ -1217,55 +1217,55 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
               </div>
             )}
 
-            {renderContextSection('Execution Status', 'executionStatus', undefined,
+            {renderContextSection(t(language, 'executionStatus'), 'executionStatus', undefined,
               <div className="grid grid-cols-2 gap-2 text-[11px]">
                 <div className="bg-slate-800/50 rounded px-2 py-1">
-                  <span className="text-slate-500">Status:</span> <span className={contextData.executionStatus.isIdle ? 'text-emerald-400' : 'text-amber-400'}>{contextData.executionStatus.isIdle ? 'Idle' : 'Running'}</span>
+                  <span className="text-slate-500">{t(language, 'statusPrefix')}</span> <span className={contextData.executionStatus.isIdle ? 'text-emerald-400' : 'text-amber-400'}>{contextData.executionStatus.isIdle ? t(language, 'idle') : t(language, 'running')}</span>
                 </div>
                 <div className="bg-slate-800/50 rounded px-2 py-1">
-                  <span className="text-slate-500">Job:</span> <span className="text-slate-300 font-mono">{contextData.executionStatus.activeJobId ?? 'None'}</span>
+                  <span className="text-slate-500">{t(language, 'jobPrefix')}</span> <span className="text-slate-300 font-mono">{contextData.executionStatus.activeJobId ?? t(language, 'noneLabel')}</span>
                 </div>
                 <div className="bg-slate-800/50 rounded px-2 py-1">
-                  <span className="text-slate-500">Progress:</span> <span className="text-slate-300">{contextData.executionStatus.nodesExecuted}/{contextData.executionStatus.totalNodesToExecute} ({Math.round(contextData.executionStatus.executionProgress * 100)}%)</span>
+                  <span className="text-slate-500">{t(language, 'progressPrefix')}</span> <span className="text-slate-300">{contextData.executionStatus.nodesExecuted}/{contextData.executionStatus.totalNodesToExecute} ({Math.round(contextData.executionStatus.executionProgress * 100)}%)</span>
                 </div>
                 <div className="bg-slate-800/50 rounded px-2 py-1">
-                  <span className="text-slate-500">Executing:</span> <span className="text-slate-300 font-mono">{contextData.executionStatus.executingNodeIds.join(', ') || 'None'}</span>
+                  <span className="text-slate-500">{t(language, 'executingPrefix')}</span> <span className="text-slate-300 font-mono">{contextData.executionStatus.executingNodeIds.join(', ') || t(language, 'noneLabel')}</span>
                 </div>
               </div>
             )}
 
-            {renderContextSection('System Info', 'systemInfo', undefined,
+            {renderContextSection(t(language, 'systemInfo'), 'systemInfo', undefined,
               <div className="space-y-1 text-[11px]">
-                {contextData.systemInfo.os && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">OS:</span> <span className="text-slate-300">{contextData.systemInfo.os}</span></div>}
-                {contextData.systemInfo.pythonVersion && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">Python:</span> <span className="text-slate-300">{contextData.systemInfo.pythonVersion}</span></div>}
-                {contextData.systemInfo.pytorchVersion && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">PyTorch:</span> <span className="text-slate-300">{contextData.systemInfo.pytorchVersion}</span></div>}
+                {contextData.systemInfo.os && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">{t(language, 'osPrefix')}</span> <span className="text-slate-300">{contextData.systemInfo.os}</span></div>}
+                {contextData.systemInfo.pythonVersion && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">{t(language, 'pythonPrefix')}</span> <span className="text-slate-300">{contextData.systemInfo.pythonVersion}</span></div>}
+                {contextData.systemInfo.pytorchVersion && <div className="bg-slate-800/50 rounded px-2 py-1"><span className="text-slate-500">{t(language, 'pytorchPrefix')}</span> <span className="text-slate-300">{contextData.systemInfo.pytorchVersion}</span></div>}
                 {contextData.systemInfo.devices?.map((d, i) => (
                   <div key={i} className="bg-slate-800/50 rounded px-2 py-1">
-                    <span className="text-slate-500">Device:</span> <span className="text-slate-300">{d.name} ({d.type})</span>
-                    {d.vram && <span className="text-slate-400 ml-1">{Math.round(d.vram / 1024 / 1024)}MB VRAM</span>}
+                    <span className="text-slate-500">{t(language, 'devicePrefix')}</span> <span className="text-slate-300">{d.name} ({d.type})</span>
+                    {d.vram && <span className="text-slate-400 ml-1">{Math.round(d.vram / 1024 / 1024)} {t(language, 'mbVram')}</span>}
                   </div>
                 ))}
                 {!contextData.systemInfo.os && !contextData.systemInfo.devices?.length && (
-                  <p className="text-slate-500">{t(language, 'noSystemInfo') || 'No system info available'}</p>
+                  <p className="text-slate-500">{t(language, 'noSystemInfo')}</p>
                 )}
               </div>
             )}
 
-            {renderContextSection('Node Definitions', 'nodeDefs', contextData.nodeDefs.length,
+            {renderContextSection(t(language, 'nodeDefinitions'), 'nodeDefs', contextData.nodeDefs.length,
               contextData.nodeDefs.length === 0 ? (
-                <p className="text-xs text-slate-500">{t(language, 'noNodeDefs') || 'No node definitions collected'}</p>
+                <p className="text-xs text-slate-500">{t(language, 'noNodeDefs')}</p>
               ) : (
                 <div className="space-y-1 max-h-64 overflow-y-auto">
                   {contextData.nodeDefs.map((d, i) => (
                     <div key={i} className="text-[11px] bg-slate-800/50 rounded px-2 py-1">
                       <span className="text-indigo-400">{d.name}</span> <span className="text-slate-500">[{d.category}]</span>
-                      {d.deprecated && <span className="text-red-400 ml-1">[DEPRECATED]</span>}
-                      {d.experimental && <span className="text-amber-400 ml-1">[EXPERIMENTAL]</span>}
+                      {d.deprecated && <span className="text-red-400 ml-1">{t(language, 'deprecatedBadge')}</span>}
+                      {d.experimental && <span className="text-amber-400 ml-1">{t(language, 'experimentalBadge')}</span>}
                       {d.inputs && d.inputs.length > 0 && (
-                        <div className="ml-3 text-slate-400">Inputs: {d.inputs.map(inp => `${inp.name}${inp.required ? '*' : '?'}`).join(', ')}</div>
+                        <div className="ml-3 text-slate-400">{t(language, 'inputsPrefix')}{d.inputs.map(inp => `${inp.name}${inp.required ? '*' : '?'}`).join(', ')}</div>
                       )}
                       {d.outputs && d.outputs.length > 0 && (
-                        <div className="ml-3 text-slate-400">Outputs: {d.outputs.map(o => o.name).join(', ')}</div>
+                        <div className="ml-3 text-slate-400">{t(language, 'outputsPrefix')}{d.outputs.map(o => o.name).join(', ')}</div>
                       )}
                     </div>
                   ))}
@@ -1275,14 +1275,14 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
 
             {contextData.selectedNodeIds.length > 0 && (
               <div className="border border-slate-700/50 rounded-lg px-3 py-2 bg-slate-800/30">
-                <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">Selected Nodes: </span>
+                <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">{t(language, 'selectedNodesPrefix')}</span>
                 <span className="text-[11px] text-indigo-400 font-mono">{contextData.selectedNodeIds.join(', ')}</span>
               </div>
             )}
 
             {contextData.settings.settings.length > 0 && (
               <div className="border border-slate-700/50 rounded-lg px-3 py-2 bg-slate-800/30">
-                <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">Settings: </span>
+                <span className="text-[10px] text-slate-300 uppercase tracking-wider font-semibold">{t(language, 'settingsPrefix')}</span>
                 <span className="text-[11px] text-slate-400">{contextData.settings.settings.map(s => `${s.key}=${JSON.stringify(s.value)}`).join(', ')}</span>
               </div>
             )}
@@ -1327,7 +1327,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50"
           >
             <RefreshCw size={12} className={mcpLoading ? 'animate-spin' : ''} />
-            {t(language, 'refresh') || 'Refresh'}
+            {t(language, 'refresh')}
           </button>
         </div>
       </div>
@@ -1380,7 +1380,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
           </div>
         )}
         {mcpLoading && mcpServers.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-slate-500 text-xs">{t(language, 'loading') || 'Loading...'}</div>
+          <div className="flex items-center justify-center h-32 text-slate-500 text-xs">{t(language, 'loading')}</div>
         ) : mcpServers.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
             <Wrench size={32} className="opacity-20" />
@@ -1455,13 +1455,13 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                 </div>
                 {server.command && (
                   <div className="col-span-2">
-                    <span className="text-slate-500">Command:</span>{' '}
+                    <span className="text-slate-500">{t(language, 'cmdPrefix')}</span>{' '}
                     <span className="text-slate-300 font-mono text-[10px]">{server.command}</span>
                   </div>
                 )}
                 {server.url && (
                   <div className="col-span-2">
-                    <span className="text-slate-500">URL:</span>{' '}
+                    <span className="text-slate-500">{t(language, 'urlPrefix')}</span>{' '}
                     <span className="text-slate-300 font-mono text-[10px]">{server.url}</span>
                   </div>
                 )}
@@ -1501,7 +1501,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors disabled:opacity-50"
           >
             <RefreshCw size={12} className={skillsLoading ? 'animate-spin' : ''} />
-            {t(language, 'refresh') || 'Refresh'}
+            {t(language, 'refresh')}
           </button>
         </div>
       </div>
@@ -1542,7 +1542,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
           </div>
         )}
         {skillsLoading && skills.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-slate-500 text-xs">{t(language, 'loading') || 'Loading...'}</div>
+          <div className="flex items-center justify-center h-32 text-slate-500 text-xs">{t(language, 'loading')}</div>
         ) : skills.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
             <Bot size={32} className="opacity-20" />
@@ -1678,7 +1678,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
           <button onClick={() => onTabChange('preview')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'preview' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabOverview')}</button>
           <button onClick={() => onTabChange('analysis')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'analysis' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabDiagnostics')}</button>
           <button onClick={() => onTabChange('json')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'json' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabJson')}</button>
-          <button onClick={() => onTabChange('context')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'context' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabContext') || 'Context'}</button>
+          <button onClick={() => onTabChange('context')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'context' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabContext')}</button>
           <button onClick={() => onTabChange('mcp')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'mcp' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabMCP')}</button>
           <button onClick={() => onTabChange('skills')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'skills' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabSkills')}</button>
         </div>

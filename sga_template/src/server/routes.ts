@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 import type { Session, CreateSessionRequest, SendMessageRequest, SendMessageResponse, StreamEventPayload, UserInputRequest } from './session.js'
 import { createSession, addMessageToSession, updateSessionUsage, setSessionWaitingInput, clearSessionWaitingInput, formatSSE } from './session.js'
-import type { Message, AgentStreamEvent } from '../core/types.js'
+import type { Message, AgentStreamEvent, UsageMetrics } from '../core/types.js'
 import type { PendingAction, UserApprovalResponse, UserInputResponse, SuspendedContext } from './interaction.js'
 import { createApprovalRequest, createHumanInputRequest, pendingResolvers } from './interaction.js'
 import { createLogger } from '../utils/logger.js'
@@ -13,10 +13,7 @@ import { join } from 'path'
 import { getSgaHome } from '../memory/paths.js'
 import { undoLastAction } from '../tools/built-in/workflow-action.js'
 import { getWorkingSet, initWorkingSet } from '../memory/working-set-registry.js'
-import { config as dotenvConfig } from 'dotenv'
 import { resolve } from 'path'
-
-dotenvConfig({ path: resolve(process.cwd(), '.env'), override: true })
 
 const logger = createLogger('routes')
 import { createBuiltinTools } from '../tools/built-in/index.js'
@@ -29,7 +26,7 @@ import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks
 import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
 import { getAgentExtensions } from '../comfyui/agent-extensions.js'
 import { CostTracker } from '../utils/cost-tracker.js'
-import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider } from '../providers/provider-store.js'
+import { resolveProvider, getAllProviders, getDefaultProviderName, getDefaultProvider, addProvider, removeProvider, setDefaultProvider, getProviderConfig, getAllProviderNames, getProvider, normalizeProviderConfig, validateProviderConfig } from '../providers/provider-store.js'
 import { getRegisteredProviders, getProviderDefaults } from '../providers/registry.js'
 import type { LLMProvider, StoredProviderConfig, ModelConfig } from '../providers/index.js'
 import type { PermissionResult } from '../tools/base.js'
@@ -192,12 +189,12 @@ export async function handleCreateSession(req: Request, res: Response): Promise<
     if (!available.includes(body.providerName)) {
       if (body.providerName.startsWith('comfyui-')) {
         const configId = body.providerName.slice('comfyui-'.length)
-        const config = comfyUIConfigStore.getConfigById(configId)
+        const config = getComfyUIConfigStore().getConfigById(configId)
         if (config) {
           await ensureSgaProvider(config)
         } else {
           res.status(400).json({
-            error: `ComfyUI config "${configId}" not found. Available configs: ${comfyUIConfigStore.getConfigs().map(c => c.id).join(', ') || 'none'}`,
+            error: `ComfyUI config "${configId}" not found. Available configs: ${getComfyUIConfigStore().getConfigs().map(c => c.id).join(', ') || 'none'}`,
           })
           return
         }
@@ -372,6 +369,63 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
     const provider = getProviderForSession(session, body.providerName)
     const model = body.model ?? session.config.model ?? provider.config.defaultModel ?? 'sonnet'
     logger.info(`Session ${sessionId}: using provider=${provider.name}, model=${model}`)
+
+    // ===== Codex backend 派发 (非流式) =====
+    const activeAgentNonStream = ((session as any).activeAgent ?? 'sga') as AgentType
+    if (activeAgentNonStream === 'codex') {
+      const registry = getBackendRegistry()
+      const codexBackend = registry.get('codex')
+      let codexContent = ''
+      let codexUsage: UsageMetrics = {
+        inputTokens: 0, outputTokens: 0,
+        cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+        totalTokens: 0, totalCostUsd: 0,
+      }
+      for await (const ev of codexBackend.sendMessage({
+        prompt: body.content,
+        messages: session.messages,
+        model,
+        provider,
+      } as any)) {
+        if (ev.type === 'stream_delta' && (ev as any).text) {
+          codexContent += (ev as any).text
+        }
+        if (ev.type === 'turn_end' && (ev as any).usage) {
+          const u = (ev as any).usage
+          codexUsage = {
+            inputTokens: u.inputTokens ?? u.input_tokens ?? 0,
+            outputTokens: u.outputTokens ?? u.output_tokens ?? 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            totalTokens: u.totalTokens ?? u.total_tokens ?? 0,
+            totalCostUsd: 0,
+          }
+        }
+        if (ev.type === 'stop' || ev.type === 'error' || ev.type === 'turn_end') {
+          break
+        }
+      }
+
+      if (codexContent) {
+        const assistantMessage: Message = {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: codexContent }],
+          timestamp: Date.now(),
+        }
+        store.appendMessage(session.id, assistantMessage)
+        store.appendUsage(session.id, codexUsage)
+      }
+
+      const response: SendMessageResponse = {
+        sessionId: session.id,
+        content: codexContent,
+        usage: codexUsage,
+        messages: session.messages,
+      }
+      res.json(response)
+      return
+    }
 
     const tools = buildToolPool()
     const agentDefs = getBuiltinAgentDefinitions()
@@ -634,6 +688,73 @@ async function handleStreamResponse(
       : agentDefs[0]
 
     sendEvent({ type: 'session_start', sessionId: session.id, model, agentType: body.agentType })
+
+    // ===== Codex backend 派发 =====
+    // 如果 session.activeAgent === 'codex', 走 codex 子进程, 不走 SGA runAgent.
+    // codex 自己有 agent / tool / sandbox 能力, SGA 这边的 coordinator / planMgr /
+    // approval / autoDream 等副作用都不适用.
+    const activeAgent = ((session as any).activeAgent ?? 'sga') as AgentType
+    if (activeAgent === 'codex') {
+      const registry = getBackendRegistry()
+      const codexBackend = registry.get('codex')
+      try {
+        let codexContent = ''
+        let codexUsage: UsageMetrics = {
+          inputTokens: 0, outputTokens: 0,
+          cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+          totalTokens: 0, totalCostUsd: 0,
+        }
+        for await (const ev of codexBackend.sendMessage({
+          prompt: body.content,
+          messages: session.messages,
+          model,
+          provider,
+          signal: abortController.signal,
+        } as any)) {
+          sendEvent(ev)
+          if (ev.type === 'stream_delta' && (ev as any).text) {
+            codexContent += (ev as any).text
+          }
+          if (ev.type === 'turn_end' && (ev as any).usage) {
+            const u = (ev as any).usage
+            codexUsage = {
+              inputTokens: u.inputTokens ?? u.input_tokens ?? 0,
+              outputTokens: u.outputTokens ?? u.output_tokens ?? 0,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              totalTokens: u.totalTokens ?? u.total_tokens ?? 0,
+              totalCostUsd: 0,
+            }
+          }
+          if (ev.type === 'stop' || ev.type === 'error') {
+            break
+          }
+        }
+
+        // 落库: 把 codex 的回复存到 session
+        if (codexContent) {
+          const assistantMessage: Message = {
+            id: `msg-${Date.now()}`,
+            role: 'assistant',
+            content: [{ type: 'text', text: codexContent }],
+            timestamp: Date.now(),
+          }
+          getSessionStore().appendMessage(session.id, assistantMessage)
+          getSessionStore().appendUsage(session.id, codexUsage)
+        }
+
+        sendEvent({ type: 'done', data: { content: codexContent, usage: codexUsage } })
+      } catch (codexErr) {
+        const msg = codexErr instanceof Error ? codexErr.message : String(codexErr)
+        logger.error(`codex backend sendMessage failed: ${msg}`)
+        sendEvent({ type: 'error', data: `codex backend error: ${msg}` })
+        sendEvent({ type: 'done', data: null })
+      }
+      res.end()
+      activeSSEConnections.delete(session.id)
+      activeAbortControllers.delete(session.id)
+      return
+    }
 
     if (!agentDef) {
       sendEvent({ type: 'error', data: 'No agent definition available' })
@@ -1273,6 +1394,192 @@ export function handleGetUsage(req: Request, res: Response): void {
   })
 }
 
+// ===== Sprint 1+2: AgentBackend (SGA / Codex) 相关路由 =====
+
+import { getBackendRegistry, BackendNotAvailableError, getHandoffStore, getBlackboard } from '../agents/index.js'
+import type { AgentType } from '../agents/backend.js'
+
+/**
+ * 列出所有可用的 agent backend
+ * GET /api/v1/backends
+ */
+export async function handleListBackends(_req: Request, res: Response): Promise<void> {
+  try {
+    const registry = getBackendRegistry()
+    const items = await registry.listAll()
+    res.json({ backends: items })
+  } catch (err) {
+    logger.error(`handleListBackends failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to list backends' })
+  }
+}
+
+/**
+ * 列出所有 backend 的 health (慢, 用于状态检查)
+ * GET /api/v1/backends/health
+ */
+export async function handleBackendsHealth(_req: Request, res: Response): Promise<void> {
+  try {
+    const registry = getBackendRegistry()
+    const items = await registry.listAll()
+    res.json({ backends: items })
+  } catch (err) {
+    logger.error(`handleBackendsHealth failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to check backend health' })
+  }
+}
+
+/**
+ * 获取 session 当前使用的 backend
+ * GET /api/v1/sessions/:id/agent
+ */
+export async function handleGetSessionAgent(req: Request, res: Response): Promise<void> {
+  try {
+    const sessionId = getSessionId(req)
+    const store = getSessionStore()
+    const session = store.get(sessionId)
+    if (!session) {
+      // session 不存在时返回默认值, 不报 404
+      res.json({ sessionId, activeAgent: 'sga', pendingHandoff: null, blackboard: null })
+      return
+    }
+    const activeAgent = (session as any).activeAgent ?? 'sga'
+    const handoffStore = getHandoffStore()
+    const peek = await handoffStore.peek(sessionId)
+    const bb = getBlackboard()
+    const bbData = await bb.read()
+    res.json({
+      sessionId,
+      activeAgent,
+      pendingHandoff: peek ? { sourceAgent: peek.sourceAgent, exportedAt: peek.exportedAt } : null,
+      blackboard: {
+        currentAgent: bbData.currentAgent,
+        lastSwitchAt: bbData.lastSwitchAt,
+      },
+    })
+  } catch (err) {
+    logger.error(`handleGetSessionAgent failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to get session agent' })
+  }
+}
+
+/**
+ * 切换 session 使用的 backend (触发 handoff)
+ * POST /api/v1/sessions/:id/agent
+ * body: { target: 'sga' | 'codex' }
+ */
+export async function handleSwitchSessionAgent(req: Request, res: Response): Promise<void> {
+  try {
+    const sessionId = getSessionId(req)
+    const body = req.body as { target?: AgentType }
+    const target = body?.target
+    if (target !== 'sga' && target !== 'codex') {
+      res.status(400).json({ error: 'target must be "sga" or "codex"' })
+      return
+    }
+
+    const store = getSessionStore()
+    let session = store.get(sessionId)
+    if (!session) {
+      // session 不存在时自动创建 (用户可能在发消息前就切换 agent)
+      session = createSession({
+        agentType: 'comfyui-workflow',
+      })
+      session.id = sessionId
+      store.set(session)
+      logger.info(`handleSwitchSessionAgent: auto-created session ${sessionId}`)
+    }
+    const currentAgent = ((session as any).activeAgent ?? 'sga') as AgentType
+    if (currentAgent === target) {
+      res.json({ sessionId, activeAgent: currentAgent, handoff: null, message: 'no change' })
+      return
+    }
+
+    const registry = getBackendRegistry()
+    registry.setActive(target)
+
+    // 1. 源 agent 导出 handoff
+    let handoff: any = null
+    let handoffError: string | null = null
+    try {
+      const sourceBackend = registry.get(currentAgent)
+      if (await sourceBackend.canExportHandoff()) {
+        const bundle = await sourceBackend.exportHandoff(sessionId)
+        handoff = bundle ? { sourceAgent: bundle.sourceAgent, exportedAt: bundle.exportedAt, keyFactCount: bundle.keyFacts.length, messageCount: bundle.recentMessages.length } : null
+      } else {
+        handoffError = `${currentAgent} backend cannot export handoff at this moment`
+      }
+    } catch (err) {
+      handoffError = err instanceof Error ? err.message : String(err)
+      logger.warn(`handoff export failed: ${handoffError}`)
+    }
+
+    // 2. 更新 session.activeAgent
+    ;(session as any).activeAgent = target
+
+    // 3. 目标 agent 启动 + import handoff
+    //    关键: codex 需要拿到 session 的 provider/model 才能起反代 + 写 config.toml,
+    //    否则会 fallback 到 codex 默认的 OpenAI 登录路径.
+    let startError: string | null = null
+    try {
+      const targetBackend = registry.get(target)
+      const provider = getProviderForSession(session)
+      const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+      await targetBackend.start({
+        provider,
+        model,
+        cwd: process.cwd(),
+      })
+      // consume bundle (read + delete)
+      const handoffStore = getHandoffStore()
+      const bundle = await handoffStore.consume(sessionId)
+      if (bundle) {
+        await targetBackend.importHandoff(bundle)
+      }
+    } catch (err) {
+      if (err instanceof BackendNotAvailableError) {
+        startError = err.message
+      } else {
+        startError = err instanceof Error ? err.message : String(err)
+      }
+      logger.error(`target backend ${target} start/import failed: ${startError}`)
+    }
+
+    // 4. 更新 blackboard
+    const bb = getBlackboard()
+    await bb.recordSwitch(currentAgent, target)
+
+    res.json({
+      sessionId,
+      previousAgent: currentAgent,
+      activeAgent: target,
+      handoff,
+      handoffError,
+      startError,
+      success: !startError,
+    })
+  } catch (err) {
+    logger.error(`handleSwitchSessionAgent failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to switch agent' })
+  }
+}
+
+/**
+ * 清理 session 的 handoff bundle (手动)
+ * DELETE /api/v1/sessions/:id/handoff
+ */
+export async function handleClearHandoff(req: Request, res: Response): Promise<void> {
+  try {
+    const sessionId = getSessionId(req)
+    const store = getHandoffStore()
+    await store.clear(sessionId)
+    res.json({ sessionId, cleared: true })
+  } catch (err) {
+    logger.error(`handleClearHandoff failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to clear handoff' })
+  }
+}
+
 export async function handleListAgents(_req: Request, res: Response): Promise<void> {
   const allAgents = await getAllAgentDefinitions()
   const agents = allAgents.map(a => {
@@ -1625,7 +1932,6 @@ export function handleListConfiguredProviders(_req: Request, res: Response): voi
 }
 
 export async function handleAddProvider(req: Request, res: Response): Promise<void> {
-  const { normalizeProviderConfig, validateProviderConfig } = await import('../providers/provider-store.js')
   const config = normalizeProviderConfig(req.body as Record<string, unknown>)
 
   const validation = validateProviderConfig(config)
@@ -1663,6 +1969,193 @@ export function handleRemoveProvider(req: Request, res: Response): void {
     return
   }
   res.json({ success: true })
+}
+
+/**
+ * Step 1: 验证地址可达性
+ * POST /api/v1/providers/verify-address
+ * body: { baseUrl, apiKey?, protocol?, ... }
+ */
+export async function handleVerifyProviderAddress(req: Request, res: Response): Promise<void> {
+  const { parseVerifyInputsFromBody, verifyAddress } = await import('../providers/verify.js')
+  const inputs = parseVerifyInputsFromBody(req.body as Record<string, unknown>)
+  try {
+    const result = await verifyAddress(inputs)
+    res.json(result)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`verify-address failed: ${msg}`)
+    res.status(500).json({ ok: false, message: msg })
+  }
+}
+
+/**
+ * Step 2: 验证协议兼容性
+ * POST /api/v1/providers/verify-protocol
+ */
+export async function handleVerifyProviderProtocol(req: Request, res: Response): Promise<void> {
+  const { parseVerifyInputsFromBody, verifyProtocol } = await import('../providers/verify.js')
+  const inputs = parseVerifyInputsFromBody(req.body as Record<string, unknown>)
+  try {
+    const result = await verifyProtocol(inputs)
+    res.json(result)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`verify-protocol failed: ${msg}`)
+    res.status(500).json({ ok: false, message: msg, protocol: inputs.protocol })
+  }
+}
+
+/**
+ * Step 3: 拉取上游模型列表
+ * POST /api/v1/providers/fetch-models
+ */
+export async function handleFetchProviderModels(req: Request, res: Response): Promise<void> {
+  const { parseVerifyInputsFromBody, fetchRemoteModels } = await import('../providers/verify.js')
+  const inputs = parseVerifyInputsFromBody(req.body as Record<string, unknown>)
+  try {
+    const result = await fetchRemoteModels(inputs)
+    res.json(result)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`fetch-models failed: ${msg}`)
+    res.status(500).json({ ok: false, message: msg, protocol: inputs.protocol, models: [] })
+  }
+}
+
+/**
+ * 一站式: 验证 + 拉取 + 保存
+ * POST /api/v1/providers/verify-and-add
+ * body: { name, displayName?, baseUrl, apiKey, protocol, defaultModel?, isDefault?, customConfig? }
+ */
+export async function handleVerifyAndAddProvider(req: Request, res: Response): Promise<void> {
+  const {
+    parseVerifyInputsFromBody,
+    verifyAndAdd,
+    remoteModelsToStoredModelConfigs,
+  } = await import('../providers/verify.js')
+  const body = req.body as Record<string, unknown>
+  const inputs = parseVerifyInputsFromBody(body)
+
+  try {
+    const verifyResult = await verifyAndAdd(body)
+
+    if (!verifyResult.addressOk) {
+      res.status(400).json({
+        success: false,
+        ...verifyResult,
+        message: verifyResult.errors.join('; ') || '地址不可达',
+      })
+      return
+    }
+
+    // 把验证结果存为 provider
+    const name = ((body.name ?? body.id ?? '') as string).trim()
+    if (!name) {
+      res.status(400).json({
+        success: false,
+        ...verifyResult,
+        message: 'name 不能为空',
+      })
+      return
+    }
+
+    const config = normalizeProviderConfig({
+      ...body,
+      name,
+      apiKey: inputs.apiKey,
+      baseUrl: inputs.baseUrl,
+    })
+
+    // 用拉到的模型构建 modelConfigs(优先使用 verifyAndAdd 返回的;它现在会自动用 body 里的 modelConfigs)
+    if (verifyResult.models.length > 0) {
+      config.modelConfigs = remoteModelsToStoredModelConfigs(verifyResult.models)
+      if (!config.defaultModel) {
+        config.defaultModel = verifyResult.models[0].id
+      }
+    } else if (body.modelConfigs) {
+      // 兜底: 如果 verifyAndAdd 没返回 models 但 body 里有,直接用
+      config.modelConfigs = body.modelConfigs as Record<string, never>
+    }
+
+    // 兜底: 如果仍然没有 defaultModel,主动报错
+    if (!config.defaultModel) {
+      res.status(400).json({
+        success: false,
+        ...verifyResult,
+        message:
+          verifyResult.errors.join('; ') ||
+          '未提供默认模型且未成功拉取模型列表，请先点击「拉取模型」或手动填写默认模型',
+      })
+      return
+    }
+
+    // 兼容多种 isDefault 字段命名(camelCase / snake_case / setAsDefault)
+    const setAsDefault =
+      body.setAsDefault === true ||
+      body.set_as_default === true ||
+      body.isDefault === true ||
+      body.is_default === true
+
+    try {
+      const provider = await addProvider(config, setAsDefault)
+
+      // 关键:同时把 provider 持久化到 ComfyUI 配置文件(与 .env 的 SGA_HOME 一致)
+      // 否则前端 /api/configs 永远读不到,刷新就消失
+      try {
+        const providerName = (body.protocol as string) || 'openai'
+        const store = getComfyUIConfigStore()
+        // 如果已存在同名(name)配置,先删除,避免重复
+        const existing = store
+          .getConfigs()
+          .find(c => c.name === config.name)
+        if (existing) {
+          store.deleteConfig(existing.id)
+        }
+        const comfyConfig = store.createConfig({
+          provider: providerName,
+          name: config.name,
+          api_key: config.apiKey,
+          default_model: config.defaultModel ?? '',
+          base_url: config.baseUrl,
+          is_default: setAsDefault,
+          default_max_tokens: config.defaultMaxTokens,
+          default_temperature: config.defaultTemperature,
+          retries: config.retries,
+          retry_delay: config.retryDelay,
+          headers: config.headers,
+          custom_config: config.extra,
+          model_configs: config.modelConfigs as Record<string, ComfyUIModelConfig> | undefined,
+        })
+        logger.info(`Persisted provider "${config.name}" to ComfyUI config store (id=${comfyConfig.id})`)
+      } catch (persistErr) {
+        logger.error(`Failed to persist provider to ComfyUI config store: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`)
+      }
+      res.status(201).json({
+        success: true,
+        name: provider.name,
+        defaultModel: provider.config.defaultModel,
+        isDefault: getDefaultProviderName() === config.name,
+        models: verifyResult.models,
+        addressOk: verifyResult.addressOk,
+        protocolOk: verifyResult.protocolOk,
+        fetchOk: verifyResult.fetchOk,
+        protocol: verifyResult.protocol,
+        warnings: verifyResult.warnings,
+        errors: verifyResult.errors,
+      })
+    } catch (addErr) {
+      res.status(400).json({
+        success: false,
+        ...verifyResult,
+        message: `验证通过但保存失败: ${addErr instanceof Error ? addErr.message : String(addErr)}`,
+      })
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    logger.error(`verify-and-add failed: ${msg}`)
+    res.status(500).json({ success: false, message: msg, errors: [msg] })
+  }
 }
 
 export function handleSetDefaultProvider(req: Request, res: Response): void {
@@ -2161,7 +2654,15 @@ export class ComfyUIConfigStore {
   }
 }
 
-const comfyUIConfigStore = new ComfyUIConfigStore()
+// 惰性单例: 不能在模块加载时创建,否则 dotenv 还没执行,SGA_HOME 未设置,
+// 会回退到 ~/.sga 而不是 .env 里配置的 ./data/.sga
+let _comfyUIConfigStore: ComfyUIConfigStore | null = null
+export function getComfyUIConfigStore(): ComfyUIConfigStore {
+  if (!_comfyUIConfigStore) {
+    _comfyUIConfigStore = new ComfyUIConfigStore()
+  }
+  return _comfyUIConfigStore
+}
 
 async function ensureSgaProvider(config: ComfyUIProviderConfig): Promise<LLMProvider> {
   const providerName = `comfyui-${config.id}`
@@ -2566,7 +3067,7 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
   res.on('close', onConnectionClose)
 
   try {
-    const config = configId ? comfyUIConfigStore.getConfigById(configId) : comfyUIConfigStore.getDefaultConfig()
+    const config = configId ? getComfyUIConfigStore().getConfigById(configId) : getComfyUIConfigStore().getDefaultConfig()
 
     if (!config) {
       sendComfyUIEvent(res, { type: 'error', data: 'No provider configuration found. Please configure a provider in settings.' })
@@ -2979,7 +3480,7 @@ function toFrontendConfig(config: ComfyUIProviderConfig): Record<string, unknown
 }
 
 export function handleComfyUIListConfigs(_req: Request, res: Response): void {
-  const configs = comfyUIConfigStore.getConfigs()
+  const configs = getComfyUIConfigStore().getConfigs()
   res.json({ configs: configs.map(toFrontendConfig), total: configs.length })
 }
 
@@ -2994,7 +3495,7 @@ export function handleComfyUICreateConfig(req: Request, res: Response): void {
       return
     }
 
-    const config = comfyUIConfigStore.createConfig({
+    const config = getComfyUIConfigStore().createConfig({
       provider,
       name: body.name as string,
       api_key: body.api_key as string,
@@ -3018,7 +3519,7 @@ export function handleComfyUICreateConfig(req: Request, res: Response): void {
 
 export function handleComfyUIGetConfig(req: Request, res: Response): void {
   const configId = req.params.configId as string
-  const config = comfyUIConfigStore.getConfigById(configId)
+  const config = getComfyUIConfigStore().getConfigById(configId)
   if (!config) {
     res.status(404).json({ error: 'Config not found' })
     return
@@ -3046,7 +3547,7 @@ export function handleComfyUIUpdateConfig(req: Request, res: Response): void {
     if (body.custom_config !== undefined) updates.custom_config = body.custom_config as Record<string, unknown> | undefined
     if (body.model_configs !== undefined) updates.model_configs = body.model_configs as Record<string, ComfyUIModelConfig> | undefined
 
-    const config = comfyUIConfigStore.updateConfig(configId, updates)
+    const config = getComfyUIConfigStore().updateConfig(configId, updates)
     if (!config) {
       res.status(404).json({ error: 'Config not found' })
       return
@@ -3059,13 +3560,13 @@ export function handleComfyUIUpdateConfig(req: Request, res: Response): void {
 
 export function handleComfyUIDeleteConfig(req: Request, res: Response): void {
   const configId = req.params.configId as string
-  const success = comfyUIConfigStore.deleteConfig(configId)
+  const success = getComfyUIConfigStore().deleteConfig(configId)
   res.json({ success, message: success ? 'Config deleted successfully' : 'Config not found' })
 }
 
 export function handleComfyUISetDefaultConfig(req: Request, res: Response): void {
   const { config_id } = req.body as Record<string, unknown>
-  const config = comfyUIConfigStore.setDefaultConfig(config_id as string)
+  const config = getComfyUIConfigStore().setDefaultConfig(config_id as string)
   if (!config) {
     res.status(404).json({ error: 'Config not found' })
     return
@@ -3074,18 +3575,18 @@ export function handleComfyUISetDefaultConfig(req: Request, res: Response): void
 }
 
 export function handleComfyUIGetGitHubToken(_req: Request, res: Response): void {
-  const hasToken = comfyUIConfigStore.hasGitHubToken()
+  const hasToken = getComfyUIConfigStore().hasGitHubToken()
   res.json({ has_token: hasToken })
 }
 
 export function handleComfyUIUpdateGitHubToken(req: Request, res: Response): void {
   const { token } = req.body as Record<string, unknown>
-  comfyUIConfigStore.updateGitHubToken(token as string)
+  getComfyUIConfigStore().updateGitHubToken(token as string)
   res.json({ success: true, message: 'GitHub token updated successfully', has_token: true })
 }
 
 export function handleComfyUIDeleteGitHubToken(_req: Request, res: Response): void {
-  comfyUIConfigStore.deleteGitHubToken()
+  getComfyUIConfigStore().deleteGitHubToken()
   res.json({ success: true, message: 'GitHub token deleted successfully', has_token: false })
 }
 

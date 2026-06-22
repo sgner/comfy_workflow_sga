@@ -143,6 +143,29 @@ export const checkBackendHealth = async (backendUrl: string): Promise<{ status: 
     }
 };
 
+// --- Agent Backend Switch ---
+
+export const getActiveAgent = async (backendUrl: string, sessionId: string): Promise<{ activeAgent: 'sga' | 'codex' }> => {
+    try {
+        const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/agent`);
+        if (!res.ok) return { activeAgent: 'sga' };
+        const data = await res.json();
+        return { activeAgent: data.activeAgent ?? 'sga' };
+    } catch {
+        return { activeAgent: 'sga' };
+    }
+};
+
+export const switchAgent = async (backendUrl: string, sessionId: string, target: 'sga' | 'codex'): Promise<{ activeAgent: string; handoff: unknown | null }> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/agent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+    });
+    if (!res.ok) throw new Error(`Failed to switch agent to ${target}`);
+    return res.json();
+};
+
 export const analyzeWorkflow = async (backendUrl: string, workflow: Record<string, unknown>, language: string): Promise<{
     issues: Array<{ nodeId: string | null; severity: string; message: string; fixSuggestion?: string }>;
     analysis?: Record<string, unknown>;
@@ -383,5 +406,131 @@ export const extractMemories = async (backendUrl: string, sessionId?: string): P
 export const fetchContextBudget = async (backendUrl: string): Promise<{ config: Record<string, unknown>; allocation: Record<string, unknown> }> => {
     const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/context-budget`);
     if (!res.ok) throw new Error('Failed to fetch context budget');
+    return res.json();
+};
+
+// --- Provider Verification & Model Fetching ---
+
+export type ProviderProtocol = 'openai' | 'async' | 'gemini' | 'custom'
+
+export interface VerifyAddressResult {
+    ok: boolean
+    message: string
+    status?: number
+    latencyMs?: number
+}
+
+export interface VerifyProtocolResult {
+    ok: boolean
+    message: string
+    protocol: ProviderProtocol
+    endpoint?: string
+    status?: number
+    latencyMs?: number
+}
+
+export interface RemoteModel {
+    id: string
+    displayName?: string
+    owner?: string
+    contextWindow?: number
+    supportsVision?: boolean
+    supportsToolUse?: boolean
+    supportsStreaming?: boolean
+    supportsThinking?: boolean
+}
+
+export interface FetchModelsResult {
+    ok: boolean
+    message: string
+    models: RemoteModel[]
+    protocol: ProviderProtocol
+}
+
+export interface VerifyAndAddResult {
+    success: boolean
+    name?: string
+    defaultModel?: string
+    isDefault?: boolean
+    models?: RemoteModel[]
+    addressOk?: boolean
+    protocolOk?: boolean
+    fetchOk?: boolean
+    protocol?: ProviderProtocol
+    message?: string
+    warnings?: string[]
+    errors?: string[]
+}
+
+export const verifyProviderAddress = async (
+    backendUrl: string,
+    payload: { baseUrl: string; apiKey?: string; protocol: ProviderProtocol; asyncHost?: string; asyncRegion?: string; customChatEndpoint?: string; customModelsEndpoint?: string; customHeaders?: string }
+): Promise<VerifyAddressResult> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/providers/verify-address`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Failed to verify address');
+    return res.json();
+};
+
+export const verifyProviderProtocol = async (
+    backendUrl: string,
+    payload: { baseUrl: string; apiKey: string; protocol: ProviderProtocol; asyncHost?: string; asyncRegion?: string; customChatEndpoint?: string; customModelsEndpoint?: string; customHeaders?: string }
+): Promise<VerifyProtocolResult> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/providers/verify-protocol`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Failed to verify protocol');
+    return res.json();
+};
+
+export const fetchProviderModels = async (
+    backendUrl: string,
+    payload: { baseUrl: string; apiKey?: string; protocol: ProviderProtocol; asyncHost?: string; asyncRegion?: string; customModelsEndpoint?: string }
+): Promise<FetchModelsResult> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/providers/fetch-models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Failed to fetch models');
+    return res.json();
+};
+
+export const verifyAndAddProvider = async (
+    backendUrl: string,
+    payload: {
+        name: string
+        baseUrl: string
+        apiKey: string
+        protocol: ProviderProtocol
+        asyncHost?: string
+        asyncRegion?: string
+        customChatEndpoint?: string
+        customModelsEndpoint?: string
+        customHeaders?: string
+        defaultModel?: string
+        modelConfigs?: Record<string, unknown>
+        isDefault?: boolean
+    }
+): Promise<VerifyAndAddResult> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/providers/verify-and-add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        // 解析后端的错误响应
+        try {
+            const errBody = await res.json();
+            return { success: false, message: errBody.message, errors: errBody.errors, ...errBody };
+        } catch {
+            throw new Error('Failed to verify and add provider');
+        }
+    }
     return res.json();
 };

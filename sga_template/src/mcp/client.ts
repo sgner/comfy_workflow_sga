@@ -3,10 +3,13 @@ import { createLogger } from '../utils/logger.js'
 
 const logger = createLogger('mcp-client')
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 30000
+const DEFAULT_REQUEST_TIMEOUT_MS = parseInt(process.env.MCP_REQUEST_TIMEOUT ?? '30000', 10)
 const JSON_RPC_VERSION = '2.0'
-const MCP_PROTOCOL_VERSION = '2024-11-05'
-const CLIENT_INFO = { name: 'sga-template', version: '1.0.0' }
+const MCP_PROTOCOL_VERSION = process.env.MCP_PROTOCOL_VERSION ?? '2024-11-05'
+const CLIENT_INFO = {
+  name: process.env.MCP_CLIENT_NAME ?? 'sga-template',
+  version: process.env.MCP_CLIENT_VERSION ?? '1.0.0',
+}
 
 export interface MCPTransport {
   connect(): Promise<void>
@@ -30,12 +33,12 @@ export class MCPClient {
   private _maxReconnectAttempts: number
   private _toolsCache: MCPTool[] | null = null
   private _toolsCacheTime = 0
-  private _toolsCacheTtlMs = 60_000
+  private _toolsCacheTtlMs = parseInt(process.env.MCP_TOOLS_CACHE_TTL ?? '60000', 10)
 
   constructor(serverName: string, config: MCPServerConfig) {
     this.serverName = serverName
     this.config = config
-    this._maxReconnectAttempts = config.maxRestartAttempts ?? 3
+    this._maxReconnectAttempts = config.maxRestartAttempts ?? parseInt(process.env.MCP_MAX_RESTARTS ?? '3', 10)
   }
 
   get name(): string {

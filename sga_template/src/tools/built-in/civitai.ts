@@ -14,7 +14,7 @@ import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationRes
  * 文档: https://developer.civitai.com/site/reference/
  */
 
-const CIVITAI_API_BASE = 'https://civitai.com/api/v1'
+const CIVITAI_API_BASE = process.env.CIVITAI_API_BASE ?? 'https://civitai.com/api/v1'
 
 // CivitAI 的 ModelType 枚举值 -> ComfyUI models 子目录
 const TYPE_TO_FOLDER: Record<string, string> = {
@@ -118,7 +118,7 @@ async function civitaiFetch(endpoint: string, params?: Record<string, string | n
     }
   }
   const headers: Record<string, string> = {
-    'User-Agent': 'comfy-workflow-agent/1.0',
+    'User-Agent': process.env.SGA_USER_AGENT ?? 'comfy-workflow-agent/1.0',
     'Content-Type': 'application/json',
   }
   const apiKey = getApiKey()
@@ -484,8 +484,8 @@ Auth: optional API key via env CIVITAI_API_KEY or CIVITAI_TOKEN (some endpoints/
 
     try {
       execSync(downloadCmd, {
-        timeout: 1800000,
-        maxBuffer: 10 * 1024 * 1024,
+        timeout: parseInt(process.env.CIVITAI_DOWNLOAD_TIMEOUT ?? '1800000', 10),
+        maxBuffer: parseInt(process.env.CIVITAI_MAX_BUFFER ?? String(10 * 1024 * 1024), 10),
         encoding: 'utf-8',
         shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
       })

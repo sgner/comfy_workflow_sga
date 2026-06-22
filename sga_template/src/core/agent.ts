@@ -118,8 +118,8 @@ export type QueryResult = {
   turnCount: number
 }
 
-const MAX_TURNS_DEFAULT = 200
-const RECOVERY_MAX_ATTEMPTS = 3
+const MAX_TURNS_DEFAULT = parseInt(process.env.SGA_MAX_TURNS ?? '200', 10)
+const RECOVERY_MAX_ATTEMPTS = parseInt(process.env.SGA_RECOVERY_MAX_ATTEMPTS ?? '3', 10)
 
 export async function* query(params: QueryParams): AsyncGenerator<QueryProgressEvent, QueryResult> {
   const {

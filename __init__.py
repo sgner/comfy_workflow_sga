@@ -230,7 +230,7 @@ def _install_nodejs_windows(arch):
                 msiexec_cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=int(os.environ.get("MSI_INSTALL_TIMEOUT", "300")),
             )
             if result.returncode != 0:
                 print(f"⚠️  MSI install returned code {result.returncode}, trying zip method...")
@@ -537,6 +537,466 @@ def _ensure_mcp_config(sga_dir):
         print(f"⚠️  Failed to write MCP config: {e}")
 
 
+# ---- Codex 子模块 (v0.4) ----
+
+def _get_codex_dir():
+    """codex/ 子模块目录, 在 current_dir/codex/."""
+    return os.path.join(current_dir, "codex")
+
+
+def _get_codex_binary_path():
+    """探测 codex binary 路径 (与 src/agents/codex/detect.ts 同策略).
+
+    探测顺序:
+      1. process.env.CODEX_BINARY
+      2. <root>/codex/target/{release,debug}/{codex.exe,codex.cmd}
+      3. OpenAI Codex 官方自动安装目录:
+         - Windows: %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<hash>\\codex.exe
+                    %APPDATA%\\OpenAI\\Codex\\bin\\<hash>\\codex.exe
+         - macOS:   ~/Library/Application Support/com.openai.codex/bin/<hash>/codex
+         - Linux:   ~/.local/share/openai/codex/bin/<hash>/codex
+      4. PATH 中 codex / codex.exe / codex.cmd
+    """
+    explicit = os.environ.get("CODEX_BINARY")
+    if explicit and os.path.isfile(explicit):
+        return explicit
+
+    codex_dir = _get_codex_dir()
+    if os.path.isdir(codex_dir):
+        is_windows = platform.system() == "Windows"
+        names = ["codex.exe", "codex.cmd"] if is_windows else ["codex"]
+        for profile in ("release", "debug"):
+            for name in names:
+                p = os.path.join(codex_dir, "target", profile, name)
+                if os.path.isfile(p):
+                    return p
+        # 自动下载的 binary
+        for name in names:
+            p = os.path.join(codex_dir, "bin", name)
+            if os.path.isfile(p):
+                return p
+
+    # OpenAI Codex 官方自动安装路径
+    official = _find_official_codex_binary()
+    if official:
+        return official
+
+    # PATH 兜底
+    for name in (["codex.exe", "codex.cmd"] if platform.system() == "Windows" else ["codex"]):
+        hit = shutil.which(name)
+        if hit and os.path.isfile(hit):
+            return hit
+    return None
+
+
+def _find_official_codex_binary():
+    """在 OpenAI Codex 官方自动安装目录中查找 binary.
+
+    选 mtime 最新的子目录里的 codex[.exe].
+    """
+    is_win = platform.system() == "Windows"
+    is_mac = platform.system() == "Darwin"
+
+    if is_win:
+        localappdata = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        appdata = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming"
+        )
+        candidates = [
+            os.path.join(localappdata, "OpenAI", "Codex", "bin"),
+            os.path.join(appdata, "OpenAI", "Codex", "bin"),
+            os.path.join(localappdata, "Programs", "OpenAI", "Codex", "resources"),
+            os.path.join(appdata, "Codex", "bin"),
+        ]
+        names = ("codex.exe", "codex.cmd")
+    elif is_mac:
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, "Library", "Application Support", "com.openai.codex", "bin"),
+            os.path.join(home, "Library", "Application Support", "OpenAI", "Codex", "bin"),
+            "/usr/local/bin/codex",
+            "/opt/homebrew/bin/codex",
+        ]
+        names = ("codex",)
+    else:
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, ".local", "share", "openai", "codex", "bin"),
+            os.path.join(home, ".local", "share", "OpenAI", "Codex", "bin"),
+            "/usr/local/bin/codex",
+            "/usr/bin/codex",
+        ]
+        names = ("codex",)
+
+    best_path = None
+    best_mtime = -1.0
+    for bin_root in candidates:
+        if not os.path.isdir(bin_root):
+            continue
+        try:
+            for sub in os.listdir(bin_root):
+                sub_dir = os.path.join(bin_root, sub)
+                if not os.path.isdir(sub_dir):
+                    continue
+                try:
+                    mtime = os.path.getmtime(sub_dir)
+                except OSError:
+                    continue
+                if mtime <= best_mtime:
+                    continue
+                for n in names:
+                    cand = os.path.join(sub_dir, n)
+                    if os.path.isfile(cand):
+                        best_path = cand
+                        best_mtime = mtime
+                        break
+        except OSError:
+            continue
+    return best_path
+
+
+def _get_codex_download_url():
+    """构造当前平台的 codex 预编译 binary 下载 URL.
+
+    优先级:
+      1. CODEX_DOWNLOAD_URL env — 直接指向 binary 的完整 URL
+      2. CODEX_RELEASE_URL env — releases 基础 URL, 自动拼接平台文件名
+      3. codex/download-url.txt — 仓库内配置文件, 内容为 releases 基础 URL
+      4. 默认 GitHub Releases (可被仓库维护者修改)
+
+    平台文件名:
+      Windows x64 → codex-windows-x64.exe
+      macOS arm64 → codex-darwin-arm64
+      macOS x64   → codex-darwin-x64
+      Linux x64   → codex-linux-x64
+    """
+    # 1. 完整 URL
+    explicit = os.environ.get("CODEX_DOWNLOAD_URL")
+    if explicit:
+        return explicit
+
+    # 2. releases 基础 URL from env
+    release_base = os.environ.get("CODEX_RELEASE_URL")
+
+    # 3. releases 基础 URL from file
+    if not release_base:
+        url_file = os.path.join(_get_codex_dir(), "download-url.txt")
+        if os.path.isfile(url_file):
+            try:
+                with open(url_file, "r", encoding="utf-8") as f:
+                    release_base = f.read().strip()
+            except Exception:
+                pass
+
+    # 4. 默认 (仓库维护者可修改此 URL)
+    if not release_base:
+        release_base = "https://github.com/25315/comfy_workflow_agent/releases/download/codex-v0.1.0"
+
+    # 拼接平台文件名
+    system = platform.system()
+    machine = platform.machine().lower()
+
+    if system == "Windows":
+        filename = "codex-windows-x64.exe"
+    elif system == "Darwin":
+        if "arm" in machine or "aarch64" in machine:
+            filename = "codex-darwin-arm64"
+        else:
+            filename = "codex-darwin-x64"
+    else:
+        filename = "codex-linux-x64"
+
+    return f"{release_base.rstrip('/')}/{filename}"
+
+
+def _download_codex_binary():
+    """自动下载预编译 codex binary. 不阻塞 SGA 启动.
+
+    下载到 codex/bin/codex[.exe], 下载后验证 --version.
+    失败时返回 None, 成功返回 binary 路径.
+    """
+    import urllib.request
+    import zipfile
+    import tempfile
+
+    url = _get_codex_download_url()
+    codex_bin_dir = os.path.join(_get_codex_dir(), "bin")
+    os.makedirs(codex_bin_dir, exist_ok=True)
+
+    is_windows = platform.system() == "Windows"
+    binary_name = "codex.exe" if is_windows else "codex"
+    dest_path = os.path.join(codex_bin_dir, binary_name)
+
+    print(f"⬇️  正在下载 Codex binary...")
+    print(f"   URL: {url}")
+    print(f"   目标: {dest_path}")
+
+    try:
+        # 60 秒超时
+        req = urllib.request.Request(url, headers={
+            "User-Agent": os.environ.get("SGA_USER_AGENT", "ComfyUI-Codex-Agent/1.0"),
+        })
+        with urllib.request.urlopen(req, timeout=int(os.environ.get("CODEX_DOWNLOAD_TIMEOUT", "60"))) as resp:
+            total = resp.getheader("Content-Length")
+            total_str = f" ({int(total) / (1024 * 1024):.1f} MB)" if total else ""
+            print(f"   响应: {resp.status}{total_str}")
+
+            with open(dest_path, "wb") as f:
+                # 分块下载, 显示进度
+                downloaded = 0
+                chunk_size = 64 * 1024  # 64KB
+                last_pct = -1
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = int(downloaded * 100 / int(total))
+                        if pct >= last_pct + 10:
+                            last_pct = pct
+                            print(f"   进度: {pct}% ({downloaded // (1024*1024)} MB)", flush=True)
+
+        # Unix 设置可执行权限
+        if not is_windows:
+            os.chmod(dest_path, 0o755)
+
+        # 验证 binary
+        try:
+            result = subprocess.run(
+                [dest_path, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()[:100]
+                print(f"✅ 下载验证成功: {version}")
+            else:
+                print(f"⚠️  下载完成但 --version 返回非零 (exit={result.returncode})")
+        except Exception as e:
+            print(f"⚠️  下载完成但验证失败: {e}")
+
+        return dest_path
+
+    except urllib.error.HTTPError as e:
+        print(f"❌ 下载失败: HTTP {e.code} {e.reason}")
+        if e.code == 404:
+            print(f"   该平台可能暂无预编译版本. 请手动编译:")
+            print(f"     .\\scripts\\build-codex.ps1")
+        # 清理不完整文件
+        if os.path.isfile(dest_path):
+            try:
+                os.remove(dest_path)
+            except Exception:
+                pass
+        return None
+    except Exception as e:
+        print(f"❌ 下载失败: {e}")
+        if os.path.isfile(dest_path):
+            try:
+                os.remove(dest_path)
+            except Exception:
+                pass
+        return None
+
+
+def _build_codex_with_cargo():
+    """用 cargo build 编译 codex binary. 下载失败时的 fallback.
+
+    需要 Rust 工具链 (cargo) + MSVC (Windows).
+    编译到 codex/target/release/codex[.exe], 编译后验证.
+    成功返回 binary 路径, 失败返回 None.
+    """
+    codex_dir = _get_codex_dir()
+    codex_rs_dir = os.path.join(codex_dir, "codex-rs")
+    cargo_toml = os.path.join(codex_rs_dir, "Cargo.toml")
+
+    # 1. 检查源码存在
+    if not os.path.isfile(cargo_toml):
+        print("❌ codex/codex-rs/Cargo.toml 不存在, 无法编译")
+        return None
+
+    # 2. 检查 cargo 可用
+    cargo_bin = shutil.which("cargo")
+    if not cargo_bin:
+        print("❌ 未找到 cargo (Rust 工具链), 无法自动编译")
+        print("   安装 Rust: https://rustup.rs/")
+        return None
+
+    print(f"🔧 找到 cargo: {cargo_bin}")
+    print("   开始编译 (首次可能需要 5-15 分钟)...")
+    print()
+
+    # 3. cargo build --release -p codex-app-server
+    is_windows = platform.system() == "Windows"
+    exe_name = "codex.exe" if is_windows else "codex"
+    expected_path = os.path.join(codex_dir, "target", "release", exe_name)
+
+    try:
+        result = subprocess.run(
+            [cargo_bin, "build", "--release", "-p", "codex-app-server"],
+            cwd=codex_rs_dir,
+            timeout=int(os.environ.get("CARGO_BUILD_TIMEOUT", "1800")),  # 30 分钟超时
+        )
+        if result.returncode != 0:
+            print(f"❌ cargo build 失败 (exit={result.returncode})")
+            return None
+    except subprocess.TimeoutExpired:
+        print("❌ cargo build 超时 (30 分钟)")
+        return None
+    except FileNotFoundError:
+        print("❌ cargo 命令不可用")
+        return None
+
+    # 4. 验证产物
+    if not os.path.isfile(expected_path):
+        print(f"❌ 编译完成但未找到产物: {expected_path}")
+        return None
+
+    size_mb = round(os.path.getsize(expected_path) / (1024 * 1024), 2)
+
+    # 5. 验证 --version
+    try:
+        ver_result = subprocess.run(
+            [expected_path, "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if ver_result.returncode == 0:
+            version = ver_result.stdout.strip()[:100]
+            print(f"✅ 编译验证成功: {version}")
+        else:
+            print(f"⚠️  编译完成但 --version 返回非零")
+    except Exception as e:
+        print(f"⚠️  编译完成但验证失败: {e}")
+
+    print(f"✅ Binary (本地编译): {expected_path}  ({size_mb} MB)")
+    return expected_path
+
+
+def _ensure_codex_binary():
+    """探测 codex binary, 给用户清晰状态提示. 不阻塞 SGA 启动.
+
+    行为:
+    - binary 已存在: 打印 OK + 路径
+    - binary 不存在: 自动下载预编译版本 (可跳过: CODEX_SKIP_DOWNLOAD=1)
+    - 下载失败: 尝试 cargo build 本地编译
+    - 编译也失败: 打印手动指引
+    """
+    print("=" * 60)
+    print("📦 Codex 后端状态 (v0.6)")
+    print("=" * 60)
+
+    codex_dir = _get_codex_dir()
+    if os.path.isdir(codex_dir):
+        sub_rev_file = os.path.join(codex_dir, ".codex-revision")
+        rev = None
+        if os.path.isfile(sub_rev_file):
+            try:
+                with open(sub_rev_file, "r", encoding="utf-8") as f:
+                    rev = f.read().strip()[:8]
+            except Exception:
+                rev = None
+        rev_str = f" @ {rev}" if rev else ""
+        print(f"📂 子模块: codex/{rev_str}")
+
+    bin_path, source = _get_codex_binary_path_with_source()
+    if bin_path:
+        size_mb = round(os.path.getsize(bin_path) / (1024 * 1024), 2)
+        source_label = {
+            "env": "env 覆盖",
+            "release": "本地 release 编译",
+            "debug": "本地 debug 编译",
+            "downloaded": "自动下载",
+            "official": "OpenAI 官方预装",
+            "path": "PATH 兜底",
+        }.get(source, source)
+        print(f"✅ Binary ({source_label}): {bin_path}  ({size_mb} MB)")
+        print("   Codex 后端: 可用")
+    else:
+        # Step 1: 尝试自动下载
+        skip_download = os.environ.get("CODEX_SKIP_DOWNLOAD", "").lower() in ("1", "true", "yes")
+        if skip_download:
+            print("⏭️  CODEX_SKIP_DOWNLOAD=1, 跳过自动下载")
+        else:
+            print("⚠️  Binary 未找到, 尝试自动下载预编译版本...")
+            print()
+            downloaded = _download_codex_binary()
+            if downloaded:
+                size_mb = round(os.path.getsize(downloaded) / (1024 * 1024), 2)
+                print(f"✅ Binary (自动下载): {downloaded}  ({size_mb} MB)")
+                print("   Codex 后端: 可用")
+                print("=" * 60)
+                return
+            else:
+                print()
+                print("⚠️  自动下载失败")
+
+        # Step 2: 下载失败 → 尝试 cargo build
+        skip_build = os.environ.get("CODEX_SKIP_BUILD", "").lower() in ("1", "true", "yes")
+        if skip_build:
+            print("⏭️  CODEX_SKIP_BUILD=1, 跳过自动编译")
+        else:
+            print()
+            print("🔧 尝试本地编译 (cargo build)...")
+            print()
+            built = _build_codex_with_cargo()
+            if built:
+                size_mb = round(os.path.getsize(built) / (1024 * 1024), 2)
+                print(f"✅ Binary (本地编译): {built}  ({size_mb} MB)")
+                print("   Codex 后端: 可用")
+                print("=" * 60)
+                return
+            else:
+                print()
+                print("⚠️  本地编译失败")
+
+        # Step 3: 全部失败 → 打印手动指引
+        print()
+        print("   手动方法 (任选其一):")
+        print(f"     1. PowerShell:  .\\scripts\\build-codex.ps1")
+        print(f"     2. 手动:  cd codex\\codex-rs && cargo build --release -p codex-app-server")
+        print(f"     3. 安装 OpenAI Codex 桌面客户端 (自动探测)")
+        print()
+        print("   Codex 后端: 不可用 (SGA 后端正常工作, 不受影响)")
+    print("=" * 60)
+
+
+def _get_codex_binary_path_with_source():
+    """返回 (path, source). source ∈ {env, release, debug, downloaded, official, path}.
+    与 _get_codex_binary_path 同探测顺序, 但额外标注来源.
+    """
+    explicit = os.environ.get("CODEX_BINARY")
+    if explicit and os.path.isfile(explicit):
+        return explicit, "env"
+
+    codex_dir = _get_codex_dir()
+    if os.path.isdir(codex_dir):
+        is_windows = platform.system() == "Windows"
+        names = ["codex.exe", "codex.cmd"] if is_windows else ["codex"]
+        for profile in ("release", "debug"):
+            for name in names:
+                p = os.path.join(codex_dir, "target", profile, name)
+                if os.path.isfile(p):
+                    return p, profile
+        # 自动下载的 binary
+        for name in names:
+            p = os.path.join(codex_dir, "bin", name)
+            if os.path.isfile(p):
+                return p, "downloaded"
+
+    official = _find_official_codex_binary()
+    if official:
+        return official, "official"
+
+    for name in (["codex.exe", "codex.cmd"] if platform.system() == "Windows" else ["codex"]):
+        hit = shutil.which(name)
+        if hit and os.path.isfile(hit):
+            return hit, "path"
+    return None, None
+
+
 def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
     global _backend_process, _backend_server
 
@@ -577,6 +1037,9 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
 
     _ensure_mcp_config(sga_dir)
 
+    # v0.4: 探测 codex binary 状态, 提示用户编译 (Sprint 2.1)
+    _ensure_codex_binary()
+
     print("=" * 60)
     print("🚀 Starting ComfyUI Workflow Agent Backend Server (SGA)")
     print("=" * 60)
@@ -598,6 +1061,9 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
                 env["COMFYUI_BASE_DIR"] = comfyui_root
             else:
                 env["COMFYUI_BASE_DIR"] = current_dir
+
+            # v0.4: 告诉 SGA codex 子模块在哪里 (项目根 = current_dir, 即含 codex/ 的目录)
+            env["CODEX_PROJECT_ROOT"] = current_dir
 
             # 强制子进程输出 UTF-8，避免 Windows 上 GBK 解码失败
             env["PYTHONIOENCODING"] = "utf-8"
