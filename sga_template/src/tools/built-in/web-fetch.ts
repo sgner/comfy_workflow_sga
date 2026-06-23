@@ -4,7 +4,7 @@ export class WebFetchTool extends BaseTool<{ url: string; prompt?: string; raw?:
   name = 'WebFetch'
   description = 'Fetch content from a URL and optionally extract information using a prompt'
   searchHint = 'fetch url web page content http request'
-  maxResultSizeChars = 100_000
+  maxResultSizeChars = parseInt(process.env.WEB_FETCH_MAX_CHARS ?? '100000', 10)
   shouldDefer = true
 
   isReadOnly(): boolean {
@@ -55,10 +55,10 @@ export class WebFetchTool extends BaseTool<{ url: string; prompt?: string; raw?:
     try {
       const response = await fetch(input.url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; CC-Contron/1.0)',
+          'User-Agent': process.env.SGA_WEB_USER_AGENT ?? 'Mozilla/5.0 (compatible; CC-Contron/1.0)',
           'Accept': 'text/html,application/json,text/plain,text/markdown,*/*',
         },
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(parseInt(process.env.WEB_FETCH_TIMEOUT ?? '30000', 10)),
       })
 
       if (!response.ok) {
@@ -72,9 +72,9 @@ export class WebFetchTool extends BaseTool<{ url: string; prompt?: string; raw?:
         content = htmlToMarkdown(content)
       }
 
-      const maxLen = 50000
+      const maxLen = parseInt(process.env.WEB_FETCH_MAX_CHARS ?? '50000', 10)
       if (content.length > maxLen) {
-        content = content.slice(0, maxLen) + '\n\n[Content truncated at 50,000 characters]'
+        content = content.slice(0, maxLen) + `\n\n[Content truncated at ${maxLen} characters]`
       }
 
       if (input.prompt) {

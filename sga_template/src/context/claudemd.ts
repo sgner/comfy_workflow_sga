@@ -29,7 +29,7 @@ function getGlobalPaths(): string[] {
 
 export const DEFAULT_SGA_MD_PATHS: SgaMdConfig = {
   get globalPaths() { return getGlobalPaths() },
-  userPath: join(getSgaHome(), 'SGA.md'),
+  get userPath() { return join(getSgaHome(), 'SGA.md') },
   projectPaths: [],
   localPath: 'SGA.local.md',
 }

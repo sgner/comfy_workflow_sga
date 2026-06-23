@@ -10,9 +10,9 @@ export interface CircuitBreakerConfig {
 }
 
 export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
-  maxConsecutiveFailures: 3,
-  cooldownMs: 5 * 60 * 1000,
-  halfOpenMaxAttempts: 1,
+  maxConsecutiveFailures: parseInt(process.env.CIRCUIT_BREAKER_MAX_FAILURES ?? '3', 10),
+  cooldownMs: parseInt(process.env.CIRCUIT_BREAKER_COOLDOWN_MS ?? String(5 * 60 * 1000), 10),
+  halfOpenMaxAttempts: parseInt(process.env.CIRCUIT_BREAKER_HALF_OPEN_MAX ?? '1', 10),
 }
 
 export type CircuitState = 'closed' | 'open' | 'half_open'
