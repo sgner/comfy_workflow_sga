@@ -179,7 +179,7 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
   }
 
   async call(input: { command: string; timeout?: number }, _context: ToolUseContext, onProgress?: ToolProgressCallback): Promise<string> {
-    const timeout = input.timeout ?? 120000
+    const timeout = input.timeout ?? parseInt(process.env.BASH_TIMEOUT ?? '120000', 10)
     const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
 
     if (!onProgress) {
@@ -194,7 +194,7 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
     try {
       const result = execSync(command, {
         timeout,
-        maxBuffer: 10 * 1024 * 1024,
+        maxBuffer: parseInt(process.env.BASH_MAX_BUFFER ?? String(10 * 1024 * 1024), 10),
         encoding: 'utf-8',
         shell,
       })

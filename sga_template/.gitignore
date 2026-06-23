@@ -49,4 +49,8 @@ Thumbs.db
 sga-providers.json
 ~/.sga-template/
 
-data
+# SGA 运行时数据: 包含用户会话、API key、Agent 切换历史等敏感信息
+data/
+
+# Codex 临时数据(每次启动都会重建,含 SQLite + config.toml + installation_id)
+codex-tmp/

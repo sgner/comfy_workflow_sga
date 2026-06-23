@@ -17,6 +17,7 @@ export { TaskStopTool } from './task-stop.js'
 export { PlanTool } from './plan.js'
 export { HuggingFaceDownloadTool } from './huggingface-download.js'
 export { GitHubSearchTool } from './github-search.js'
+export { CivitAITool } from './civitai.js'
 export { ComfyUIModelListTool } from './comfyui-model-list.js'
 export { ComfyUINodeSearchTool } from './comfyui-node-search.js'
 export { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
@@ -41,6 +42,7 @@ import { TaskStopTool } from './task-stop.js'
 import { PlanTool } from './plan.js'
 import { HuggingFaceDownloadTool } from './huggingface-download.js'
 import { GitHubSearchTool } from './github-search.js'
+import { CivitAITool } from './civitai.js'
 import { ComfyUIModelListTool } from './comfyui-model-list.js'
 import { ComfyUINodeSearchTool } from './comfyui-node-search.js'
 import { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
@@ -69,6 +71,7 @@ export function createBuiltinTools(agentDefinitions?: AgentDefinition[]): Tool[]
     new AgentTool(agentDefinitions ?? []),
     new HuggingFaceDownloadTool(),
     new GitHubSearchTool(),
+    new CivitAITool(),
     new ComfyUIModelListTool(),
     new ComfyUINodeSearchTool(),
     new ComfyUIWorkflowValidateTool(),

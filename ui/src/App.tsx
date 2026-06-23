@@ -4,11 +4,12 @@ import { GripHorizontal, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson, Al
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ChatPanel from './components/ChatPanel'
+import CodexBuildProgressCard from './components/CodexBuildProgressCard'
 import SettingsModal from './components/SettingsModal'
 import WorkflowVisualizer from './components/WorkflowVisualizer'
 import { DEFAULT_WORKFLOW } from './constants'
 import { sendMessageToComfyAgent, fetchChatHistory, abortBackendAgent } from './services/aiService'
-import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs } from './services/configService'
+import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs, switchAgent, getActiveAgent } from './services/configService'
 import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, AgentActivity, ApprovalRequest, HumanInputRequest, ToolCallInfo, TokenUsage } from './types'
 import { t } from './utils/i18n'
 import { collectWorkflowContext, collectWorkflowContextAsync, contextErrorsToIssues, formatWorkflowContextForPrompt } from './services/workflowContextCollector'
@@ -155,6 +156,7 @@ const App: React.FC<AppProps> = () => {
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([])
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null)
+  const [activeAgent, setActiveAgent] = useState<'sga' | 'codex'>('sga')
 
   // --- ComfyUI Integration Hooks ---
   const app = (window as any).app;
@@ -443,6 +445,16 @@ const App: React.FC<AppProps> = () => {
      return persistentId || sessionIdRef.current;
   }, [workflow, getWorkflowId]);
 
+  const handleAgentSwitch = useCallback(async (target: 'sga' | 'codex') => {
+    if (!appSettings.pythonBackendUrl || !activeSessionId) return
+    try {
+      await switchAgent(appSettings.pythonBackendUrl, activeSessionId, target)
+      setActiveAgent(target)
+    } catch (e) {
+      console.error('Failed to switch agent:', e)
+    }
+  }, [appSettings.pythonBackendUrl, activeSessionId])
+
   const switchSession = useCallback((newSessionId: string) => {
     if (newSessionId === currentSessionIdRef.current) return
 
@@ -555,6 +567,13 @@ const App: React.FC<AppProps> = () => {
             lastLoadedSessionId.current = activeSessionId;
         };
         loadHistory();
+
+        // 同步当前 session 的 activeAgent
+        if (appSettings.pythonBackendUrl) {
+          getActiveAgent(appSettings.pythonBackendUrl, activeSessionId).then(r => {
+            setActiveAgent(r.activeAgent)
+          }).catch(() => {})
+        }
     }
   }, [isVisible, appSettings.usePythonBackend, appSettings.pythonBackendUrl, activeSessionId, isProcessing]);
 
@@ -1065,7 +1084,7 @@ const App: React.FC<AppProps> = () => {
         const errorMsg: ChatMessage = {
           id: (Date.now() + 2).toString(),
           sender: Sender.SYSTEM,
-          text: 'Error: ' + (error as Error).message,
+          text: t(appSettings.language, 'errorPrefix') + (error as Error).message,
           timestamp: new Date()
         }
         setMessages((prev) => [...prev, errorMsg])
@@ -1123,6 +1142,15 @@ const App: React.FC<AppProps> = () => {
           prompt += ` It should be placed in the "${modelFolder}" folder.`
       }
       prompt += ` Try using huggingface-cli or wget from https://hf-mirror.com/ to download it to the correct ComfyUI models directory.`
+      handleSendMessage(prompt)
+  }, [handleSendMessage])
+
+  const handleDownloadModelFromCivitai = useCallback((modelName: string, modelFolder?: string) => {
+      let prompt = `The model "${modelName}" is missing. Please help me download it from CivitAI.`
+      if (modelFolder) {
+          prompt += ` It should be placed in the "${modelFolder}" folder.`
+      }
+      prompt += ` Use the civitai tool: first call action=search with query="${modelName}" to find the right model, then action=get to inspect versions and files, and finally action=download with the chosen model_version_id to fetch the file into the correct ComfyUI models subfolder. The tool auto-infers the target folder (LORA -> loras, Checkpoint -> checkpoints, VAE -> vae, etc.) from the CivitAI ModelType / ModelFileType.`
       handleSendMessage(prompt)
   }, [handleSendMessage])
 
@@ -1191,7 +1219,7 @@ const App: React.FC<AppProps> = () => {
                         <button
                             onClick={handleAnalyzeWorkflow}
                             className={`p-1 hover:text-cyan-400 transition-colors ${isAnalyzing ? 'animate-pulse text-cyan-400' : ''}`}
-                            title="Analyze Workflow"
+                            title={t(appSettings.language, 'analyzeWorkflow')}
                             onMouseDown={(e) => e.stopPropagation()}
                             disabled={isAnalyzing}
                         >
@@ -1200,7 +1228,7 @@ const App: React.FC<AppProps> = () => {
                         <button
                             onClick={handleUndoAction}
                             className="p-1 hover:text-amber-400 transition-colors"
-                            title="Undo Last Action"
+                            title={t(appSettings.language, 'undoLastAction')}
                             onMouseDown={(e) => e.stopPropagation()}
                         >
                             <Undo2 size={14} />
@@ -1210,7 +1238,7 @@ const App: React.FC<AppProps> = () => {
                 <button
                     onClick={syncFromCanvas}
                     className="p-1 hover:text-indigo-400 transition-colors"
-                    title="Sync from Canvas"
+                    title={t(appSettings.language, 'syncFromCanvas')}
                     onMouseDown={(e) => e.stopPropagation()}
                 >
                     <RefreshCw size={14} />
@@ -1237,6 +1265,13 @@ const App: React.FC<AppProps> = () => {
                     <div className="flex-1 overflow-hidden relative flex flex-row">
                         {/* Left: Chat Panel (35%) */}
                         <div className="w-[35%] min-w-[300px] border-r border-slate-800 flex flex-col bg-slate-950">
+                            {appSettings.usePythonBackend && appSettings.pythonBackendUrl && (
+                                <CodexBuildProgressCard
+                                    backendUrl={appSettings.pythonBackendUrl}
+                                    language={appSettings.language}
+                                    onSwitchToCodex={() => handleAgentSwitch('codex')}
+                                />
+                            )}
                             {sessionNotification && (
                                 <div className="flex items-center gap-2 px-3 py-2 bg-amber-900/30 border-b border-amber-700/30 text-amber-300 text-xs">
                                     <AlertTriangle size={14} className="flex-shrink-0" />
@@ -1283,6 +1318,8 @@ const App: React.FC<AppProps> = () => {
                                 onApprovalResponse={handleApprovalResponse}
                                 onHumanInputResponse={handleHumanInputResponse}
                                 tokenUsage={tokenUsage}
+                                activeAgent={activeAgent}
+                                onAgentSwitch={appSettings.usePythonBackend ? handleAgentSwitch : undefined}
                             />
 
                             {activeToolCalls.length > 0 && (
@@ -1314,6 +1351,7 @@ const App: React.FC<AppProps> = () => {
                                 onSendErrorsToAi={handleSendErrorsToAi}
                                 onResolveIssue={handleResolveIssue}
                                 onDownloadModel={handleDownloadModel}
+                                onDownloadModelFromCivitai={handleDownloadModelFromCivitai}
                                 backendUrl={appSettings.pythonBackendUrl}
                             />
                         </div>

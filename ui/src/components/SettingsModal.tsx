@@ -3,13 +3,18 @@
 import {
   AlertTriangle,
   CheckCircle,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Code,
   Cpu,
+  Download,
   Edit2,
+  Globe,
   Key,
   Languages,
+  Loader2,
+  Plug,
   Plus,
   RefreshCw,
   Save,
@@ -22,8 +27,9 @@ import {
 } from 'lucide-react'
 import React, { useEffect, useState } from 'react'
 
-import { createBackendConfig, deleteBackendConfig, deleteGitHubToken, fetchBackendConfigs, getGitHubStatus, setBackendDefault, updateBackendConfig, updateGitHubToken } from '../services/configService'
-import { AppSettings, BackendConfig, BackendConfigCreate, GitHubTokenStatus, Language, ModelConfig, ProviderType } from '../types'
+import { deleteBackendConfig, deleteGitHubToken, fetchBackendConfigs, getGitHubStatus, setBackendDefault, updateBackendConfig, updateGitHubToken, verifyProviderAddress, verifyProviderProtocol, fetchProviderModels, verifyAndAddProvider } from '../services/configService'
+import type { ProviderProtocol, RemoteModel, VerifyAddressResult, VerifyProtocolResult } from '../services/configService'
+import { AppSettings, BackendConfig, BackendConfigCreate, GitHubTokenStatus, Language } from '../types'
 import { t } from '../utils/i18n'
 
 interface SettingsModalProps {
@@ -54,8 +60,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [showAddForm, setShowAddForm] = useState(false)
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
-  const [showBackendAdvanced, setShowBackendAdvanced] = useState(false) // Toggle for Backend Form
-  
+
   const [newConfig, setNewConfig] = useState<BackendConfigCreate>({
       name: '',
       provider: 'openai',
@@ -76,17 +81,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [formErrors, setFormErrors] = useState<Record<string, boolean>>({})
   const [githubToken, setGithubToken] = useState('')
 
-  // Model Config State
-  const [showModelForm, setShowModelForm] = useState(false)
-  const [editingModelKey, setEditingModelKey] = useState<string | null>(null)
-  const [showModelAdvanced, setShowModelAdvanced] = useState(false)
-  const [deleteModelConfirmKey, setDeleteModelConfirmKey] = useState<string | null>(null)
-  const [currentModel, setCurrentModel] = useState<ModelConfig>({
-      id: ''
-  })
-
-  // Advanced Custom Settings Toggle (Direct Mode)
+  // Top-level Advanced Custom Settings Toggle (Direct Mode for non-Provider settings)
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // --- Simplified API config (verify & fetch) ---
+  const [verifyProtocolType, setVerifyProtocolType] = useState<ProviderProtocol>('openai')
+  const [verifyingAddress, setVerifyingAddress] = useState(false)
+  const [verifyingProtocol, setVerifyingProtocol] = useState(false)
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [addressVerifyResult, setAddressVerifyResult] = useState<VerifyAddressResult | null>(null)
+  const [protocolVerifyResult, setProtocolVerifyResult] = useState<VerifyProtocolResult | null>(null)
+  const [fetchedModels, setFetchedModels] = useState<RemoteModel[]>([])
+  const [selectedModelId, setSelectedModelId] = useState<string>('')
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [customModelsEndpoint, setCustomModelsEndpoint] = useState<string>('')
+  const [customChatEndpoint, setCustomChatEndpoint] = useState<string>('')
+  const [customHeadersText, setCustomHeadersText] = useState<string>('')
 
   useEffect(() => {
     setSettings(currentSettings)
@@ -159,91 +170,105 @@ const handleSelectConfig = async (id: string) => {
       });
       setEditingConfigId(config.id);
       setShowAddForm(true);
-      setShowBackendAdvanced(false);
-      setShowModelForm(false);
-      setEditingModelKey(null);
-      setShowModelAdvanced(false);
-      setDeleteModelConfirmKey(null);
       setFormErrors({});
+
+      // 已有供应商:把已经保存的 model_configs 直接作为 fetchedModels 渲染
+      // 不再触发任何验证 / 拉取
+      const existingModels: RemoteModel[] = Object.values(config.model_configs || {}).map(m => ({
+          id: m.id,
+          displayName: m.displayName || m.id,
+          contextWindow: m.contextWindow,
+          supportsVision: m.supportsVision,
+          supportsToolUse: m.supportsToolUse,
+          supportsStreaming: m.supportsStreaming,
+          supportsThinking: m.supportsThinking,
+      }))
+      setFetchedModels(existingModels)
+      setSelectedModelId(config.default_model || '')
+      // 协议从 provider 推断(只支持这 4 种)
+      const prov = (config.provider as string) || 'openai'
+      const allowed: ProviderProtocol[] = ['openai', 'async', 'gemini', 'custom']
+      setVerifyProtocolType(allowed.includes(prov as ProviderProtocol) ? (prov as ProviderProtocol) : 'custom')
+      // 标记为已验证,显示绿色"地址已验证"
+      setAddressVerifyResult({ ok: true, message: '已保存的供应商', latencyMs: 0 })
+      setProtocolVerifyResult({ ok: true, message: '已保存的协议', latencyMs: 0, protocol: verifyProtocolType })
+      setAdvancedOpen(false)
   };
 
-  const handleCancelForm = () => {
-      setShowAddForm(false);
-      setEditingConfigId(null);
-      setNewConfig({ 
-          name: '', provider: 'openai', api_key: '', default_model: '', base_url: '',
-          default_max_tokens: undefined, default_temperature: undefined,
-          retries: undefined, retry_delay: undefined,
-          custom_config: { endpoint: DEFAULT_CUSTOM_ENDPOINT, headers: DEFAULT_CUSTOM_HEADERS },
-          model_configs: {}
-      });
-      setFormErrors({});
-      setShowBackendAdvanced(false);
-      setShowModelForm(false);
-      setEditingModelKey(null);
-      setShowModelAdvanced(false);
-      setDeleteModelConfirmKey(null);
-      setCurrentModel({ id: '' });
-  };
-
-  const validateForm = () => {
-      const errors: Record<string, boolean> = {};
-      if (!newConfig.name?.trim()) errors.name = true;
-      if (!newConfig.model_configs || Object.keys(newConfig.model_configs).length === 0) errors.default_model = true;
-      
-      if (!editingConfigId && !newConfig.api_key?.trim()) {
-        errors.api_key = true;
-      }
-      if (editingConfigId && !newConfig.api_key?.trim()) {
-        const editingConfig = configs.find(c => c.id === editingConfigId);
-        if (!editingConfig?.has_api_key) {
-          errors.api_key = true;
-        }
-      }
-      
-      setFormErrors(errors);
-      return Object.keys(errors).length === 0;
-  };
-
-  const handleSaveConfig = async () => {
-      if (!settings.pythonBackendUrl) return;
-      if (!validateForm()) return;
-
+  // --- Simplified API config handlers ---
+  const handleVerifyAddress = async () => {
+      if (!settings.pythonBackendUrl || !newConfig.base_url) return;
+      setVerifyingAddress(true);
+      setAddressVerifyResult(null);
       try {
-          // Validate JSON fields if custom
-          if (newConfig.provider === 'custom' && newConfig.custom_config) {
-              try { JSON.parse(newConfig.custom_config.headers || '{}'); } catch { alert('Invalid JSON in Headers'); return; }
+          const result = await verifyProviderAddress(settings.pythonBackendUrl, {
+              baseUrl: newConfig.base_url,
+              apiKey: newConfig.api_key,
+              protocol: verifyProtocolType,
+              customModelsEndpoint: customModelsEndpoint || undefined,
+          });
+          setAddressVerifyResult(result);
+          if (!result.ok) {
+              setAdvancedOpen(true);
           }
+      } catch (err) {
+          setAddressVerifyResult({ ok: false, message: err instanceof Error ? err.message : 'Verification failed' });
+          setAdvancedOpen(true);
+      } finally {
+          setVerifyingAddress(false);
+      }
+  };
 
-          const modelKeys = Object.keys(newConfig.model_configs || {});
-          let resolvedDefaultModel = newConfig.default_model;
-          if (!resolvedDefaultModel && modelKeys.length > 0) {
-              resolvedDefaultModel = newConfig.model_configs![modelKeys[0]].id;
+  const handleVerifyProtocol = async () => {
+      if (!settings.pythonBackendUrl || !newConfig.base_url || !newConfig.api_key) return;
+      setVerifyingProtocol(true);
+      setProtocolVerifyResult(null);
+      try {
+          const result = await verifyProviderProtocol(settings.pythonBackendUrl, {
+              baseUrl: newConfig.base_url,
+              apiKey: newConfig.api_key,
+              protocol: verifyProtocolType,
+              customChatEndpoint: customChatEndpoint || undefined,
+              customModelsEndpoint: customModelsEndpoint || undefined,
+              customHeaders: customHeadersText || undefined,
+          });
+          setProtocolVerifyResult(result);
+          if (!result.ok) {
+              setAdvancedOpen(true);
           }
+      } catch (err) {
+          setProtocolVerifyResult({ ok: false, message: err instanceof Error ? err.message : 'Verification failed', protocol: verifyProtocolType });
+          setAdvancedOpen(true);
+      } finally {
+          setVerifyingProtocol(false);
+      }
+  };
 
-          console.log('[DEBUG] handleSaveConfig - model_configs:', JSON.stringify(newConfig.model_configs));
-          console.log('[DEBUG] handleSaveConfig - resolvedDefaultModel:', resolvedDefaultModel);
-
-          if (editingConfigId) {
-              const updatePayload = { ...newConfig, default_model: resolvedDefaultModel };
-              if (!updatePayload.api_key) {
-                  delete updatePayload.api_key;
+  const handleFetchModels = async () => {
+      if (!settings.pythonBackendUrl || !newConfig.base_url) return;
+      setFetchingModels(true);
+      setFetchedModels([]);
+      try {
+          const result = await fetchProviderModels(settings.pythonBackendUrl, {
+              baseUrl: newConfig.base_url,
+              apiKey: newConfig.api_key,
+              protocol: verifyProtocolType,
+              customModelsEndpoint: customModelsEndpoint || undefined,
+          });
+          if (result.ok) {
+              setFetchedModels(result.models);
+              if (result.models.length > 0 && !selectedModelId) {
+                  setSelectedModelId(result.models[0].id);
               }
-              console.log('[DEBUG] updatePayload - model_configs:', JSON.stringify(updatePayload.model_configs));
-              await updateBackendConfig(settings.pythonBackendUrl, editingConfigId, updatePayload);
           } else {
-              const isFirstConfig = configs.length === 0;
-              const configToCreate = { ...newConfig, default_model: resolvedDefaultModel, is_default: isFirstConfig || newConfig.is_default };
-              const created = await createBackendConfig(settings.pythonBackendUrl, configToCreate);
-              if (configToCreate.is_default) {
-                  setSettings(prev => ({ ...prev, activeBackendConfigId: created.id }));
-              }
+              setAdvancedOpen(true);
           }
-          handleCancelForm();
-          refreshBackendData();
-      } catch (e) {
-          console.error(e);
-          alert('Failed to save config');
+          setAddressVerifyResult({ ok: result.ok, message: result.message });
+      } catch (err) {
+          setAddressVerifyResult({ ok: false, message: err instanceof Error ? err.message : 'Fetch failed' });
+          setAdvancedOpen(true);
+      } finally {
+          setFetchingModels(false);
       }
   };
 
@@ -251,35 +276,34 @@ const handleSelectConfig = async (id: string) => {
       if (!settings.pythonBackendUrl) return;
       try {
           await deleteBackendConfig(settings.pythonBackendUrl, id);
-          setDeleteConfirmId(null);
-          refreshBackendData();
-      if (settings.activeBackendConfigId === id) {
+          if (settings.activeBackendConfigId === id) {
               setSettings(prev => ({ ...prev, activeBackendConfigId: undefined }));
           }
+          await refreshBackendData();
       } catch (e) {
-          console.error(e);
+          console.error('Failed to delete config', e);
       }
   };
 
   const handleUpdateGitHub = async () => {
-      if (!settings.pythonBackendUrl) return;
+      if (!settings.pythonBackendUrl || !githubToken) return;
       try {
           await updateGitHubToken(settings.pythonBackendUrl, githubToken);
+          setGithubStatus({ has_token: true });
           setGithubToken('');
-          refreshBackendData();
+          await getGitHubStatus(settings.pythonBackendUrl).then(setGithubStatus);
       } catch (e) {
-          console.error(e);
-          alert('Failed to update GitHub token');
+          console.error('Failed to update GitHub token', e);
       }
   };
 
   const handleDeleteGitHub = async () => {
-      if (!settings.pythonBackendUrl || !window.confirm(t(currentLang, 'confirmDelete'))) return;
+      if (!settings.pythonBackendUrl) return;
       try {
           await deleteGitHubToken(settings.pythonBackendUrl);
-          refreshBackendData();
+          setGithubStatus({ has_token: false });
       } catch (e) {
-          console.error(e);
+          console.error('Failed to delete GitHub token', e);
       }
   };
 
@@ -288,86 +312,137 @@ const handleSelectConfig = async (id: string) => {
           ...prev,
           customConfig: {
               endpoint: DEFAULT_CUSTOM_ENDPOINT,
-              headers: DEFAULT_CUSTOM_HEADERS
-          }
+              headers: DEFAULT_CUSTOM_HEADERS,
+          },
       }));
   };
 
-  const resetBackendCustomConfig = () => {
-      setNewConfig(prev => ({
-          ...prev,
-          custom_config: {
-              endpoint: DEFAULT_CUSTOM_ENDPOINT,
-              headers: DEFAULT_CUSTOM_HEADERS
-          }
-      }));
-  };
-
-  // --- Model Config Actions ---
-  const handleAddModel = () => {
-      setCurrentModel({ id: '' });
-      setEditingModelKey(null);
-      setShowModelForm(true);
-      setShowModelAdvanced(false);
-  };
-
-  const handleEditModel = (key: string) => {
-      const modelConfigs = newConfig.model_configs || {};
-      const model = modelConfigs[key];
-      if (model) {
-          setCurrentModel({ ...model });
-          setEditingModelKey(key);
-          setShowModelForm(true);
-          setShowModelAdvanced(false);
-      }
-  };
-
-  const handleSaveModel = () => {
-      if (!currentModel.id.trim()) {
-          setFormErrors(prev => ({ ...prev, model_id: true }));
+  const handleSaveWithVerify = async () => {
+      if (!settings.pythonBackendUrl) return;
+      // 编辑模式下,api_key 留空表示保持原值,不要强制必填
+      if (!editingConfigId && (!newConfig.name?.trim() || !newConfig.api_key?.trim() || !newConfig.base_url?.trim())) {
+          setFormErrors({ name: !newConfig.name, api_key: !newConfig.api_key, base_url: !newConfig.base_url });
           return;
       }
-      setFormErrors(prev => {
-          const next = { ...prev };
-          delete next.model_id;
-          return next;
+      if (editingConfigId && (!newConfig.name?.trim() || !newConfig.base_url?.trim())) {
+          setFormErrors({ name: !newConfig.name, base_url: !newConfig.base_url });
+          return;
+      }
+      setSavingConfig(true);
+      setAddressVerifyResult(null);
+      setProtocolVerifyResult(null);
+      try {
+          if (editingConfigId) {
+              // ========== 编辑模式:直接 PUT /api/configs/:id,不验证、不拉取 ==========
+              // 把已选模型 / 已有模型列表都打回去
+              const modelConfigsPayload: Record<string, unknown> = {}
+              for (const m of fetchedModels) {
+                  modelConfigsPayload[m.id] = {
+                      id: m.id,
+                      displayName: m.displayName || m.id,
+                      contextWindow: m.contextWindow,
+                      supportsVision: m.supportsVision,
+                      supportsToolUse: m.supportsToolUse,
+                      supportsStreaming: m.supportsStreaming,
+                      supportsThinking: m.supportsThinking,
+                  }
+              }
+              const finalDefaultModel = selectedModelId || newConfig.default_model
+              const trimmedName = newConfig.name.trim()
+              const trimmedBaseUrl = (newConfig.base_url || '').trim()
+              const trimmedApiKey = (newConfig.api_key || '').trim()
+              await updateBackendConfig(settings.pythonBackendUrl, editingConfigId, {
+                  provider: newConfig.provider || 'openai',
+                  name: trimmedName,
+                  base_url: trimmedBaseUrl,
+                  default_model: finalDefaultModel,
+                  // 只有用户填了 api_key 才提交(后端「留空保留」)
+                  ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
+                  is_default: newConfig.is_default ?? true,
+                  default_max_tokens: newConfig.default_max_tokens,
+                  default_temperature: newConfig.default_temperature,
+                  retries: newConfig.retries,
+                  retry_delay: newConfig.retry_delay,
+                  headers: newConfig.headers,
+                  custom_config: newConfig.custom_config,
+                  model_configs: modelConfigsPayload as any,
+              });
+              await refreshBackendData();
+              handleCancelForm();
+              return;
+          }
+
+          // ========== 新增模式:verify-and-add 流程 ==========
+          const modelConfigsPayload: Record<string, unknown> = {}
+          for (const m of fetchedModels) {
+              modelConfigsPayload[m.id] = {
+                  id: m.id,
+                  displayName: m.displayName || m.id,
+                  contextWindow: m.contextWindow,
+                  supportsVision: m.supportsVision,
+                  supportsToolUse: m.supportsToolUse,
+                  supportsStreaming: m.supportsStreaming,
+                  supportsThinking: m.supportsThinking,
+              }
+          }
+          const result = await verifyAndAddProvider(settings.pythonBackendUrl, {
+              name: (newConfig.name || '').trim(),
+              baseUrl: (newConfig.base_url || '').trim(),
+              apiKey: (newConfig.api_key || '').trim(),
+              protocol: verifyProtocolType,
+              customChatEndpoint: customChatEndpoint || undefined,
+              customModelsEndpoint: customModelsEndpoint || undefined,
+              customHeaders: customHeadersText || undefined,
+              defaultModel: selectedModelId || newConfig.default_model || undefined,
+              modelConfigs: Object.keys(modelConfigsPayload).length > 0 ? modelConfigsPayload : undefined,
+              isDefault: true,
+          });
+          if (result.success) {
+              await refreshBackendData();
+              handleCancelForm();
+          } else {
+              setAddressVerifyResult({
+                  ok: false,
+                  message: result.message || '保存失败',
+                  latencyMs: 0,
+                  status: 0,
+              });
+              setAdvancedOpen(true);
+          }
+      } catch (err) {
+          setAddressVerifyResult({
+              ok: false,
+              message: err instanceof Error ? err.message : '保存失败',
+              latencyMs: 0,
+              status: 0,
+          });
+          setAdvancedOpen(true);
+      } finally {
+          setSavingConfig(false);
+      }
+  };
+
+  const handleCancelForm = () => {
+      setShowAddForm(false);
+      setEditingConfigId(null);
+      setNewConfig({
+          name: '', provider: 'openai', api_key: '', default_model: '', base_url: '',
+          default_max_tokens: undefined, default_temperature: undefined,
+          retries: undefined, retry_delay: undefined,
+          custom_config: { endpoint: DEFAULT_CUSTOM_ENDPOINT, headers: DEFAULT_CUSTOM_HEADERS },
+          model_configs: {}
       });
-
-      const modelConfigs = { ...(newConfig.model_configs || {}) };
-      const key = editingModelKey || currentModel.id;
-      modelConfigs[key] = { ...currentModel };
-
-      if (editingModelKey && editingModelKey !== currentModel.id) {
-          delete modelConfigs[editingModelKey];
-      }
-
-      const isFirstModel = Object.keys(modelConfigs).length > 0 && !newConfig.default_model;
-      const defaultModel = isFirstModel ? currentModel.id : newConfig.default_model;
-
-      setNewConfig(prev => ({ ...prev, model_configs: modelConfigs, default_model: defaultModel }));
-      setShowModelForm(false);
-      setEditingModelKey(null);
-      setCurrentModel({ id: '' });
-      setShowModelAdvanced(false);
-  };
-
-  const handleDeleteModel = (key: string) => {
-      const modelConfigs = { ...(newConfig.model_configs || {}) };
-      delete modelConfigs[key];
-      let defaultModel = newConfig.default_model;
-      if (defaultModel === key) {
-          const remainingKeys = Object.keys(modelConfigs);
-          defaultModel = remainingKeys.length > 0 ? modelConfigs[remainingKeys[0]].id : '';
-      }
-      setNewConfig(prev => ({ ...prev, model_configs: modelConfigs, default_model: defaultModel }));
-      setDeleteModelConfirmKey(null);
-  };
-
-  const handleCancelModel = () => {
-      setShowModelForm(false);
-      setEditingModelKey(null);
-      setCurrentModel({ id: '' });
-      setShowModelAdvanced(false);
+      setFormErrors({});
+      // 清理 verify 状态
+      setAddressVerifyResult(null);
+      setProtocolVerifyResult(null);
+      setFetchedModels([]);
+      setSelectedModelId('');
+      setAdvancedOpen(false);
+      setCustomModelsEndpoint('');
+      setCustomChatEndpoint('');
+      setCustomHeadersText('');
+      setVerifyProtocolType('openai');
   };
 
   if (!isOpen) return null
@@ -442,7 +517,7 @@ const handleSelectConfig = async (id: string) => {
                         <div className="space-y-1">
                             <div className="flex justify-between">
                                 <label className="text-xs font-medium text-slate-300 block">{t(currentLang, 'pythonBackendUrl')}</label>
-                                <button onClick={refreshBackendData} className="text-[10px] flex items-center gap-1 text-indigo-400 hover:text-indigo-300"><RefreshCw size={10}/> Refresh</button>
+                                <button onClick={refreshBackendData} className="text-[10px] flex items-center gap-1 text-indigo-400 hover:text-indigo-300"><RefreshCw size={10}/> {t(currentLang, 'refresh')}</button>
                             </div>
                             <input
                                 type="text"
@@ -466,446 +541,260 @@ const handleSelectConfig = async (id: string) => {
                             </button>
                         </div>
 
-                        {/* Add/Edit Config Form */}
+                        {/* Add/Edit Config Form - SIMPLIFIED */}
                         {showAddForm && (
                             <div className="bg-slate-800 p-4 rounded-lg border border-slate-700 space-y-3 animate-in fade-in zoom-in-95 duration-100">
                                 <div className="text-xs font-bold text-slate-300 uppercase mb-2">{editingConfigId ? t(currentLang, 'editProvider') : t(currentLang, 'addProvider')}</div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div className="space-y-1">
-                                        <input 
-                                            placeholder={t(currentLang, 'providerName')} 
-                                            className={`w-full bg-slate-950 border rounded p-2 text-xs text-white ${formErrors.name ? 'border-red-500' : 'border-slate-700'}`} 
-                                            value={newConfig.name} 
-                                            onChange={e => setNewConfig({...newConfig, name: e.target.value})} 
-                                        />
-                                        {formErrors.name && <p className="text-[9px] text-red-400">{t(currentLang, 'requiredField')}</p>}
-                                    </div>
-                                    <select className="bg-slate-950 border border-slate-700 rounded p-2 text-xs text-white" value={newConfig.provider} onChange={e => setNewConfig({...newConfig, provider: e.target.value as ProviderType})}>
-                                        <option value="anthropic">Anthropic Claude</option>
-                                        <option value="openai">OpenAI</option>
-                                        <option value="deepseek">DeepSeek</option>
-                                        <option value="zhipu">Zhipu (智谱)</option>
-                                        <option value="moonshot">Moonshot (月之暗面)</option>
-                                        <option value="qwen">Qwen (通义千问)</option>
-                                        <option value="google">Google Gemini</option>
-                                        <option value="custom">Custom / Local</option>
-                                    </select>
-                                </div>
+
+                                {/* 基本信息 */}
                                 <div className="space-y-1">
-                                    <input 
-                                        type="password" 
-                                        placeholder={editingConfigId ? `${t(currentLang, 'apiKey')} (${t(currentLang, 'leaveEmptyToKeep') || 'Leave empty to keep current'})` : t(currentLang, 'apiKey')} 
-                                        className={`w-full bg-slate-950 border rounded p-2 text-xs text-white ${formErrors.api_key ? 'border-red-500' : 'border-slate-700'}`} 
-                                        value={newConfig.api_key} 
-                                        onChange={e => setNewConfig({...newConfig, api_key: e.target.value})} 
+                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'platformName')}</label>
+                                    <input
+                                        placeholder="API"
+                                        className={`w-full bg-slate-950 border rounded p-2 text-xs text-white ${formErrors.name ? 'border-red-500' : 'border-slate-700'}`}
+                                        value={newConfig.name}
+                                        onChange={e => setNewConfig({...newConfig, name: e.target.value})}
                                     />
-                                    {formErrors.api_key && <p className="text-[9px] text-red-400">{t(currentLang, 'requiredField')}</p>}
+                                    {formErrors.name && <p className="text-[9px] text-red-400">{t(currentLang, 'nameRequired')}</p>}
                                 </div>
-                                {newConfig.model_configs && Object.keys(newConfig.model_configs).length > 0 ? (
+
+                                {/* 请求地址 */}
+                                <div className="space-y-1">
+                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'requestUrl')}</label>
+                                    <input
+                                        type="text"
+                                        placeholder="https://api.example.com/v1"
+                                        className={`w-full bg-slate-950 border rounded p-2 text-xs text-slate-200 font-mono ${formErrors.base_url ? 'border-red-500' : 'border-slate-700'}`}
+                                        value={newConfig.base_url}
+                                        onChange={e => {
+                                            setNewConfig({...newConfig, base_url: e.target.value})
+                                            setAddressVerifyResult(null)
+                                        }}
+                                    />
+                                    {formErrors.base_url && <p className="text-[9px] text-red-400">{t(currentLang, 'baseUrlRequired')}</p>}
+                                </div>
+
+                                {/* API Key */}
+                                <div className="space-y-1">
+                                    <label className="text-[9px] uppercase font-bold text-slate-500">API Key</label>
+                                    <input
+                                        type="password"
+                                        placeholder={editingConfigId ? t(currentLang, 'leaveEmptyToKeep') : t(currentLang, 'apiKeyEnter')}
+                                        className={`w-full bg-slate-950 border rounded p-2 text-xs text-white ${formErrors.api_key ? 'border-red-500' : 'border-slate-700'}`}
+                                        value={newConfig.api_key}
+                                        onChange={e => setNewConfig({...newConfig, api_key: e.target.value})}
+                                    />
+                                    {formErrors.api_key && <p className="text-[9px] text-red-400">{t(currentLang, 'apiKeyRequired')}</p>}
+                                </div>
+
+                                {/* 协议 + 验证/拉取按钮 */}
+                                <div className="space-y-1">
+                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'protocol')}</label>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <select
+                                            value={verifyProtocolType}
+                                            disabled={!!editingConfigId}
+                                            onChange={e => {
+                                                setVerifyProtocolType(e.target.value as ProviderProtocol)
+                                                setProtocolVerifyResult(null)
+                                                setAddressVerifyResult(null)
+                                            }}
+                                            className="flex-1 min-w-[140px] bg-slate-950 border border-slate-700 rounded p-2 text-xs text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                                        >
+                                            <option value="openai">{t(currentLang, 'protocolOpenai')}</option>
+                                            <option value="async">{t(currentLang, 'protocolAsync')}</option>
+                                            <option value="gemini">{t(currentLang, 'protocolGemini')}</option>
+                                            <option value="custom">{t(currentLang, 'protocolCustom')}</option>
+                                        </select>
+                                        {!editingConfigId && (
+                                            <>
+                                                <button
+                                                    onClick={handleVerifyAddress}
+                                                    disabled={!newConfig.base_url || verifyingAddress}
+                                                    className="px-2 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded text-xs flex items-center gap-1 transition-colors"
+                                                    title={t(currentLang, 'verifyAddressTooltip')}
+                                                >
+                                                    {verifyingAddress ? <Loader2 size={12} className="animate-spin" /> : <Globe size={12} />}
+                                                    {t(currentLang, 'verifyAddress')}
+                                                </button>
+                                                <button
+                                                    onClick={handleVerifyProtocol}
+                                                    disabled={!newConfig.base_url || !newConfig.api_key || verifyingProtocol}
+                                                    className="px-2 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded text-xs flex items-center gap-1 transition-colors"
+                                                    title={t(currentLang, 'verifyProtocolTooltip')}
+                                                >
+                                                    {verifyingProtocol ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
+                                                    {t(currentLang, 'verifyProtocol')}
+                                                </button>
+                                            </>
+                                        )}
+                                        {editingConfigId && (
+                                            <span className="px-2 py-2 bg-emerald-950/30 border border-emerald-900/50 text-emerald-300 rounded text-[10px] flex items-center gap-1">
+                                                <CheckCircle2 size={12} />
+                                                {t(currentLang, 'savedBadge')}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* 验证结果展示 */}
+                                {(addressVerifyResult || protocolVerifyResult) && (
                                     <div className="space-y-1">
-                                        <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'selectModel')}</label>
+                                        {addressVerifyResult && (
+                                            <div className={`p-2 rounded text-[10px] flex items-start gap-1.5 ${addressVerifyResult.ok ? 'bg-emerald-950/30 text-emerald-300 border border-emerald-900/50' : 'bg-red-950/30 text-red-300 border border-red-900/50'}`}>
+                                                {addressVerifyResult.ok ? <CheckCircle2 size={12} className="mt-0.5 shrink-0" /> : <AlertTriangle size={12} className="mt-0.5 shrink-0" />}
+                                                <div className="flex-1">
+                                                    <div className="font-medium">
+                                                        {addressVerifyResult.status === 0 && !addressVerifyResult.ok
+                                                            ? t(currentLang, 'saveFailed')
+                                                            : addressVerifyResult.ok ? t(currentLang, 'addressReachable') : t(currentLang, 'addressUnreachable')}
+                                                    </div>
+                                                    {addressVerifyResult.message && <div className="text-[9px] opacity-80 mt-0.5 whitespace-pre-wrap break-words">{addressVerifyResult.message}</div>}
+                                                </div>
+                                            </div>
+                                        )}
+                                        {protocolVerifyResult && (
+                                            <div className={`p-2 rounded text-[10px] flex items-start gap-1.5 ${protocolVerifyResult.ok ? 'bg-emerald-950/30 text-emerald-300 border border-emerald-900/50' : 'bg-red-950/30 text-red-300 border border-red-900/50'}`}>
+                                                {protocolVerifyResult.ok ? <CheckCircle2 size={12} className="mt-0.5 shrink-0" /> : <AlertTriangle size={12} className="mt-0.5 shrink-0" />}
+                                                <div className="flex-1">
+                                                    <div className="font-medium">{protocolVerifyResult.ok ? t(currentLang, 'protocolCompatible') : t(currentLang, 'protocolIncompatible')}</div>
+                                                    {protocolVerifyResult.message && <div className="text-[9px] opacity-80 mt-0.5">{protocolVerifyResult.message}</div>}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* 模型列表 */}
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelList')}</label>
+                                        {!editingConfigId && (
+                                            <button
+                                                onClick={handleFetchModels}
+                                                disabled={!newConfig.base_url || fetchingModels}
+                                                className="px-2 py-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded text-[10px] flex items-center gap-1 transition-colors"
+                                            >
+                                                {fetchingModels ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
+                                                {t(currentLang, 'fetchModels')}
+                                            </button>
+                                        )}
+                                    </div>
+                                    {fetchedModels.length > 0 ? (
                                         <select
                                             className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-xs text-white"
-                                            value={newConfig.default_model || ''}
-                                            onChange={e => setNewConfig({...newConfig, default_model: e.target.value})}
+                                            value={selectedModelId}
+                                            onChange={e => {
+                                                setSelectedModelId(e.target.value)
+                                                setNewConfig({...newConfig, default_model: e.target.value})
+                                            }}
                                         >
-                                            {Object.entries(newConfig.model_configs).map(([key, model]) => (
-                                                <option key={key} value={model.id}>{model.displayName || model.id}</option>
+                                            {fetchedModels.map(m => (
+                                                <option key={m.id} value={m.id}>
+                                                    {m.displayName || m.id}{m.contextWindow ? ` (${m.contextWindow / 1000}k ctx)` : ''}
+                                                </option>
                                             ))}
                                         </select>
-                                    </div>
-                                ) : (
-                                    <div className={`p-2 border rounded text-[10px] ${formErrors.default_model ? 'bg-red-950/20 border-red-900/50 text-red-300' : 'bg-amber-950/20 border-amber-900/30 text-amber-300'}`}>
-                                        {formErrors.default_model ? t(currentLang, 'modelIdRequired') : `${t(currentLang, 'noModelsConfigured')} — ${t(currentLang, 'addModel').toLowerCase()}`}
-                                    </div>
-                                )}
-                                {newConfig.provider === 'custom' && (
-                                    <>
-                                        <input placeholder={t(currentLang, 'baseUrl')} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-xs text-white" value={newConfig.base_url} onChange={e => setNewConfig({...newConfig, base_url: e.target.value})} />
-                                        
-                                        {/* Backend Advanced Custom Config */}
-                                        <div className="border border-slate-700 rounded-lg bg-slate-900/50 overflow-hidden">
-                                            <button 
-                                                onClick={() => setShowBackendAdvanced(!showBackendAdvanced)}
-                                                className="w-full flex items-center justify-between p-2 bg-slate-800/30 hover:bg-slate-800/50 transition-colors"
-                                            >
-                                                <div className="flex items-center gap-2 text-[10px] font-medium text-slate-300 uppercase tracking-wide">
-                                                    <Code size={12} className="text-indigo-400" />
-                                                    {t(currentLang, 'advancedSettings')}
-                                                </div>
-                                                {showBackendAdvanced ? <ChevronDown size={12} className="text-slate-500" /> : <ChevronRight size={12} className="text-slate-500" />}
-                                            </button>
-                                            
-                                            {showBackendAdvanced && (
-                                                <div className="p-3 space-y-3 animate-in slide-in-from-top-1">
-                                                    <div className="space-y-1">
-                                                        <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'apiEndpoint')}</label>
-                                                        <input 
-                                                            type="text" 
-                                                            value={newConfig.custom_config?.endpoint || DEFAULT_CUSTOM_ENDPOINT}
-                                                            onChange={(e) => setNewConfig({...newConfig, custom_config: {...newConfig.custom_config, endpoint: e.target.value}})}
-                                                            className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                            placeholder="/chat/completions"
-                                                        />
-                                                    </div>
-
-                                                    <div className="space-y-1">
-                                                        <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'apiHeaders')}</label>
-                                                        <textarea 
-                                                            value={newConfig.custom_config?.headers || DEFAULT_CUSTOM_HEADERS}
-                                                            onChange={(e) => setNewConfig({...newConfig, custom_config: {...newConfig.custom_config, headers: e.target.value}})}
-                                                            className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono h-16 resize-none"
-                                                            spellCheck={false}
-                                                        />
-                                                    </div>
-
-                                                    <div className="flex justify-end">
-                                                        <button onClick={resetBackendCustomConfig} className="text-[9px] text-indigo-400 hover:text-indigo-300 hover:underline">
-                                                            {t(currentLang, 'resetDefault')}
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </>
-                                )}
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div className="space-y-1">
-                                        <label className="text-[9px] uppercase font-bold text-slate-500">Max Tokens</label>
-                                        <input 
-                                            type="number"
-                                            placeholder="4096"
-                                            className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                            value={newConfig.default_max_tokens ?? ''}
-                                            onChange={e => setNewConfig({...newConfig, default_max_tokens: e.target.value ? parseInt(e.target.value) : undefined})}
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[9px] uppercase font-bold text-slate-500">Temperature</label>
-                                        <input 
-                                            type="number"
-                                            step="0.1"
-                                            min="0"
-                                            max="2"
-                                            placeholder="0.7"
-                                            className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                            value={newConfig.default_temperature ?? ''}
-                                            onChange={e => setNewConfig({...newConfig, default_temperature: e.target.value ? parseFloat(e.target.value) : undefined})}
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[9px] uppercase font-bold text-slate-500">Retries</label>
-                                        <input 
-                                            type="number"
-                                            placeholder="2"
-                                            className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                            value={newConfig.retries ?? ''}
-                                            onChange={e => setNewConfig({...newConfig, retries: e.target.value ? parseInt(e.target.value) : undefined})}
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[9px] uppercase font-bold text-slate-500">Retry Delay (ms)</label>
-                                        <input 
-                                            type="number"
-                                            placeholder="1000"
-                                            className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                            value={newConfig.retry_delay ?? ''}
-                                            onChange={e => setNewConfig({...newConfig, retry_delay: e.target.value ? parseInt(e.target.value) : undefined})}
-                                        />
-                                    </div>
+                                    ) : (
+                                        !editingConfigId && (
+                                            <div className="p-2 bg-amber-950/20 border border-amber-900/30 text-amber-300 rounded text-[10px]">
+                                                {t(currentLang, 'fetchModelsHint')}
+                                            </div>
+                                        )
+                                    )}
                                 </div>
 
-                                {/* Model Configurations */}
+                                {/* 高级配置 (复杂场景) */}
                                 <div className="border border-slate-700 rounded-lg bg-slate-900/50 overflow-hidden">
-                                    <div className="flex items-center justify-between p-2 bg-slate-800/30">
-                                        <div className="text-[10px] font-medium text-slate-300 uppercase tracking-wide">
-                                            {t(currentLang, 'modelConfigs')}
+                                    <button
+                                        onClick={() => setAdvancedOpen(!advancedOpen)}
+                                        className="w-full flex items-center justify-between p-2 bg-slate-800/30 hover:bg-slate-800/50 transition-colors"
+                                    >
+                                        <div className="flex items-center gap-2 text-[10px] font-medium text-slate-300 uppercase tracking-wide">
+                                            <Code size={12} className="text-indigo-400" />
+                                            {t(currentLang, 'advancedConfig')}
                                         </div>
-                                        <button 
-                                            onClick={handleAddModel}
-                                            className="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] flex items-center gap-1 transition-colors"
-                                        >
-                                            <Plus size={10} /> {t(currentLang, 'addModel')}
-                                        </button>
-                                    </div>
-
-                                    {/* Model Form */}
-                                    {showModelForm && (
-                                        <div className="p-3 border-t border-slate-700/50 space-y-2 bg-slate-800/20">
-                                            <div className="text-[9px] font-bold text-slate-400 uppercase mb-1">{editingModelKey ? t(currentLang, 'editModel') : t(currentLang, 'addModel')}</div>
-                                            
+                                        {advancedOpen ? <ChevronDown size={12} className="text-slate-500" /> : <ChevronRight size={12} className="text-slate-500" />}
+                                    </button>
+                                    {advancedOpen && (
+                                        <div className="p-3 space-y-3 animate-in slide-in-from-top-1">
                                             <div className="grid grid-cols-2 gap-2">
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelId')} *</label>
-                                                    <input 
-                                                        placeholder="gpt-4o"
-                                                        className={`w-full bg-slate-950 border rounded p-1.5 text-[10px] text-white ${formErrors.model_id ? 'border-red-500' : 'border-slate-700'}`}
-                                                        value={currentModel.id}
-                                                        onChange={e => setCurrentModel({...currentModel, id: e.target.value})}
+                                                <div className="space-y-1">
+                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelsEndpoint')}</label>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="/models"
+                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
+                                                        value={customModelsEndpoint}
+                                                        onChange={e => setCustomModelsEndpoint(e.target.value)}
                                                     />
-                                                    {formErrors.model_id && <p className="text-[8px] text-red-400">{t(currentLang, 'modelIdRequired')}</p>}
                                                 </div>
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelDisplayName')}</label>
-                                                    <input 
-                                                        placeholder="GPT-4o"
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-white"
-                                                        value={currentModel.displayName || ''}
-                                                        onChange={e => setCurrentModel({...currentModel, displayName: e.target.value})}
+                                                <div className="space-y-1">
+                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'chatEndpoint')}</label>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="/chat/completions"
+                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
+                                                        value={customChatEndpoint}
+                                                        onChange={e => setCustomChatEndpoint(e.target.value)}
                                                     />
                                                 </div>
                                             </div>
-
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'contextWindow')}</label>
-                                                    <input 
-                                                        type="number"
-                                                        placeholder="128000"
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.contextWindow ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, contextWindow: e.target.value ? parseInt(e.target.value) : undefined})}
-                                                    />
-                                                </div>
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'maxOutputTokens')}</label>
-                                                    <input 
-                                                        type="number"
-                                                        placeholder="16384"
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.maxOutputTokens ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, maxOutputTokens: e.target.value ? parseInt(e.target.value) : undefined})}
-                                                    />
-                                                </div>
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'defaultMaxTokens')}</label>
-                                                    <input 
+                                            <div className="space-y-1">
+                                                <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'customHeadersLabel')}</label>
+                                                <textarea
+                                                    placeholder={'{\n  "X-Custom-Header": "value"\n}'}
+                                                    className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono h-16 resize-none"
+                                                    value={customHeadersText}
+                                                    onChange={e => setCustomHeadersText(e.target.value)}
+                                                    spellCheck={false}
+                                                />
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'maxTokensLabel')}</label>
+                                                    <input
                                                         type="number"
                                                         placeholder="4096"
                                                         className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.defaultMaxTokens ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, defaultMaxTokens: e.target.value ? parseInt(e.target.value) : undefined})}
+                                                        value={newConfig.default_max_tokens ?? ''}
+                                                        onChange={e => setNewConfig({...newConfig, default_max_tokens: e.target.value ? parseInt(e.target.value) : undefined})}
                                                     />
                                                 </div>
-                                            </div>
-
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'inputPrice')}</label>
+                                                <div className="space-y-1">
+                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'temperatureLabel')}</label>
                                                     <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        placeholder="2.5"
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.inputPricePerMToken ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, inputPricePerMToken: e.target.value ? parseFloat(e.target.value) : undefined})}
-                                                    />
-                                                </div>
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'outputPrice')}</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        placeholder="10.0"
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.outputPricePerMToken ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, outputPricePerMToken: e.target.value ? parseFloat(e.target.value) : undefined})}
-                                                    />
-                                                </div>
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'priceUnitLabel')}</label>
-                                                    <select
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.priceUnit ?? 'M'}
-                                                        onChange={e => setCurrentModel({...currentModel, priceUnit: e.target.value as 'M' | 'K'})}
-                                                    >
-                                                        <option value="M">$/M tokens</option>
-                                                        <option value="K">$/K tokens</option>
-                                                    </select>
-                                                </div>
-                                            </div>
-
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'defaultTemperature')}</label>
-                                                    <input 
                                                         type="number"
                                                         step="0.1"
                                                         min="0"
                                                         max="2"
                                                         placeholder="0.7"
                                                         className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.defaultTemperature ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, defaultTemperature: e.target.value ? parseFloat(e.target.value) : undefined})}
-                                                    />
-                                                </div>
-                                                <div className="space-y-0.5">
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'maxTemperature')}</label>
-                                                    <input 
-                                                        type="number"
-                                                        step="0.1"
-                                                        placeholder="2.0"
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                        value={currentModel.maxTemperature ?? ''}
-                                                        onChange={e => setCurrentModel({...currentModel, maxTemperature: e.target.value ? parseFloat(e.target.value) : undefined})}
+                                                        value={newConfig.default_temperature ?? ''}
+                                                        onChange={e => setNewConfig({...newConfig, default_temperature: e.target.value ? parseFloat(e.target.value) : undefined})}
                                                     />
                                                 </div>
                                             </div>
-
-                                            {/* Capability Toggles */}
-                                            <div className="flex flex-wrap gap-2">
-                                                {([
-                                                    ['supportsVision', t(currentLang, 'supportsVision')],
-                                                    ['supportsToolUse', t(currentLang, 'supportsToolUse')],
-                                                    ['supportsStreaming', t(currentLang, 'supportsStreaming')],
-                                                    ['supportsThinking', t(currentLang, 'supportsThinking')],
-                                                    ['supportsReasoningEffort', t(currentLang, 'supportsReasoningEffort')],
-                                                ] as [keyof ModelConfig, string][]).map(([key, label]) => (
-                                                    <button
-                                                        key={key}
-                                                        onClick={() => setCurrentModel(prev => ({...prev, [key]: !prev[key]}))}
-                                                        className={`px-2 py-1 rounded text-[9px] font-medium border transition-colors ${
-                                                            currentModel[key]
-                                                                ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
-                                                                : 'bg-slate-800 border-slate-700 text-slate-500 hover:border-slate-600'
-                                                        }`}
-                                                    >
-                                                        {label}
-                                                    </button>
-                                                ))}
-                                            </div>
-
-                                            {/* Advanced Model Settings */}
-                                            <div className="border border-slate-700/50 rounded bg-slate-900/30 overflow-hidden">
-                                                <button 
-                                                    onClick={() => setShowModelAdvanced(!showModelAdvanced)}
-                                                    className="w-full flex items-center justify-between p-1.5 bg-slate-800/20 hover:bg-slate-800/40 transition-colors"
-                                                >
-                                                    <div className="flex items-center gap-1.5 text-[9px] font-medium text-slate-400 uppercase tracking-wide">
-                                                        <Code size={10} className="text-indigo-400" />
-                                                        {t(currentLang, 'modelAdvanced')}
-                                                    </div>
-                                                    {showModelAdvanced ? <ChevronDown size={10} className="text-slate-500" /> : <ChevronRight size={10} className="text-slate-500" />}
-                                                </button>
-                                                
-                                                {showModelAdvanced && (
-                                                    <div className="p-2 space-y-2">
-                                                        <div className="space-y-0.5">
-                                                            <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'thinkingBudget')}</label>
-                                                            <input 
-                                                                type="number"
-                                                                placeholder="10000"
-                                                                className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                                value={currentModel.thinkingBudget ?? ''}
-                                                                onChange={e => setCurrentModel({...currentModel, thinkingBudget: e.target.value ? parseInt(e.target.value) : undefined})}
-                                                            />
-                                                        </div>
-                                                        <div className="space-y-0.5">
-                                                            <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelBaseUrl')}</label>
-                                                            <input 
-                                                                placeholder="https://api.example.com/v1"
-                                                                className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                                value={currentModel.baseUrl || ''}
-                                                                onChange={e => setCurrentModel({...currentModel, baseUrl: e.target.value || undefined})}
-                                                            />
-                                                        </div>
-                                                        <div className="space-y-0.5">
-                                                            <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelStreamingUrl')}</label>
-                                                            <input 
-                                                                placeholder="https://stream.example.com/v1"
-                                                                className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                                value={currentModel.streamingBaseUrl || ''}
-                                                                onChange={e => setCurrentModel({...currentModel, streamingBaseUrl: e.target.value || undefined})}
-                                                            />
-                                                        </div>
-                                                        <div className="space-y-0.5">
-                                                            <label className="text-[9px] uppercase font-bold text-slate-500">{t(currentLang, 'modelApiKey')}</label>
-                                                            <input 
-                                                                type="password"
-                                                                placeholder="sk-..."
-                                                                className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-[10px] text-slate-300 font-mono"
-                                                                value={currentModel.apiKey || ''}
-                                                                onChange={e => setCurrentModel({...currentModel, apiKey: e.target.value || undefined})}
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            <div className="flex justify-end gap-2 pt-1">
-                                                <button onClick={handleCancelModel} className="px-2 py-1 text-[10px] text-slate-400 hover:text-white border border-transparent hover:border-slate-700 rounded">{t(currentLang, 'settingsCancel')}</button>
-                                                <button onClick={handleSaveModel} className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-medium">
-                                                    {editingModelKey ? t(currentLang, 'update') : t(currentLang, 'addModel')}
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Model List */}
-                                    {Object.keys(newConfig.model_configs || {}).length > 0 ? (
-                                        <div className="divide-y divide-slate-700/30">
-                                            {Object.entries(newConfig.model_configs || {}).map(([key, model]) => (
-                                                <div key={key} className="px-3 py-2 flex items-center justify-between hover:bg-slate-800/20 transition-colors">
-                                                    {deleteModelConfirmKey === key ? (
-                                                        <div className="flex items-center justify-between w-full">
-                                                            <span className="text-[10px] text-red-300">{t(currentLang, 'confirmDeleteModel')}</span>
-                                                            <div className="flex gap-1">
-                                                                <button onClick={() => setDeleteModelConfirmKey(null)} className="px-1.5 py-0.5 text-[9px] bg-slate-700 hover:bg-slate-600 rounded text-slate-200">{t(currentLang, 'no')}</button>
-                                                                <button onClick={() => handleDeleteModel(key)} className="px-1.5 py-0.5 text-[9px] bg-red-600 hover:bg-red-500 rounded text-white">{t(currentLang, 'yes')}</button>
-                                                            </div>
-                                                        </div>
-                                                    ) : (
-                                                        <>
-                                                            <div className="min-w-0 flex-1">
-                                                                <div className="flex items-center gap-1.5">
-                                                                    <span className="text-[11px] font-medium text-slate-200 truncate">{model.displayName || model.id}</span>
-                                                                    <span className="text-[9px] text-slate-500 font-mono truncate">{model.id}</span>
-                                                                    {newConfig.default_model === model.id && (
-                                                                        <span className="px-1 py-0.5 bg-indigo-500/20 text-indigo-300 text-[8px] rounded border border-indigo-500/30 font-medium">
-                                                                            {t(currentLang, 'isDefault')}
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                <div className="flex items-center gap-2 mt-0.5 text-[9px] text-slate-500">
-                                                                    {model.contextWindow && <span>{(model.contextWindow / 1000).toFixed(0)}K {t(currentLang, 'tokens')}</span>}
-                                                                    {model.inputPricePerMToken !== undefined && <span>${model.inputPricePerMToken}/{model.priceUnit === 'K' ? 'K' : 'M'}</span>}
-                                                                    {model.outputPricePerMToken !== undefined && <span>→ ${model.outputPricePerMToken}</span>}
-                                                                    <div className="flex gap-1">
-                                                                        {model.supportsVision && <span className="px-1 bg-indigo-500/10 text-indigo-400 rounded">👁</span>}
-                                                                        {model.supportsToolUse && <span className="px-1 bg-emerald-500/10 text-emerald-400 rounded">🔧</span>}
-                                                                        {model.supportsThinking && <span className="px-1 bg-amber-500/10 text-amber-400 rounded">🧠</span>}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-center gap-0.5 ml-2">
-                                                                {newConfig.default_model !== model.id && (
-                                                                    <button onClick={() => setNewConfig(prev => ({...prev, default_model: model.id}))} className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded transition-colors text-[9px] uppercase font-bold tracking-wider" title={t(currentLang, 'setAsDefault')}>
-                                                                        {t(currentLang, 'setAsDefault')}
-                                                                    </button>
-                                                                )}
-                                                                <button onClick={() => handleEditModel(key)} className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded transition-colors" title={t(currentLang, 'editModel')}>
-                                                                    <Edit2 size={11} />
-                                                                </button>
-                                                                <button onClick={() => setDeleteModelConfirmKey(key)} className="p-1 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors" title={t(currentLang, 'deleteModel')}>
-                                                                    <Trash2 size={11} />
-                                                                </button>
-                                                            </div>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <div className="p-3 text-center text-[10px] text-slate-500 italic">
-                                            {t(currentLang, 'noModelsConfigured')}
                                         </div>
                                     )}
                                 </div>
 
+                                {/* 操作按钮 */}
                                 <div className="flex justify-end gap-2 pt-2">
-                                    <button onClick={handleCancelForm} className="px-3 py-1.5 text-xs text-slate-400 hover:text-white border border-transparent hover:border-slate-700 rounded">{t(currentLang, 'settingsCancel')}</button>
-                                    <button onClick={handleSaveConfig} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-medium">
-                                        {editingConfigId ? t(currentLang, 'update') : t(currentLang, 'settingsSave')}
+                                    <button
+                                        onClick={handleCancelForm}
+                                        disabled={savingConfig}
+                                        className="px-3 py-1.5 text-xs text-slate-400 hover:text-white border border-transparent hover:border-slate-700 rounded disabled:opacity-50"
+                                    >
+                                        {t(currentLang, 'cancel')}
+                                    </button>
+                                    <button
+                                        onClick={handleSaveWithVerify}
+                                        disabled={savingConfig}
+                                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-800 disabled:cursor-not-allowed text-white rounded text-xs font-medium flex items-center gap-1"
+                                    >
+                                        {savingConfig ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                                        {savingConfig ? t(currentLang, 'saving') : t(currentLang, 'saveButton')}
                                     </button>
                                 </div>
                             </div>
@@ -967,7 +856,7 @@ const handleSelectConfig = async (id: string) => {
                                     )}
                                 </div>
                             )})}
-                            {configs.length === 0 && !isLoading && <p className="text-center text-xs text-slate-500 italic py-2">No providers configured</p>}
+                            {configs.length === 0 && !isLoading && <p className="text-center text-xs text-slate-500 italic py-2">{t(currentLang, 'noProvidersConfigured')}</p>}
                         </div>
                     </div>
 
@@ -978,7 +867,7 @@ const handleSelectConfig = async (id: string) => {
                         <h3 className="text-sm font-semibold text-slate-200">{t(currentLang, 'githubIntegration')}</h3>
                         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex flex-col gap-3">
                             <div className="flex items-center justify-between">
-                                <span className="text-xs text-slate-400">Status</span>
+                                <span className="text-xs text-slate-400">{t(currentLang, 'statusLabel')}</span>
                                 <div className="flex items-center gap-1.5">
                                     {githubStatus.has_token ? (
                                         <>
