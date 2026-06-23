@@ -1,0 +1,206 @@
+name: Release codex-app-server binary
+
+# 这个 workflow 专门为 ComfyUI-aki 自定义节点打包 vendored codex-app-server 二进制,
+# 让用户不需要本地编译 Rust 也能跑 SGA + codex 后端.
+#
+# 触发方式:
+#   1. push 一个形如 v*.*.* 的 tag (推荐: v0.1.0, v0.1.1, ...)
+#   2. 或者手动在 Actions 页面 Run workflow
+#
+# 产物 (per platform):
+#   codex-app-server-windows-x86_64.zip     (含 .exe + SHA256SUMS)
+#   codex-app-server-linux-x86_64.tar.gz    (linux runner 上构建)
+#   codex-app-server-macos-x86_64.tar.gz    (macos runner 上构建)
+#   codex-app-server-macos-aarch64.tar.gz   (Apple Silicon)
+#
+# 用户下载后放到:
+#   <projectRoot>/sga_template/codex-rs/target/release/codex-app-server(.exe)
+# SGA 的 detect.ts 会在第 2 优先级探测路径找到它, 优先于 OpenAI 官方版.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0). Leave blank to use latest commit SHA.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # 用来创建 / 上传 release assets
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            binary_name: codex-app-server.exe
+            asset_suffix: windows-x86_64
+            archive_cmd: 'Compress-Archive -Path codex-app-server.exe,SHA256SUMS -DestinationPath codex-app-server-windows-x86_64.zip -Force'
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            binary_name: codex-app-server
+            asset_suffix: linux-x86_64
+            archive_cmd: 'tar -czf codex-app-server-linux-x86_64.tar.gz codex-app-server SHA256SUMS'
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+            binary_name: codex-app-server
+            asset_suffix: macos-x86_64
+            archive_cmd: 'tar -czf codex-app-server-macos-x86_64.tar.gz codex-app-server SHA256SUMS'
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            binary_name: codex-app-server
+            asset_suffix: macos-aarch64
+            archive_cmd: 'tar -czf codex-app-server-macos-aarch64.tar.gz codex-app-server SHA256SUMS'
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sga_template/codex-rs -> target
+
+      # Windows 需要预装 Visual Studio Build Tools
+      - name: Install MSVC (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # GitHub Actions windows-latest 默认有 vs_BuildTools, 验证一下
+          where.exe cl.exe
+          where.exe link.exe
+
+      - name: Build codex-app-server (release)
+        working-directory: sga_template/codex-rs
+        shell: bash
+        run: |
+          cargo build --release -p codex-app-server
+          # 把产物放到工作目录根, 方便后续打包
+          cp "target/release/$BINARY_NAME" ../"$BINARY_NAME"
+        env:
+          BINARY_NAME: ${{ matrix.binary_name }}
+          CARGO_TERM_COLOR: always
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "$BINARY_NAME" > SHA256SUMS
+          cat SHA256SUMS
+        env:
+          BINARY_NAME: ${{ matrix.binary_name }}
+
+      - name: Archive
+        shell: pwsh
+        run: ${{ matrix.archive_cmd }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-app-server-${{ matrix.asset_suffix }}
+          path: codex-app-server-${{ matrix.asset_suffix }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Show downloaded files
+        run: |
+          ls -la dist
+          find dist -type f
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="snapshot-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: 'codex-app-server ${{ steps.tag.outputs.tag }}'
+          generate_release_notes: true
+          files: |
+            dist/codex-app-server-windows-x86_64/codex-app-server-windows-x86_64.zip
+            dist/codex-app-server-linux-x86_64/codex-app-server-linux-x86_64.tar.gz
+            dist/codex-app-server-macos-x86_64/codex-app-server-macos-x86_64.tar.gz
+            dist/codex-app-server-macos-aarch64/codex-app-server-macos-aarch64.tar.gz
+          body: |
+            ## ComfyUI-aki vendored codex-app-server binary
+
+            This is the **vendored build** of `codex-app-server` from
+            `sga_template/codex-rs/` of the
+            [ComfyUI-aki](https://github.com/YOUR_USER/comfyui-aki) project.
+
+            It contains the **`comfyui_agent`** modifications that rebrand
+            Codex as **"Comfy Workflow Agent"** (identity override, ComfyUI
+            environment context, SGA blackboard reading, live workflow
+            injection), so that the Codex backend behaves the same as the
+            SGA native agent.
+
+            ### Download & Install
+
+            | Platform  | File                                              |
+            |-----------|---------------------------------------------------|
+            | Windows   | `codex-app-server-windows-x86_64.zip`             |
+            | Linux     | `codex-app-server-linux-x86_64.tar.gz`            |
+            | macOS x86 | `codex-app-server-macos-x86_64.tar.gz`            |
+            | macOS ARM | `codex-app-server-macos-aarch64.tar.gz`           |
+
+            Extract the archive and copy the binary into:
+
+            ```
+            <projectRoot>/sga_template/codex-rs/target/release/codex-app-server(.exe)
+            ```
+
+            SGA's `detect.ts` will find it at probe priority #2, **before**
+            any OpenAI official install.
+
+            ### Verify SHA256
+
+            Each archive contains a `SHA256SUMS` file. Run:
+
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+
+            ### Do NOT use OpenAI official codex
+
+            The official `codex.exe` (installed under
+            `%LOCALAPPDATA%\OpenAI\Codex\bin\`) does **not** include the
+            `comfyui_agent` modifications and will revert to the generic
+            Codex CLI behavior. SGA's `detect.ts` **explicitly rejects** the
+            official install in this build.

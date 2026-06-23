@@ -63,6 +63,8 @@ interface CodexSessionState {
   initializeInfo: unknown
   proxy: CodexProxyHandle | null   // 反代 (如果启动时给了 provider)
   config: CodexConfigHandle | null // 临时 config.toml
+  /** thread 创建时使用的 developer_instructions, 用于后续 importHandoff 等场景 */
+  developerInstructions?: string
 }
 
 export class CodexBackend implements AgentBackend {
@@ -155,7 +157,7 @@ export class CodexBackend implements AgentBackend {
           } as never,
         })
         const providerTag = (providerCfg.name ?? 'sga').replace(/[^a-zA-Z0-9_]/g, '_')
-        config = writeCodexConfig({
+        config = await writeCodexConfig({
           proxyBaseUrl: proxy.baseUrl,
           providerName: `sga_${providerTag}`,
           providerDisplayName: providerCfg.name ?? 'SGA Provider',
@@ -229,13 +231,21 @@ export class CodexBackend implements AgentBackend {
       initializeInfo,
       proxy,
       config,
+      developerInstructions: (opts as { developerInstructions?: string }).developerInstructions,
     }
     this.started = true
     this.lastProviderKey = providerKey
     this.restartCount = 0
 
     // 监听子进程 exit: 非正常退出 (且非 stop() 触发) 时自动重启, 最多 maxRestarts 次
-    const restartOpts: BackendStartOptions = { cwd, model, provider: opts.provider }
+    const restartOpts: BackendStartOptions = {
+      cwd,
+      model,
+      provider: opts.provider,
+      ...((opts as { developerInstructions?: string }).developerInstructions
+        ? { developerInstructions: (opts as { developerInstructions?: string }).developerInstructions }
+        : {}),
+    }
     proc.onExit((code, signal) => {
       void this.handleProcessExit(code, signal, restartOpts)
     })
@@ -331,7 +341,15 @@ export class CodexBackend implements AgentBackend {
     }
     if (!this.started || !this.state) {
       // 自动启动时把 provider 也带上, 这样第一次发消息就能起反代
-      await this.start({ cwd: process.cwd(), model: opts.model, provider: opts.provider })
+      // developerInstructions 也一起传, 透传到 thread/start
+      await this.start({
+        cwd: process.cwd(),
+        model: opts.model,
+        provider: opts.provider,
+        ...(opts.developerInstructions
+          ? { developerInstructions: opts.developerInstructions }
+          : {}),
+      } as BackendStartOptions)
     }
     const state = this.state
     if (!state) {
@@ -344,16 +362,26 @@ export class CodexBackend implements AgentBackend {
     // 1. 拿到 threadId. 复用现有 thread 或新建.
     if (!state.threadId) {
       try {
-        const resp = (await state.client.sendRequest('thread/start', {
+        // 优先用本 turn 传入的 developerInstructions, 退回到 state 中保存的.
+        // codex thread/start 支持 developerInstructions 字段 (v2 protocol),
+        // 这里用来强制行为规则 (如语言偏好).
+        const devInstructions = opts.developerInstructions ?? state.developerInstructions
+        const threadStartParams: Record<string, unknown> = {
           model: opts.model || state.model,
           cwd: state.cwd,
-        })) as { thread?: { id?: string } }
+        }
+        if (devInstructions) {
+          threadStartParams.developerInstructions = devInstructions
+        }
+        const resp = (await state.client.sendRequest('thread/start', threadStartParams)) as {
+          thread?: { id?: string }
+        }
         const threadId = resp?.thread?.id
         if (!threadId) {
           throw new Error('thread/start response missing thread.id')
         }
         state.threadId = threadId
-        logger.info(`codex thread started: ${threadId}`)
+        logger.info(`codex thread started: ${threadId}${devInstructions ? ' (developer_instructions set)' : ''}`)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         yield { type: 'error', data: `codex thread/start failed: ${msg}` }
@@ -592,10 +620,16 @@ export class CodexBackend implements AgentBackend {
       // 1. 如果还没有 thread, 先建一个
       if (!state.threadId) {
         try {
-          const resp = (await state.client.sendRequest('thread/start', {
+          const importParams: Record<string, unknown> = {
             model: state.model,
             cwd: state.cwd,
-          })) as { thread?: { id?: string } }
+          }
+          if (state.developerInstructions) {
+            importParams.developerInstructions = state.developerInstructions
+          }
+          const resp = (await state.client.sendRequest('thread/start', importParams)) as {
+            thread?: { id?: string }
+          }
           const threadId = resp?.thread?.id
           if (!threadId) {
             throw new Error('thread/start response missing thread.id')

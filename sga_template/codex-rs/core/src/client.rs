@@ -153,6 +153,19 @@ const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
+
+/// Comfy Workflow Agent — the system-prompt prefix that makes Codex behave as
+/// the ComfyUI specialist (rather than the default Codex CLI coding agent).
+///
+/// The actual prefix (identity + ComfyUI env context + SGA shared blackboard)
+/// is built dynamically by [`crate::comfyui_agent::build_prefix`], so the
+/// model sees the most up-to-date environment description, current task, key
+/// facts, and user preferences from the SGA backend on every turn.
+///
+/// The previous hard-coded `COMFY_WORKFLOW_AGENT_INSTRUCTIONS_PREFIX` const
+/// has been folded into the new module alongside the env-context and
+/// blackboard readers. See `codex-rs/core/src/comfyui_agent.rs` for the
+/// canonical implementation.
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -518,7 +531,8 @@ impl ModelClient {
             settings.summary,
             settings.service_tier,
             responses_metadata,
-        )?;
+        )
+        .await?;
         let ResponsesApiRequest {
             model,
             instructions,
@@ -768,7 +782,7 @@ impl ModelClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_responses_request(
+    async fn build_responses_request(
         &self,
         provider: &codex_api::Provider,
         prompt: &Prompt,
@@ -778,7 +792,23 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
-        let instructions = &prompt.base_instructions.text;
+        // Comfy Workflow Agent: prepend our identity block to the model's system
+        // instructions so the model anchors to ComfyUI specialist behavior
+        // (instead of the default Codex CLI "no task was provided" greeting).
+        //
+        // The prefix is built by `crate::comfyui_agent` and includes:
+        //   1. The HIGHEST-priority identity / mission / rules block.
+        //   2. The ComfyUI environment context (COMFYUI_BASE_DIR, SGA.md, etc.).
+        //   3. The SGA shared blackboard (current task, key facts, recent actions).
+        // All three are cached after the first call, so subsequent turns are free.
+        //
+        // We own the string here (not a borrow) because `instructions: String` on
+        // the API request requires owned data and we need to format a new string.
+        let comfy_prefix = crate::comfyui_agent::build_prefix().await;
+        let mut instructions =
+            String::with_capacity(comfy_prefix.len() + prompt.base_instructions.text.len() + 2);
+        instructions.push_str(&comfy_prefix);
+        instructions.push_str(&prompt.base_instructions.text);
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
         if !self.state.provider.info().is_openai() {
             input.iter_mut().for_each(ResponseItem::clear_metadata);
@@ -1314,7 +1344,8 @@ impl ModelClientSession {
                 summary,
                 service_tier.clone(),
                 responses_metadata,
-            )?;
+            )
+            .await?;
             let store = request.store;
             self.client
                 .prepare_response_items_for_request(&mut request.input, store);
@@ -1422,7 +1453,8 @@ impl ModelClientSession {
                 summary,
                 service_tier.clone(),
                 responses_metadata,
-            )?;
+            )
+            .await?;
             let mut client_metadata = self
                 .client
                 .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);

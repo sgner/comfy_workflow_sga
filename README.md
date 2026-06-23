@@ -60,15 +60,24 @@ cd ComfyUI/custom_nodes
 git clone <repository-url> comfy_workflow_agent
 ```
 
-> **Codex 集成**：本项目已把 Codex 源码（`openai/codex` 的 Rust 部分，Apache-2.0）**vendor** 到 `sga_template/codex-rs/`。无需 `git submodule`，克隆主仓库即获取全部源码。如要使用 Codex Agent，需先编译：
+> **Codex 集成**：本项目已把 Codex 源码（`openai/codex` 的 Rust 部分，Apache-2.0）**vendor** 到 `sga_template/codex-rs/`。无需 `git submodule`，克隆主仓库即获取全部源码。如要使用 Codex Agent，可选以下任一方式获取二进制：
 >
 > ```bash
-> # 1. 安装 Rust (Windows): winget install Rustlang.Rustup
-> # 2. 编译 codex-app-server
+> # 方式 1: 本地编译 (需要先装 Rust: winget install Rustlang.Rustup)
 > node scripts/build-codex.mjs --app-server
+> # → 产物: sga_template/codex-rs/target/release/codex-app-server(.exe)
 > ```
 >
-> 编译产物在 `sga_template/codex-rs/target/release/codex-app-server(.exe)`，SGA 启动时自动探测到此路径。**SGA 在不编译 codex 的情况下完全可用**——只有切换到 Codex Agent 时才需要。
+> ```bash
+> # 方式 2: 从 GitHub Release 下载预编译二进制 (推荐, 无需 Rust)
+> # 详见 docs/release-codex.md
+> ```
+>
+> 编译/下载产物放在 `sga_template/codex-rs/target/release/codex-app-server(.exe)`，SGA 启动时**自动探测到此路径**（探测优先级第 2 位，**优先于 OpenAI 官方安装**）。**SGA 在不编译 codex 的情况下完全可用**——只有切换到 Codex Agent 时才需要。
+>
+> **⚠️ 不要使用 OpenAI 官方 `codex.exe`**（`%LOCALAPPDATA%\OpenAI\Codex\bin\` 或 PATH 里的 `codex`）：它们**没有 Comfy Workflow Agent 身份注入**，会回退到默认 Codex CLI 行为。SGA 的 `detect.ts` 已**显式拒绝**官方安装。
+>
+> **🎭 Comfy Workflow Agent 身份**：本项目对 Codex 做了**完整身份重写** —— 切换到 Codex 后端后，模型表现得和 SGA 原生 Comfy Workflow Agent **完全一致**（自称、行为、Related Questions、共享记忆）。具体见 [docs/codex-agent-integration.md](docs/codex-agent-integration.md) 和 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 #### 2. 启动 ComfyUI
 
@@ -190,44 +199,57 @@ curl -X PUT http://127.0.0.1:8000/api/github-token \
 comfy_workflow_agent/
 ├── __init__.py                          # ComfyUI 插件入口，自动启动后端
 ├── start_backend.py                     # 后端启动脚本
+├── CHANGELOG.md                         # 变更日志 (Keep a Changelog 格式)
+├── DEVLOG.md                            # 开发日志 (按时间倒序)
+├── ARCHITECTURE.md                      # 项目结构与关键模块详解
 ├── docs/                                # 文档与图示
 │   ├── diagrams/                        # SVG 图示（含动画）
 │   │   ├── system-architecture.svg      # 系统架构
 │   │   ├── agent-workflow.svg           # Agent 工作流（动画）
 │   │   └── api-config-flow.svg          # API 配置流程（动画）
 │   ├── tech-stack.md                    # 技术栈总览
-│   └── resume-example.md                # 简历写法示例
+│   ├── codex-agent-integration.md       # Codex 集成方案 (设计文档)
+│   └── release-codex.md                 # 预编译 codex-app-server 下载指南
+├── .github/workflows/
+│   └── release-codex.yml                # Codex 二进制多平台 build + Release
 ├── web/                                 # 前端构建产物
 ├── sga_template/                        # SGA Agent 框架 + ComfyUI 后端
+│   ├── SGA.md                           # SGA 注入的项目级 prompt
 │   ├── src/
 │   │   ├── agents/                      # Agent 后端（含 SGA / Codex）
+│   │   │   └── codex/                   # Codex 子进程桥接
+│   │   │       ├── detect.ts            #   - binary 探测 (拒绝 OpenAI 官方)
+│   │   │       ├── process.ts           #   - 子进程生命周期
+│   │   │       ├── jsonrpc.ts           #   - JSON-RPC over stdio
+│   │   │       ├── event-bridge.ts      #   - 事件映射
+│   │   │       ├── config.ts            #   - 临时 config.toml
+│   │   │       └── context.ts           #   - SGA → Codex prompt 注入
+│   │   ├── comfyui/                     # ComfyUI 工具 + 上下文写入
+│   │   │   └── live-context.ts          #   - 工作流 → 磁盘文件 (IPC)
 │   │   ├── tools/built-in/              # 30+ 内置工具
 │   │   ├── server/                      # Express HTTP 服务
 │   │   ├── providers/                   # LLM 提供商（含 verify 工具）
 │   │   ├── mcp/                         # MCP 协议集成
 │   │   ├── memory/                      # 记忆系统
-│   │   ├── skills/                      # 技能系统
-│   │   └── ...
-│   ├── codex-rs/                        # vendored Codex Rust 源码 (Apache-2.0)
-│   │   ├── README-VENDORED.md           # License 合规说明
-│   │   ├── Cargo.toml                   # workspace 根
-│   │   ├── core/ app-server/ cli/ ...   # 子 crate
-│   │   └── target/release/              # 编译产物 (gitignored)
-│   ├── package.json
-│   └── tsconfig.json
+│   │   └── skills/                      # 技能系统
+│   └── codex-rs/                        # vendored Codex Rust 源码 (Apache-2.0)
+│       ├── README-VENDORED.md           # License 合规说明
+│       ├── Cargo.toml                   # workspace 根
+│       ├── core/ app-server/ cli/ ...   # 子 crate
+│       │   └── core/src/
+│       │       ├── client.rs            #   - 已改造: 注入 Comfy Workflow Agent
+│       │       └── comfyui_agent.rs     #   - 身份注入核心模块
+│       └── target/release/              # 编译产物 (gitignored)
 ├── ui/                                  # React 前端源码
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── ChatPanel.tsx
-│   │   │   ├── SettingsModal.tsx        # 简化 API 配置 UI
-│   │   │   └── WorkflowVisualizer.tsx
-│   │   ├── services/
-│   │   │   └── configService.ts         # verify / fetch / save
-│   │   └── utils/i18n.ts                # 4 语言字典
-│   ├── package.json
-│   └── vite.config.ts
+│   └── src/components/
+│       ├── ChatPanel.tsx                # 聊天面板 (SGA/Codex 切换)
+│       ├── CodexBuildProgressCard.tsx   # Codex 编译进度 UI
+│       ├── SettingsModal.tsx            # 简化 API 配置 UI
+│       └── WorkflowVisualizer.tsx
 ├── scripts/
-│   └── build-codex.mjs                  # 编译 codex-app-server 一键脚本
+│   ├── build-codex.mjs                  # 编译 codex-app-server (Node)
+│   ├── build-codex.ps1                  # 编译 codex-app-server (PowerShell)
+│   └── build_codex_worker.py            # Python 后台编译 worker
 └── .node-runtime/                       # 自动安装的 Node.js（如需要）
 ```
 
@@ -318,15 +340,24 @@ cd ComfyUI/custom_nodes
 git clone <repository-url> comfy_workflow_agent
 ```
 
-> **Codex Integration**: This project **vendors** the Codex source code (the Rust part of `openai/codex`, Apache-2.0) into `sga_template/codex-rs/`. No `git submodule` needed — the full source is included in the main clone. To use the Codex Agent, build it first:
+> **Codex Integration**: This project **vendors** the Codex source code (the Rust part of `openai/codex`, Apache-2.0) into `sga_template/codex-rs/`. No `git submodule` needed — the full source is included in the main clone. To use the Codex Agent, get the binary one of two ways:
 >
 > ```bash
-> # 1. Install Rust (Windows): winget install Rustlang.Rustup
-> # 2. Build codex-app-server
+> # Option 1: Build locally (requires Rust: winget install Rustlang.Rustup)
 > node scripts/build-codex.mjs --app-server
+> # → output: sga_template/codex-rs/target/release/codex-app-server(.exe)
 > ```
 >
-> The binary is produced at `sga_template/codex-rs/target/release/codex-app-server(.exe)` and SGA will auto-detect it on startup. **SGA works without compiling codex** — only required when switching to the Codex Agent.
+> ```bash
+> # Option 2: Download pre-built binary from GitHub Release (recommended, no Rust needed)
+> # See docs/release-codex.md
+> ```
+>
+> SGA auto-detects the vendored binary at `sga_template/codex-rs/target/release/codex-app-server(.exe)` (probe priority #2, **before** OpenAI official install). **SGA works fine without building codex** — only needed when switching to the Codex Agent.
+>
+> **⚠️ Do NOT use OpenAI official `codex.exe`** (`%LOCALAPPDATA%\OpenAI\Codex\bin\` or `PATH`): it has **no Comfy Workflow Agent identity injection** and will fall back to the default Codex CLI behavior. SGA's `detect.ts` **explicitly rejects** the official install.
+>
+> **🎭 Comfy Workflow Agent Identity**: The vendored Codex build is **completely re-skinned** — when you switch to the Codex backend, the model behaves identically to SGA's native Comfy Workflow Agent (self-description, behavior, Related Questions, shared memory). See [docs/codex-agent-integration.md](docs/codex-agent-integration.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
 #### 2. Start ComfyUI
 

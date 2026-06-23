@@ -21,6 +21,7 @@ import { assembleToolPool } from '../tools/registry.js'
 import { getConnectedMCPClients, getAllMCPTools } from '../mcp/index.js'
 import { createAllMCPToolAdapters } from '../mcp/adapter.js'
 import { getBuiltinAgentDefinitions, getAgentDefinitionByName, runAgent, getAllAgentDefinitions, createAgentFromConfig, agentDefinitionToJSON, isCustomAgent, getCoordinatorAgentDefinition, isCoordinatorMode, setCoordinatorMode, getCoordinatorSystemPrompt, listSnapshots, getPlanManager } from '../agents/index.js'
+import { buildCodexDeveloperInstructions } from '../agents/codex/context.js'
 import { getTaskManager } from '../tasks/index.js'
 import { killRunningTask, getAllRunningTasks, waitForTask, cleanupCompletedTasks, setTaskNotificationCallback, formatTaskNotificationXml } from '../tools/built-in/agent.js'
 import { getOrCreateCostManager, getCostManager, removeCostManager, ComfyUIContextInjector } from '../comfyui/adapter.js'
@@ -65,6 +66,20 @@ function initSSEResponse(res: Response): void {
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
+    // 关键: flushHeaders 让浏览器立即知道这是一个流式响应, 不会等待第一个 write
+    res.flushHeaders?.()
+  }
+}
+
+/** 立即把缓冲区的数据刷到 TCP socket, 保证每个 SSE event 真正实时到达浏览器 */
+function flushSSE(res: Response): void {
+  // Node.js 13.10+ 提供 res.flush() (http.ServerResponse.flush)
+  // Express 的 response 继承自 http.ServerResponse, 直接调用即可
+  const r = res as Response & { flush?: () => void; flushHeaders?: () => void }
+  try {
+    r.flush?.()
+  } catch {
+    // 老 Node 版本或不支持 flush 时, 静默降级
   }
 }
 
@@ -75,6 +90,7 @@ function sendComfyUIEvent(res: Response, event: AgentStreamEvent): void {
       initSSEResponse(res)
     }
     res.write(formatSSE(event))
+    flushSSE(res)
   } catch {
     // connection closed
   }
@@ -381,11 +397,21 @@ export async function handleSendMessage(req: Request, res: Response): Promise<vo
         cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
         totalTokens: 0, totalCostUsd: 0,
       }
+      // 提取 language hint 并用 buildCodexDeveloperInstructions 构建完整 Comfy Agent 上下文
+      const langMatchNonStream = body.content.match(
+        /IMPORTANT: You MUST respond in the following language code: "([^"]*)"\./,
+      )
+      const languageNonStream = langMatchNonStream?.[1]
+      const developerInstructionsNonStream = buildCodexDeveloperInstructions({
+        sessionId: session.id,
+        language: languageNonStream,
+      })
       for await (const ev of codexBackend.sendMessage({
         prompt: body.content,
         messages: session.messages,
         model,
         provider,
+        ...(developerInstructionsNonStream ? { developerInstructions: developerInstructionsNonStream } : {}),
       } as any)) {
         if (ev.type === 'stream_delta' && (ev as any).text) {
           codexContent += (ev as any).text
@@ -671,6 +697,7 @@ async function handleStreamResponse(
         initSSEResponse(res)
       }
       res.write(formatSSE(event))
+      flushSSE(res)
     } catch {
       // connection closed
     }
@@ -704,12 +731,28 @@ async function handleStreamResponse(
           cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
           totalTokens: 0, totalCostUsd: 0,
         }
+        // 关键修复: 用 buildCodexDeveloperInstructions 构建完整 Comfy Workflow Agent
+        // developerInstructions: 1. Agent 身份+能力+规则  2. 当前工作流摘要
+        // 3. 最近 SGA 会话上下文 (切换 Agent 时不丢记忆)  4. 语言偏好
+        const langMatch = body.content.match(
+          /IMPORTANT: You MUST respond in the following language code: "([^"]*)"\./,
+        )
+        const language = langMatch?.[1]
+        const developerInstructions = buildCodexDeveloperInstructions({
+          sessionId: session.id,
+          language,
+        })
+        logger.info(
+          `codex developerInstructions: sessionId=${session.id}, lang=${language ?? 'en'}, ` +
+          `len=${developerInstructions.length}`,
+        )
         for await (const ev of codexBackend.sendMessage({
           prompt: body.content,
           messages: session.messages,
           model,
           provider,
           signal: abortController.signal,
+          developerInstructions,
         } as any)) {
           sendEvent(ev)
           if (ev.type === 'stream_delta' && (ev as any).text) {
@@ -1426,6 +1469,57 @@ export async function handleBackendsHealth(_req: Request, res: Response): Promis
   } catch (err) {
     logger.error(`handleBackendsHealth failed: ${err instanceof Error ? err.message : String(err)}`)
     res.status(500).json({ error: 'failed to check backend health' })
+  }
+}
+
+/**
+ * 查询 Codex 后台编译状态 (供 UI 轮询, 显示进度).
+ * GET /api/v1/codex/build-status
+ *
+ * 数据源:  <SGA_HOME>/codex-build.json, 由 __init__.py 派生的 worker 进程写入.
+ * 没在编译 / 文件不存在时返 { status: "idle" }.
+ */
+export function handleCodexBuildStatus(_req: Request, res: Response): void {
+  try {
+    const sgaHome = (() => {
+      try { return getSgaHome() } catch { return null }
+    })()
+    if (!sgaHome) {
+      res.json({ status: 'idle', note: 'SGA_HOME not set' })
+      return
+    }
+    const statusFile = join(sgaHome, 'codex-build.json')
+    if (!existsSync(statusFile)) {
+      res.json({ status: 'idle', sgaHome })
+      return
+    }
+    const raw = readFileSync(statusFile, 'utf-8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    // 探活 PID: 如果 status 是 building/pending 但 PID 已死, 视为 failed
+    if (parsed.status === 'building' || parsed.status === 'pending') {
+      const pid = parsed.pid as number | undefined
+      if (pid && !isProcessAlive(pid)) {
+        parsed.status = 'failed'
+        parsed.error = parsed.error || `worker process (pid=${pid}) exited unexpectedly`
+        parsed.finished_at = parsed.finished_at || new Date().toISOString()
+      }
+    }
+    res.json({ ...parsed, sgaHome })
+  } catch (err) {
+    logger.error(`handleCodexBuildStatus failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ status: 'error', error: String(err) })
+  }
+}
+
+/** 探活 PID. 跨平台. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    // EPERM 表示存在但无权限, 也算 alive; 其它情况视为已死
+    const err = e as NodeJS.ErrnoException
+    return err.code === 'EPERM'
   }
 }
 
@@ -2740,6 +2834,7 @@ async function handleComfyUIChatStreamWithCoordinator(
         initSSEResponse(res)
       }
       res.write(formatSSE(event))
+      flushSSE(res)
     } catch {
       // connection closed
     }
@@ -3215,6 +3310,22 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
       )
     }
 
+    // 同步一份到 <SGA_HOME>/shared/comfyui/, 让 codex 进程 (comfyui_agent 模块)
+    // 也能读到完整 workflow / 前端上下文 / 错误日志. working set 是在内存里,
+    // codex 拿不到; 这里写到磁盘上, 跨进程共享.
+    try {
+      const { writeLiveContext } = await import('../comfyui/live-context.js')
+      await writeLiveContext({
+        workflow: workflow ?? undefined,
+        frontendContext: workflowContextText ?? undefined,
+        errorLog: errorLog ?? undefined,
+      })
+    } catch (lcErr) {
+      logger.debug(
+        `writeLiveContext skipped: ${lcErr instanceof Error ? lcErr.message : String(lcErr)}`,
+      )
+    }
+
     let contextParts: string[] = []
     if (lang && lang !== 'en') {
       contextParts.push(`IMPORTANT: You MUST respond in the following language code: "${lang}". Translate your advice and interface text accordingly.`)
@@ -3246,8 +3357,10 @@ export async function handleComfyUIChatStream(req: Request, res: Response): Prom
         model,
       })
     } else {
+      // 把 fullContent (含 language hint) 传给 handleStreamResponse,
+      // 否则 codex 后端拿不到 user message, 只能回默认 "What do you want..." 之类的占位回复
       await handleStreamResponse(req, res, session, {
-        content: '',
+        content: fullContent,
         stream: true,
         agentType: 'comfyui-workflow',
         providerName,

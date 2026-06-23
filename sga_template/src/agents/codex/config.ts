@@ -53,12 +53,14 @@ export interface CodexConfigHandle {
 
 const DEFAULT_PROVIDER_NAME = process.env.CODEX_PROVIDER_NAME ?? 'sga'
 
-const DEFAULT_COMFYUI_MCP_SERVER: { name: string; url: string } = {
-  name: 'comfyui',
-  url: process.env.CODEX_COMFYUI_MCP_URL ?? 'http://127.0.0.1:8188/mcp',
-}
+// 默认的 ComfyUI MCP server URL.
+// 很多 ComfyUI 部署并没有开启 /mcp 端点, 默认指向 8188/mcp 会导致 codex 启动时打印一串 MCP 失败错误.
+// 这里加一个快速连通性探测: 如果目标 URL 返回 4xx/5xx, 就跳过这个 MCP server,
+// codex 仍然可以正常对话 (只是少了一些 ComfyUI 工具).
+const DEFAULT_COMFYUI_MCP_URL = process.env.CODEX_COMFYUI_MCP_URL ?? 'http://127.0.0.1:8188/mcp'
+const DISABLE_COMFYUI_MCP = process.env.CODEX_DISABLE_COMFYUI_MCP === '1'
 
-export function writeCodexConfig(opts: CodexConfigOptions): CodexConfigHandle {
+export async function writeCodexConfig(opts: CodexConfigOptions): Promise<CodexConfigHandle> {
   const tag = randomBytes(4).toString('hex')
   const codexHome = join(opts.parentDir ?? join(process.cwd(), 'codex-tmp'), `sga-${tag}`)
   mkdirSync(codexHome, { recursive: true })
@@ -69,9 +71,15 @@ export function writeCodexConfig(opts: CodexConfigOptions): CodexConfigHandle {
   const model = opts.model ?? process.env.CODEX_DEFAULT_MODEL ?? 'gpt-5.4'
 
   const proxyBase = opts.proxyBaseUrl.replace(/\/$/, '')
+  // 探测默认的 comfyui MCP server 是否真的存在;
+  // 不存在/被禁用时, 不写入 [mcp_servers.comfyui] 段, 避免 codex 启动时报
+  // "Transport channel closed, when UnexpectedContentType(... 405: Method Not Allowed)"
+  // 这种吓人的错误日志.
   const mcpServers = opts.mcpServers && opts.mcpServers.length > 0
     ? opts.mcpServers
-    : [DEFAULT_COMFYUI_MCP_SERVER]
+    : (DISABLE_COMFYUI_MCP
+        ? []
+        : await probeMcpServer({ name: 'comfyui', url: DEFAULT_COMFYUI_MCP_URL }))
 
   const mcpServersToml = mcpServers
     .map((s) => `
@@ -118,4 +126,44 @@ ${mcpServersToml}`
 /** 简单转义: TOML 字符串里如果含 ", 换成 \" */
 function escapeTomlString(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+/**
+ * 探测 MCP server 是否真的可连通 (HTTP HEAD).
+ * 任何 4xx/5xx/timeout/连接拒绝 → 返回空数组, 调用方决定不写该 MCP 段.
+ * 2xx/3xx → 返回原 server (认为可用).
+ *
+ * best-effort 探测, 3 秒超时, 失败不影响 codex 启动.
+ */
+async function probeMcpServer(
+  server: { name: string; url: string },
+): Promise<Array<{ name: string; url: string }>> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 3000)
+  try {
+    const resp = await fetch(server.url, {
+      method: 'HEAD',
+      signal: controller.signal,
+    })
+    if (resp.status >= 200 && resp.status < 400) {
+      logger.info(`MCP server ${server.name} probe OK (status=${resp.status})`)
+      return [server]
+    }
+    logger.warn(
+      `MCP server ${server.name} not available (status=${resp.status}), ` +
+      `skipping it in codex config.toml. Set CODEX_COMFYUI_MCP_URL to override.`,
+    )
+    return []
+  } catch (err) {
+    // 连接拒绝 / 超时 / DNS 失败 → 视为不可用
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.info(
+      `MCP server ${server.name} not reachable (${msg.slice(0, 100)}), ` +
+      `skipping it in codex config.toml. ` +
+      `Set CODEX_DISABLE_COMFYUI_MCP=1 to skip probe, or CODEX_COMFYUI_MCP_URL to override.`,
+    )
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
 }

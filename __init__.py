@@ -12,7 +12,7 @@ import tarfile
 import zipfile
 import traceback
 import atexit
-from datetime import datetime
+from datetime import datetime, timezone
 
 current_dir = os.path.dirname(__file__)
 if current_dir not in sys.path:
@@ -753,10 +753,8 @@ def _find_official_codex_binary():
 
 
 def _build_codex_with_cargo():
-    """(P0) 用 cargo build 编译 codex-app-server binary (从 vendored source).
-
-    需要 Rust 工具链 (cargo) + MSVC (Windows).
-    成功返回 binary 路径, 失败返回 None.
+    """(P0) 同步编译 codex-app-server binary. 阻塞当前线程直到完成.
+    绝大多数情况下应该用 _start_codex_build_background() 而不是这个.
     """
     codex_rs_dir = _get_codex_dir()
     cargo_toml = os.path.join(codex_rs_dir, "Cargo.toml")
@@ -815,56 +813,277 @@ def _build_codex_with_cargo():
     return expected_path
 
 
-def _ensure_codex_binary():
-    """(P0) 探测 codex binary, 给用户清晰状态提示. 不阻塞 SGA 启动.
+# Codex 后台编译状态文件 (供 SGA / UI 读取)
+_CODEX_BUILD_STATUS_FILE = os.path.join(_SGA_HOME, "codex-build.json")
+_CODEX_BUILD_LOG_FILE = os.path.join(_SGA_HOME, "codex-build.log")
 
-    vendor 后流程: 探测 → cargo build (无下载步骤, 有源码直接编译)
+
+def _read_codex_build_status():
+    """读后台编译状态 JSON. 失败时返 None (没有状态文件)."""
+    try:
+        if not os.path.isfile(_CODEX_BUILD_STATUS_FILE):
+            return None
+        with open(_CODEX_BUILD_STATUS_FILE, "r", encoding="utf-8") as f:
+            return json.loads(f.read())
+    except Exception:
+        return None
+
+
+def _is_codex_build_alive():
+    """如果后台有 cargo 编译进程在跑, 返 True.
+    判断标准: status 字段为 'building' 且 PID 存在.
+    """
+    st = _read_codex_build_status()
+    if not st:
+        return False
+    if st.get("status") not in ("building", "pending"):
+        return False
+    pid = st.get("pid")
+    if not pid:
+        return False
+    # Windows / Unix 通用: 用 os.kill(pid, 0) 探活
+    try:
+        if _is_windows():
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if not h:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+                return code.value == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+        else:
+            os.kill(int(pid), 0)
+            return True
+    except Exception:
+        return False
+
+
+def _start_codex_build_background():
+    """(P0) 派生后台进程跑 cargo build, 立刻返回, 不阻塞 ComfyUI 启动.
+
+    进度写到:
+      - <SGA_HOME>/codex-build.json (状态, SGA / UI 通过 /api/codex/build-status 读)
+      - <SGA_HOME>/codex-build.log   (完整 cargo 输出)
+    进程:
+      - 用 CREATE_NEW_PROCESS_GROUP 脱离当前 console
+      - 用 DETACHED_PROCESS 标志在 Windows 上断开 stdin/stdout
+    """
+    codex_rs_dir = _get_codex_dir()
+    cargo_toml = os.path.join(codex_rs_dir, "Cargo.toml")
+    cargo_bin = shutil.which("cargo")
+    if not cargo_toml or not os.path.isfile(cargo_toml):
+        print("❌ Vendored codex-rs not found, skip background build")
+        return None
+    if not cargo_bin:
+        print("❌ cargo not found, skip background build")
+        print("   Install Rust: https://rustup.rs/")
+        return None
+
+    # 如果已经有 build 在跑, 不要重复启动
+    if _is_codex_build_alive():
+        print("⏳ Code build already in progress, skipping restart")
+        print(f"   Status: {_CODEX_BUILD_STATUS_FILE}")
+        return None
+
+    # 确保 SGA_HOME 存在
+    os.makedirs(_SGA_HOME, exist_ok=True)
+
+    worker_script = os.path.join(current_dir, "scripts", "build_codex_worker.py")
+    if not os.path.isfile(worker_script):
+        print(f"❌ Worker script not found: {worker_script}")
+        return None
+
+    # 准备环境变量
+    env = os.environ.copy()
+    env["BUILD_STATUS_FILE"] = _CODEX_BUILD_STATUS_FILE
+    env["BUILD_LOG_FILE"] = _CODEX_BUILD_LOG_FILE
+    env["CODEX_RS_DIR"] = codex_rs_dir
+    env["CARGO_BIN"] = cargo_bin
+    if "CARGO_BUILD_TIMEOUT" not in env:
+        env["CARGO_BUILD_TIMEOUT"] = "1800"
+
+    # 清空旧状态文件 (worker 会重写)
+    try:
+        if os.path.isfile(_CODEX_BUILD_STATUS_FILE):
+            os.remove(_CODEX_BUILD_STATUS_FILE)
+    except Exception:
+        pass
+
+    # 派生后台进程
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "env": env,
+        "close_fds": True,
+    }
+    if _is_windows():
+        # 脱离 console, 独立进程组, 不接收 Ctrl+C
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_NO_WINDOW = 0x08000000
+        kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen([sys.executable, worker_script], **kwargs)
+    except Exception as e:
+        print(f"❌ Failed to start background build: {e}")
+        return None
+
+    # 写入初始状态 (UI 在 worker 启动前能立刻看到)
+    initial_status = {
+        "status": "pending",
+        "pid": proc.pid,
+        "started_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "finished_at": None,
+        "progress": {"current": 0, "total": 0, "current_crate": "starting...", "percent": 0.0},
+        "log_file": _CODEX_BUILD_LOG_FILE,
+        "codex_dir": codex_rs_dir,
+        "error": None,
+    }
+    try:
+        with open(_CODEX_BUILD_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(initial_status, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    print(f"🔧 Background build started (pid={proc.pid})")
+    print(f"   Status: {_CODEX_BUILD_STATUS_FILE}")
+    print(f"   Log:    {_CODEX_BUILD_LOG_FILE}")
+    print(f"   Use:    GET /api/codex/build-status  to poll progress")
+    print(f"   Or in UI: progress card will appear automatically")
+    return proc.pid
+
+
+def _ensure_codex_binary():
+    """(P0) 探测 codex binary, 给用户清晰状态提示. **不阻塞 ComfyUI 启动**.
+
+    关键改动: 当 vendored 源码存在但 binary 未编译时, 用后台进程跑 cargo build
+    (通过 _start_codex_build_background), 立刻返回. ComfyUI 启动不会被 cargo 阻塞,
+    用户在 UI 上能通过 /api/codex/build-status 看到实时进度.
+
+    优先级 (按用户偏好):
+      1. 环境变量 CODEX_BINARY         (用户显式覆盖)
+      2. vendored 编译产物              (本地 cargo build 的 codex-app-server)
+      3. OpenAI 官方安装 (codex.exe 下载版, 兜底)
+      4. PATH 中的 codex
     """
     print("=" * 60)
-    print("📦 Codex backend status (P0: vendored)")
+    print("📦 Codex backend status (P0: vendored, non-blocking)")
     print("=" * 60)
     codex_dir = _get_codex_dir()
+    has_vendored_source = False
     if os.path.isdir(codex_dir):
         cargo_toml = os.path.join(codex_dir, "Cargo.toml")
         if os.path.isfile(cargo_toml):
+            has_vendored_source = True
             print(f"📂 Vendored: {os.path.relpath(codex_dir, current_dir)}")
-    bin_path, source = _get_codex_binary_path_with_source()
-    if bin_path:
-        size_mb = round(os.path.getsize(bin_path) / (1024 * 1024), 2)
-        source_label = {
-            "env": "env override",
-            "release": "local release build",
-            "debug": "local debug build",
-            "official": "OpenAI official install",
-            "path": "PATH fallback",
-        }.get(source, source)
-        print(f"✅ Binary ({source_label}): {bin_path}  ({size_mb} MB)")
+
+    # 1. 环境变量
+    explicit = os.environ.get("CODEX_BINARY")
+    if explicit and os.path.isfile(explicit):
+        size_mb = round(os.path.getsize(explicit) / (1024 * 1024), 2)
+        print(f"✅ Binary (env override): {explicit}  ({size_mb} MB)")
         print("   Codex backend: available")
-    else:
-        skip_build = os.environ.get("CODEX_SKIP_BUILD", "").lower() in ("1", "true", "yes")
-        if skip_build:
-            print("⏭️  CODEX_SKIP_BUILD=1, skipping auto-build")
-        else:
-            print("⚠️  Binary not found, attempting local build (cargo build)...")
+        print("=" * 60)
+        return
+
+    # 2. vendored 编译产物 (探测 release + debug, codex-app-server 优先)
+    vendored_bin = None
+    vendored_profile = None
+    if has_vendored_source:
+        is_win = _is_windows()
+        for profile in ("release", "debug"):
+            for bin_name in (_CODEX_BIN_NAME_WIN if is_win else _CODEX_BIN_NAME_UNIX,
+                             "codex.exe" if is_win else "codex"):
+                p = os.path.join(codex_dir, "target", profile, bin_name)
+                if os.path.isfile(p):
+                    vendored_bin = p
+                    vendored_profile = profile
+                    break
+            if vendored_bin:
+                break
+
+    if vendored_bin:
+        size_mb = round(os.path.getsize(vendored_bin) / (1024 * 1024), 2)
+        print(f"✅ Binary (local {vendored_profile} build): {vendored_bin}  ({size_mb} MB)")
+        print("   Codex backend: available")
+        print("=" * 60)
+        return
+
+    # vendored 源码存在但 binary 未编译 → 派后台进程跑 cargo build (非阻塞)
+    skip_build = os.environ.get("CODEX_SKIP_BUILD", "").lower() in ("1", "true", "yes")
+    if has_vendored_source and not skip_build:
+        print("⚠️  Vendored source present, but local binary not built yet")
+        print("🔧 Starting BACKGROUND build (does NOT block ComfyUI)...")
+        print()
+        build_pid = _start_codex_build_background()
+        if build_pid:
             print()
-            built = _build_codex_with_cargo()
-            if built:
-                size_mb = round(os.path.getsize(built) / (1024 * 1024), 2)
-                print(f"✅ Binary (local build): {built}  ({size_mb} MB)")
-                print("   Codex backend: available")
-                print("=" * 60)
-                return
-            else:
-                print()
-                print("⚠️  Local build failed")
-        print()
-        print("   Manual options:")
-        print("     1. Node script:  node scripts\\build-codex.mjs --app-server")
-        print("     2. PowerShell:  .\\scripts\\build-codex.ps1")
-        print("     3. Manual:  cd sga_template\\codex-rs && cargo build --release -p codex-app-server")
-        print("     4. Install OpenAI Codex desktop client (auto-detected)")
-        print()
-        print("   Codex backend: unavailable (SGA backend still works normally)")
+            print(f"   ✅ Background build started (pid={build_pid})")
+            print(f"   📊 UI will show progress automatically")
+            print(f"   📁 Status file: {_CODEX_BUILD_STATUS_FILE}")
+            print(f"   📁 Log file:    {_CODEX_BUILD_LOG_FILE}")
+            print()
+            print("   Codex backend: building in background (5-20 min first time)")
+            print("   SGA backend is still starting up; you can use SGA agent now.")
+            print("   Switch to Codex in UI when build completes.")
+        else:
+            print("   ⚠️  Failed to start background build, falling back to other sources...")
+        print("=" * 60)
+        return
+
+    # 3. OpenAI 官方自动安装目录
+    official = _find_official_codex_binary()
+    if official:
+        size_mb = round(os.path.getsize(official) / (1024 * 1024), 2)
+        print(f"✅ Binary (OpenAI official install): {official}  ({size_mb} MB)")
+        print("   Codex backend: available (using official binary)")
+        if has_vendored_source:
+            print("   Tip: build local vendored for full feature support:")
+            print("        node scripts\\build-codex.mjs --app-server")
+        print("=" * 60)
+        return
+
+    # 4. PATH 兜底
+    is_win = _is_windows()
+    for bin_name in (_CODEX_BIN_NAME_WIN if is_win else _CODEX_BIN_NAME_UNIX,
+                     "codex.exe" if is_win else "codex"):
+        hit = shutil.which(bin_name)
+        if hit and os.path.isfile(hit):
+            size_mb = round(os.path.getsize(hit) / (1024 * 1024), 2)
+            print(f"✅ Binary (PATH): {hit}  ({size_mb} MB)")
+            print("   Codex backend: available")
+            print("=" * 60)
+            return
+
+    # 全部都没有
+    print("❌ Codex binary not found")
+    print()
+    if has_vendored_source and skip_build:
+        print("   Vendored source present, CODEX_SKIP_BUILD=1 set.")
+        print("   Unset CODEX_SKIP_BUILD or build manually:")
+    elif has_vendored_source:
+        print("   Vendored source found, but build failed.")
+        print("   Try manually:")
+    else:
+        print("   Vendored source NOT found.")
+        print("   Options:")
+    print("     1. Node script:  node scripts\\build-codex.mjs --app-server")
+    print("     2. PowerShell:  .\\scripts\\build-codex.ps1")
+    print("     3. Manual:  cd sga_template\\codex-rs && cargo build --release -p codex-app-server")
+    print("     4. Install OpenAI Codex desktop client (auto-detected)")
+    print()
+    print("   Codex backend: unavailable (SGA backend still works normally)")
     print("=" * 60)
 
 

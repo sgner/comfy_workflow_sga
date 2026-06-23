@@ -32,6 +32,12 @@ export interface BackendMessageOptions {
   model: string
   provider: LLMProvider
   systemPrompt?: SystemPrompt
+  /**
+   * Codex-specific: 作为 codex thread 的 developer_instructions 传入,
+   * 用来强制行为规则 (语言偏好, 输出风格等).
+   * SGA 后端忽略此字段.
+   */
+  developerInstructions?: string
   toolUseContext?: ToolUseContext
   permissionMode?: PermissionMode
   signal?: AbortSignal

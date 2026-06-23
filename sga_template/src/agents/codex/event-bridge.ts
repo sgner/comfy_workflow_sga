@@ -4,12 +4,13 @@
  * 把 codex app-server 推送的 JSON-RPC notification 转换成 SGA 的 AgentStreamEvent.
  *
  * Codex 主要 notification 分类:
- *   - turn/started         (TurnStartedNotification)
- *   - turn/completed       (TurnCompletedNotification) - 含 usage
- *   - turn/diff/updated    (TurnDiffUpdatedNotification)
- *   - item/started         (ItemStartedNotification)   - item 是 ThreadItem enum
- *   - item/completed       (ItemCompletedNotification)
- *   - error                (ErrorNotification)
+ *   - turn/started             (TurnStartedNotification)
+ *   - turn/completed           (TurnCompletedNotification) - 含 usage
+ *   - turn/diff/updated        (TurnDiffUpdatedNotification)
+ *   - item/started             (ItemStartedNotification)   - item 是 ThreadItem enum
+ *   - item/agentMessage/delta  (AgentMessageDeltaNotification) - agentMessage 增量文本
+ *   - item/completed           (ItemCompletedNotification)
+ *   - error                    (ErrorNotification)
  *
  * ThreadItem 类型 (来自 v2/item.rs):
  *   - userMessage           { id, content }
@@ -190,6 +191,27 @@ export function createEventBridge(opts: BridgeOptions): BridgeHandle {
         return out
       }
 
+      case 'item/agentMessage/delta': {
+        // codex 在 agentMessage 流式输出时推送此 notification, params:
+        //   { threadId, turnId, itemId, delta }
+        // 多个 delta 按 itemId 顺序拼接即得完整回复. 这里直接推 stream_delta.
+        const paramsObj = (params ?? {}) as {
+          threadId?: string
+          itemId?: string
+          turnId?: string
+          delta?: string
+        }
+        if (paramsObj.threadId && paramsObj.threadId !== opts.threadId) {
+          // 其它 thread 的 delta, 忽略
+          return out
+        }
+        const delta = paramsObj.delta ?? ''
+        if (delta) {
+          out.push({ type: 'stream_delta', text: delta })
+        }
+        return out
+      }
+
       case 'item/completed': {
         const paramsObj = (params ?? {}) as { item?: unknown }
         const item = extractItem(paramsObj.item)
@@ -197,11 +219,16 @@ export function createEventBridge(opts: BridgeOptions): BridgeHandle {
         const t = itemType(item)
 
         if (t === 'agentMessage') {
-          const text = item.text ?? ''
-          if (text) out.push({ type: 'stream_delta', text })
+          // 注意: 完整文本已经在 item/agentMessage/delta 阶段逐 token 推过 stream_delta 了,
+          // 这里不要再推一次, 否则前端会看到 "打字很快 -> 整段叠加上来" 的非流式观感.
+          // 仅作为流结束的信号使用 (消费者据此知道 agentMessage 已经收尾).
           return out
         }
         if (t === 'reasoning') {
+          // reasoning 同样: 如果有 thinking_delta 流式, completed 不再补全;
+          // 若没收到过 delta (例如非流模式), 才用 completed 补一次.
+          // 但当前 codex 协议里 reasoning 也会推 reasoning/summaryDelta 之类的流式通知,
+          // 暂时保持兼容: 没收到过 summary 时, 用 completed 补一次.
           const text = item.summary?.join('\n') ?? item.content?.toString() ?? ''
           if (text) out.push({ type: 'thinking_delta', text })
           return out

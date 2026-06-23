@@ -57,7 +57,13 @@ export function spawnCodexAppServer(
   binary: CodexBinaryInfo,
   opts: SpawnCodexOptions,
 ): CodexProcessHandle {
-  const args: string[] = ['app-server', '--stdio']
+  // 现代 codex-app-server 的 CLI:
+  //   - 没有子命令 (binary 本身就是 app-server)
+  //   - 默认 transport 是 stdio://, 通过 --listen 显式覆盖
+  //   - --analytics-default-enabled 是 bool flag (新版本可能改名/移除, 失败可忽略)
+  // 旧 SGA 代码 (在 OpenAI 官方 codex.exe 上) 用 `codex app-server --stdio`, 我们现在用的是
+  // vendored 的 codex-app-server.exe, 所以不再需要 `app-server` 子命令.
+  const args: string[] = []
 
   if (opts.sandbox) {
     // -c 走 config 覆盖, app-server 支持 TOML 字面量
@@ -65,8 +71,10 @@ export function spawnCodexAppServer(
   }
   // 注: --session-source 在旧版 codex (0.138 之前) 不存在, 这里不传.
   //     SGA 标识直接由 thread/start 的 metadata 携带.
-  // 关闭遥测, 避免污染 SGA 日志. 注意: 该 flag 是 bool 不接 value.
-  args.push('--analytics-default-enabled')
+  // 关闭遥测: 新版 codex-app-server 不再支持 --analytics-default-enabled 这个 flag.
+  //   改为通过 -c 注入配置: notice.model_hidden = true (隐藏提示) / 其它可在 config.toml 中控制的项.
+  //   没有合适的 CLI flag 时, 我们就让 codex 用默认的 telemetry 设置, 不强求关掉.
+  // args.push('--analytics-default-enabled')   // 已废弃, 移除
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,

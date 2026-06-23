@@ -4,6 +4,7 @@ import { GripHorizontal, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson, Al
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ChatPanel from './components/ChatPanel'
+import CodexBuildProgressCard from './components/CodexBuildProgressCard'
 import SettingsModal from './components/SettingsModal'
 import WorkflowVisualizer from './components/WorkflowVisualizer'
 import { DEFAULT_WORKFLOW } from './constants'
@@ -1264,6 +1265,13 @@ const App: React.FC<AppProps> = () => {
                     <div className="flex-1 overflow-hidden relative flex flex-row">
                         {/* Left: Chat Panel (35%) */}
                         <div className="w-[35%] min-w-[300px] border-r border-slate-800 flex flex-col bg-slate-950">
+                            {appSettings.usePythonBackend && appSettings.pythonBackendUrl && (
+                                <CodexBuildProgressCard
+                                    backendUrl={appSettings.pythonBackendUrl}
+                                    language={appSettings.language}
+                                    onSwitchToCodex={() => handleAgentSwitch('codex')}
+                                />
+                            )}
                             {sessionNotification && (
                                 <div className="flex items-center gap-2 px-3 py-2 bg-amber-900/30 border-b border-amber-700/30 text-amber-300 text-xs">
                                     <AlertTriangle size={14} className="flex-shrink-0" />

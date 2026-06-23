@@ -285,6 +285,19 @@ export const translations: Translations = {
         destructiveBadge: "DESTRUCTIVE",
         reviewBadge: "REVIEW",
 
+        // Codex Build Progress
+        codexBuildTitle: "Codex Backend Building",
+        codexBuildPending: "Preparing build...",
+        codexBuildInProgress: "Compiling Codex backend (this may take 5-20 minutes on first run)",
+        codexBuildDone: "Codex backend is ready",
+        codexBuildFailed: "Codex build failed",
+        codexBuildIdle: "Codex backend idle",
+        codexBuildSwitchNow: "Switch to Codex",
+        codexBuildHide: "Hide",
+        codexBuildShowLog: "Show log",
+        codexBuildHideLog: "Hide log",
+        codexBuildErrorHint: "Please ensure Rust toolchain is installed and try restarting ComfyUI.",
+
         // WorkflowVisualizer
         fixOverlaps: "Fix Overlaps & Expand",
         fitToScreen: "Fit to Screen",
@@ -602,6 +615,19 @@ export const translations: Translations = {
         destructiveBadge: "危险操作",
         reviewBadge: "审查",
 
+        // Codex Build Progress
+        codexBuildTitle: "Codex 后端编译中",
+        codexBuildPending: "准备编译...",
+        codexBuildInProgress: "正在编译 Codex 后端 (首次需 5-20 分钟)",
+        codexBuildDone: "Codex 后端已就绪",
+        codexBuildFailed: "Codex 编译失败",
+        codexBuildIdle: "Codex 后端空闲",
+        codexBuildSwitchNow: "切换到 Codex",
+        codexBuildHide: "收起",
+        codexBuildShowLog: "查看日志",
+        codexBuildHideLog: "隐藏日志",
+        codexBuildErrorHint: "请确认 Rust 工具链已安装，然后重启 ComfyUI。",
+
         // WorkflowVisualizer
         fixOverlaps: "修复重叠并展开",
         fitToScreen: "适应屏幕",
@@ -917,6 +943,19 @@ export const translations: Translations = {
         parametersLabel: "パラメータ",
         destructiveBadge: "破壊的",
         reviewBadge: "レビュー",
+
+        // Codex Build Progress
+        codexBuildTitle: "Codex バックエンドをビルド中",
+        codexBuildPending: "ビルド準備中...",
+        codexBuildInProgress: "Codex バックエンドをコンパイルしています (初回は 5〜20 分)",
+        codexBuildDone: "Codex バックエンド準備完了",
+        codexBuildFailed: "Codex ビルド失敗",
+        codexBuildIdle: "Codex バックエンド待機中",
+        codexBuildSwitchNow: "Codex に切替",
+        codexBuildHide: "閉じる",
+        codexBuildShowLog: "ログを表示",
+        codexBuildHideLog: "ログを隠す",
+        codexBuildErrorHint: "Rust ツールチェーンがインストールされているか確認し、ComfyUI を再起動してください。",
 
         // WorkflowVisualizer
         fixOverlaps: "重なりを修正して展開",

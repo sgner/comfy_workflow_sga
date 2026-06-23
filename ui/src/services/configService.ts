@@ -55,6 +55,40 @@ export const setBackendDefault = async (backendUrl: string, id: string): Promise
     if (!res.ok) throw new Error('Failed to set default config');
 };
 
+// --- Codex Build Status (后台编译进度) ---
+
+export interface CodexBuildProgress {
+    current: number
+    total: number
+    current_crate: string
+    percent: number
+}
+
+export interface CodexBuildStatus {
+    status: 'idle' | 'pending' | 'building' | 'success' | 'failed' | 'error'
+    pid?: number
+    started_at?: string
+    finished_at?: string
+    progress?: CodexBuildProgress
+    log_file?: string
+    codex_dir?: string
+    sgaHome?: string
+    error?: string | null
+    note?: string
+}
+
+export const fetchCodexBuildStatus = async (backendUrl: string): Promise<CodexBuildStatus | null> => {
+    try {
+        const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/codex/build-status`, {
+            signal: AbortSignal.timeout(5000)
+        })
+        if (!res.ok) return null
+        return res.json()
+    } catch {
+        return null
+    }
+};
+
 // --- GitHub Token Endpoints ---
 
 export const getGitHubStatus = async (backendUrl: string): Promise<GitHubTokenStatus> => {

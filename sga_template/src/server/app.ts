@@ -34,6 +34,7 @@ import {
   // Sprint 1+2: AgentBackend 相关
   handleListBackends,
   handleBackendsHealth,
+  handleCodexBuildStatus,
   handleGetSessionAgent,
   handleSwitchSessionAgent,
   handleClearHandoff,
@@ -185,6 +186,7 @@ export function createApp(config: ServerConfig = {}): express.Application {
   // ===== Sprint 1+2: Agent Backend (SGA / Codex) =====
   app.get(`${base}/backends`, handleListBackends)
   app.get(`${base}/backends/health`, handleBackendsHealth)
+  app.get(`${base}/codex/build-status`, handleCodexBuildStatus)
   app.get(`${base}/sessions/:sessionId/agent`, handleGetSessionAgent)
   app.post(`${base}/sessions/:sessionId/agent`, handleSwitchSessionAgent)
   app.delete(`${base}/sessions/:sessionId/handoff`, handleClearHandoff)
