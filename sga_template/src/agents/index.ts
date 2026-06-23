@@ -14,6 +14,29 @@ export { CoordinatorAgent, getCoordinatorSystemPrompt, isCoordinatorMode, setCoo
 export { listSnapshots, type CoordinatorConfig, type CoordinatorPlan, type CoordinatorResult, type CoordinatorTask, type CoordinatorTaskStep, type CoordinatorTaskResult, type CoordinatorPhase, type CoordinatorSnapshot } from './coordinator.js'
 export { PlanManager, getPlanManager, resetPlanManager, type PlanNotificationCallback } from './plan-manager.js'
 
+// ===== Sprint 1+2: AgentBackend 抽象 (Codex 集成前置) =====
+export type {
+  AgentBackend,
+  AgentType,
+  BackendStartOptions,
+  BackendMessageOptions,
+  BackendHealth,
+  AgentInfo,
+  Skill,
+  HandoffBundle,
+  KeyFact,
+} from './backend.js'
+export { BackendNotAvailableError, HandoffExportError, HandoffImportError } from './backend.js'
+export { SgaBackend, getSgaBackend } from './sga-backend.js'
+export { CodexBackend, getCodexBackend } from './codex-backend.js'
+export { getBackendRegistry } from './registry.js'
+export {
+  getHandoffStore,
+  getBlackboard,
+  getMemoryExtractor,
+  type BlackboardData,
+} from './handoff/index.js'
+
 export function getBuiltinAgentDefinitions(): AgentDefinition[] {
   return [
     new ComfyUIWorkflowAgent(),

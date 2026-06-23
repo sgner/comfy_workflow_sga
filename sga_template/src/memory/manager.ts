@@ -29,7 +29,7 @@ export class MemoryManager {
   private backend: MemoryStorageBackend
   private cachedMemories: MemoryFile[] | null = null
   private lastScanTime = 0
-  private scanIntervalMs = 30_000
+  private scanIntervalMs = parseInt(process.env.SGA_MEMORY_SCAN_INTERVAL ?? '30000', 10)
   private sessionId: string
 
   constructor(config: MemoryManagerConfig = {}) {

@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 680" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <title>系统架构 — 双 Agent 后端</title>
+  <desc>ComfyUI 浏览器 ↔ Python 插件 ↔ SGA 后端 (Node.js) ↔ {SGA Agent / Codex Agent} ↔ LLM 提供商</desc>
+
+  <defs>
+    <linearGradient id="gIndigo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="gEmerald" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#10b981"/><stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="gAmber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="gSlate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#475569"/><stop offset="1" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="gBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrI" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6366f1"/>
+    </marker>
+    <marker id="arrE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#10b981"/>
+    </marker>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00015010"/>
+    </filter>
+    <style>
+      @keyframes dash { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
+      .flow { stroke-dasharray: 6 4; animation: dash 1.5s linear infinite; }
+      @keyframes breathe { 0%,100% { opacity: 0.85; } 50% { opacity: 1; } }
+      .breathe { animation: breathe 3s ease-in-out infinite; }
+    </style>
+  </defs>
+
+  <rect width="960" height="680" fill="#f8fafc" rx="10"/>
+
+  <!-- 标题 -->
+  <text x="480" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">ComfyUI Workflow Agent · 系统架构</text>
+  <text x="480" y="54" text-anchor="middle" font-size="12" fill="#64748b">双 Agent 后端 — SGA (indigo) / Codex (emerald) 共享 Provider 配置</text>
+
+  <!-- ===== 浏览器层 ===== -->
+  <rect x="20" y="75" width="920" height="100" rx="10" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="95" font-size="11" font-weight="700" fill="#475569">浏览器</text>
+
+  <rect x="50" y="105" width="200" height="55" rx="8" fill="url(#gIndigo)" filter="url(#sh)" class="breathe"/>
+  <text x="150" y="130" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Web UI (ChatPanel)</text>
+  <text x="150" y="148" text-anchor="middle" font-size="10" fill="#e0e7ff">SGA / Codex 切换按钮</text>
+
+  <rect x="300" y="105" width="180" height="55" rx="8" fill="url(#gSlate)" filter="url(#sh)"/>
+  <text x="390" y="130" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">ComfyUI 进程</text>
+  <text x="390" y="148" text-anchor="middle" font-size="10" fill="#cbd5e1">Python · 加载插件</text>
+
+  <rect x="530" y="105" width="180" height="55" rx="8" fill="url(#gAmber)" filter="url(#sh)"/>
+  <text x="620" y="130" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">__init__.py</text>
+  <text x="620" y="148" text-anchor="middle" font-size="10" fill="#fef3c7">自动启动后端 + 下载 codex</text>
+
+  <rect x="750" y="105" width="170" height="55" rx="8" fill="url(#gAmber)" filter="url(#sh)"/>
+  <text x="835" y="130" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">nodes.py</text>
+  <text x="835" y="148" text-anchor="middle" font-size="10" fill="#fef3c7">ComfyUI 节点 · API 路由</text>
+
+  <!-- 箭头: 浏览器层 -->
+  <line x1="250" y1="132" x2="300" y2="132" stroke="#6366f1" stroke-width="2" class="flow" marker-end="url(#arrI)"/>
+  <line x1="480" y1="132" x2="530" y2="132" stroke="#64748b" stroke-width="2" class="flow" marker-end="url(#arr)"/>
+  <line x1="710" y1="132" x2="750" y2="132" stroke="#64748b" stroke-width="2" class="flow" marker-end="url(#arr)"/>
+
+  <!-- ===== SGA 后端层 ===== -->
+  <rect x="20" y="195" width="920" height="240" rx="10" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="215" font-size="11" font-weight="700" fill="#475569">SGA 后端 (Node.js · 127.0.0.1:8000)</text>
+
+  <!-- Express Server -->
+  <rect x="50" y="230" width="160" height="50" rx="8" fill="url(#gSlate)" filter="url(#sh)"/>
+  <text x="130" y="252" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">Express Server</text>
+  <text x="130" y="268" text-anchor="middle" font-size="10" fill="#cbd5e1">routes.ts · SSE</text>
+
+  <!-- Session Store -->
+  <rect x="50" y="295" width="160" height="45" rx="8" fill="#fff" stroke="#64748b" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="130" y="314" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Session Store</text>
+  <text x="130" y="328" text-anchor="middle" font-size="9" fill="#64748b">activeAgent · messages</text>
+
+  <!-- Provider Store (共享) -->
+  <rect x="50" y="355" width="160" height="50" rx="8" fill="url(#gBlue)" filter="url(#sh)" class="breathe"/>
+  <text x="130" y="377" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">Provider Store</text>
+  <text x="130" y="393" text-anchor="middle" font-size="9" fill="#dbeafe">SGA + Codex 共享配置</text>
+
+  <!-- Backend Registry -->
+  <rect x="240" y="230" width="160" height="50" rx="8" fill="#fff" stroke="#6366f1" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="320" y="252" text-anchor="middle" font-size="12" font-weight="600" fill="#4338ca">Backend Registry</text>
+  <text x="320" y="268" text-anchor="middle" font-size="9" fill="#64748b">setActive() · dispatch</text>
+
+  <!-- SGA Agent -->
+  <rect x="240" y="300" width="160" height="105" rx="10" fill="url(#gIndigo)" filter="url(#sh)" class="breathe"/>
+  <text x="320" y="325" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">SGA Agent</text>
+  <text x="320" y="343" text-anchor="middle" font-size="10" fill="#e0e7ff">runAgent() in-process</text>
+  <line x1="260" y1="352" x2="380" y2="352" stroke="#818cf8" stroke-width="0.8" opacity="0.5"/>
+  <text x="320" y="368" text-anchor="middle" font-size="9" fill="#c7d2fe">classify → tools → respond</text>
+  <text x="320" y="383" text-anchor="middle" font-size="9" fill="#c7d2fe">coordinator · planMgr</text>
+  <text x="320" y="397" text-anchor="middle" font-size="9" fill="#c7d2fe">approval · autoDream</text>
+
+  <!-- Codex Agent -->
+  <rect x="430" y="300" width="160" height="105" rx="10" fill="url(#gEmerald)" filter="url(#sh)" class="breathe"/>
+  <text x="510" y="325" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Codex Agent</text>
+  <text x="510" y="343" text-anchor="middle" font-size="10" fill="#d1fae5">codex app-server --stdio</text>
+  <line x1="450" y1="352" x2="570" y2="352" stroke="#6ee7b7" stroke-width="0.8" opacity="0.5"/>
+  <text x="510" y="368" text-anchor="middle" font-size="9" fill="#a7f3d0">JSON-RPC · subprocess</text>
+  <text x="510" y="383" text-anchor="middle" font-size="9" fill="#a7f3d0">provider-proxy (反代)</text>
+  <text x="510" y="397" text-anchor="middle" font-size="9" fill="#a7f3d0">config.toml (无需登录)</text>
+
+  <!-- Provider Proxy -->
+  <rect x="620" y="300" width="150" height="105" rx="10" fill="#fff" stroke="#10b981" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="695" y="325" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">Provider Proxy</text>
+  <text x="695" y="343" text-anchor="middle" font-size="9" fill="#64748b">Responses API</text>
+  <text x="695" y="357" text-anchor="middle" font-size="9" fill="#64748b">↓ 翻译 ↓</text>
+  <text x="695" y="371" text-anchor="middle" font-size="9" fill="#64748b">Chat Completions</text>
+  <text x="695" y="388" text-anchor="middle" font-size="9" fill="#64748b">SSE type 注入</text>
+
+  <!-- Handoff Store -->
+  <rect x="800" y="300" width="130" height="50" rx="8" fill="#fff" stroke="#f59e0b" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="865" y="322" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">Handoff Store</text>
+  <text x="865" y="338" text-anchor="middle" font-size="9" fill="#64748b">切换时上下文传递</text>
+
+  <!-- Blackboard -->
+  <rect x="800" y="360" width="130" height="45" rx="8" fill="#fff" stroke="#64748b" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="865" y="380" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Blackboard</text>
+  <text x="865" y="394" text-anchor="middle" font-size="9" fill="#64748b">切换历史记录</text>
+
+  <!-- 箭头: 后端内部 -->
+  <line x1="210" y1="255" x2="240" y2="255" stroke="#64748b" stroke-width="1.5" class="flow" marker-end="url(#arr)"/>
+  <line x1="320" y1="280" x2="320" y2="300" stroke="#6366f1" stroke-width="2" class="flow" marker-end="url(#arrI)"/>
+  <line x1="400" y1="352" x2="430" y2="352" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="415" y="345" text-anchor="middle" font-size="8" fill="#64748b">切换</text>
+  <line x1="590" y1="352" x2="620" y2="352" stroke="#10b981" stroke-width="2" class="flow" marker-end="url(#arrE)"/>
+  <line x1="130" y1="355" x2="130" y2="345" stroke="#3b82f6" stroke-width="1.5" class="flow" marker-end="url(#arr)"/>
+  <line x1="210" y1="380" x2="430" y2="380" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3,3" opacity="0.4"/>
+  <line x1="210" y1="370" x2="240" y2="370" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3,3" opacity="0.4"/>
+
+  <!-- ===== 外部服务层 ===== -->
+  <rect x="20" y="455" width="920" height="195" rx="10" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+  <text x="40" y="475" font-size="11" font-weight="700" fill="#92400e">外部服务</text>
+
+  <!-- LLM Providers -->
+  <rect x="50" y="490" width="500" height="70" rx="8" fill="#fff" stroke="#cbd5e1" stroke-width="1.4" filter="url(#sh)"/>
+  <text x="300" y="512" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">LLM 提供商 (OpenAI 兼容)</text>
+  <rect x="70" y="522" width="100" height="28" rx="6" fill="url(#gBlue)"/>
+  <text x="120" y="541" text-anchor="middle" font-size="11" font-weight="600" fill="#fff">OpenAI</text>
+  <rect x="180" y="522" width="100" height="28" rx="6" fill="url(#gBlue)"/>
+  <text x="230" y="541" text-anchor="middle" font-size="11" font-weight="600" fill="#fff">DeepSeek</text>
+  <rect x="290" y="522" width="100" height="28" rx="6" fill="url(#gBlue)"/>
+  <text x="340" y="541" text-anchor="middle" font-size="11" font-weight="600" fill="#fff">GLM</text>
+  <rect x="400" y="522" width="130" height="28" rx="6" fill="url(#gEmerald)"/>
+  <text x="465" y="541" text-anchor="middle" font-size="11" font-weight="600" fill="#fff">Custom 兼容</text>
+
+  <!-- GitHub -->
+  <rect x="580" y="490" width="150" height="70" rx="8" fill="#1f2937" filter="url(#sh)"/>
+  <text x="655" y="515" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">GitHub API</text>
+  <text x="655" y="535" text-anchor="middle" font-size="10" fill="#9ca3af">Issue 搜索</text>
+  <text x="655" y="550" text-anchor="middle" font-size="9" fill="#9ca3af">需 Token 提高限额</text>
+
+  <!-- Codex Binary Source -->
+  <rect x="760" y="490" width="170" height="70" rx="8" fill="#fff" stroke="#10b981" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="845" y="512" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">Codex Binary</text>
+  <text x="845" y="530" text-anchor="middle" font-size="9" fill="#64748b">1. 探测 (env/release/debug)</text>
+  <text x="845" y="544" text-anchor="middle" font-size="9" fill="#64748b">2. 下载预编译 (GitHub Releases)</text>
+  <text x="845" y="558" text-anchor="middle" font-size="9" fill="#64748b">3. cargo build (本地编译)</text>
+
+  <!-- ComfyUI MCP -->
+  <rect x="50" y="580" width="880" height="50" rx="8" fill="#f0fdfa" stroke="#5eead4" stroke-width="1.2"/>
+  <text x="490" y="602" text-anchor="middle" font-size="12" font-weight="700" fill="#0f766e">ComfyUI MCP Server (127.0.0.1:8188/mcp)</text>
+  <text x="490" y="618" text-anchor="middle" font-size="10" fill="#0f766e">workflow_analyzer · workflow_action · node_search — SGA + Codex 均可调用</text>
+
+  <!-- 箭头: 后端 → 外部 -->
+  <line x1="320" y1="405" x2="300" y2="490" stroke="#6366f1" stroke-width="1.5" class="flow" marker-end="url(#arrI)"/>
+  <text x="285" y="450" font-size="9" fill="#6366f1" font-weight="600">SGA 调用</text>
+
+  <line x1="695" y1="405" x2="350" y2="490" stroke="#10b981" stroke-width="1.5" class="flow" marker-end="url(#arrE)"/>
+  <text x="560" y="450" font-size="9" fill="#10b981" font-weight="600">Proxy → 供应商</text>
+
+  <line x1="320" y1="405" x2="655" y2="490" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <line x1="510" y1="405" x2="845" y2="490" stroke="#10b981" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+
+  <!-- 底部说明 -->
+  <text x="480" y="660" text-anchor="middle" font-size="10" fill="#94a3b8">SGA (indigo) 直接调用 LLM · Codex (emerald) 经 Provider Proxy 翻译 Responses→ChatCompletions · 两者共享 Provider Store 配置</text>
+</svg>

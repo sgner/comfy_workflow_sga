@@ -20,10 +20,10 @@ export class SessionStore {
   private flushIntervalMs: number
   private appendQueues: Map<string, JsonlEntry[]> = new Map()
   private appendTimer: ReturnType<typeof setTimeout> | null = null
-  private appendIntervalMs = 200
+  private appendIntervalMs = parseInt(process.env.SESSION_APPEND_INTERVAL ?? '200', 10)
 
-  constructor(storeDir?: string, flushIntervalMs = 5000) {
-    this.storeDir = storeDir ?? path.resolve(process.cwd(), 'data', 'sessions')
+  constructor(storeDir?: string, flushIntervalMs = parseInt(process.env.SESSION_FLUSH_INTERVAL ?? '5000', 10)) {
+    this.storeDir = storeDir ?? process.env.SESSION_DIR ?? path.resolve(process.cwd(), 'data', 'sessions')
     this.flushIntervalMs = flushIntervalMs
   }
 

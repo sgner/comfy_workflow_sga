@@ -147,7 +147,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
               <div className="mt-3 pt-2 border-t border-slate-700/50">
                 <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-2 font-semibold flex items-center gap-1.5">
                   <HelpCircle className="w-3 h-3" />
-                  Related Questions
+                  {t(language, 'relatedQuestions')}
                 </p>
                 <div className="flex flex-col gap-2">
                   {msg.metadata.relatedQuestions.map((q, i) => (
@@ -199,6 +199,8 @@ interface ChatPanelProps {
   onApprovalResponse: (decision: 'allow' | 'deny') => void
   onHumanInputResponse: (value: string, optionValue?: string) => void
   tokenUsage: TokenUsage | null
+  activeAgent?: 'sga' | 'codex'
+  onAgentSwitch?: (target: 'sga' | 'codex') => void
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
@@ -214,7 +216,9 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
   pendingHumanInput,
   onApprovalResponse,
   onHumanInputResponse,
-  tokenUsage
+  tokenUsage,
+  activeAgent = 'sga',
+  onAgentSwitch
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
   const approvalRef = useRef<HTMLDivElement>(null)
@@ -294,14 +298,44 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
   return (
     <div className="flex flex-col h-full bg-slate-900 border-r border-slate-700/50 relative min-w-0">
       <div className="p-4 border-b border-slate-700/50 bg-slate-900/50 backdrop-blur-sm flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="p-2 bg-indigo-600 rounded-lg">
-            <Bot className="w-5 h-5 text-white" />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-indigo-600 rounded-lg">
+              <Bot className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-slate-100">{t(language, 'appName')}</h2>
+              <p className="text-xs text-slate-400">{t(language, 'appSubtitle')}</p>
+            </div>
           </div>
-          <div>
-            <h2 className="font-semibold text-slate-100">{t(language, 'appName')}</h2>
-            <p className="text-xs text-slate-400">{t(language, 'appSubtitle')}</p>
-          </div>
+          {onAgentSwitch && (
+            <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-0.5 border border-slate-700/50">
+              <button
+                onClick={() => onAgentSwitch('sga')}
+                disabled={isProcessing}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  activeAgent === 'sga'
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title={t(language, 'useSgaBackend')}
+              >
+                SGA
+              </button>
+              <button
+                onClick={() => onAgentSwitch('codex')}
+                disabled={isProcessing}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  activeAgent === 'codex'
+                    ? 'bg-emerald-600 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title={t(language, 'useCodexBackend')}
+              >
+                Codex
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -328,7 +362,7 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
           <div className="mx-3 my-3 rounded-lg bg-slate-800/60 border border-slate-700/40 overflow-hidden">
             <div className="px-3 py-1.5 border-b border-slate-700/30 flex items-center gap-2">
               <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
-              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Agent 活动</span>
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{t(language, 'agentActivity')}</span>
             </div>
             <div className="px-3 py-2 space-y-0 max-h-48 overflow-y-auto">
               {memoizedActivityTimeline.map((activity, idx) => {
@@ -349,7 +383,7 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
                         )}
                       </div>
                       {activity.toolInput && Object.keys(activity.toolInput).length > 0 && (
-                        <ToolInputPreview input={activity.toolInput} />
+                        <ToolInputPreview input={activity.toolInput} language={language} />
                       )}
                     </div>
                   </div>
@@ -394,7 +428,7 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
                   ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
                   : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
               }`}>
-                {pendingApproval.isDestructive ? 'DESTRUCTIVE' : pendingApproval.isReadOnly ? 'READ-ONLY' : 'REVIEW'}
+                {pendingApproval.isDestructive ? t(language, 'destructiveBadge') : pendingApproval.isReadOnly ? t(language, 'readOnly') : t(language, 'reviewBadge')}
               </span>
             </div>
             <div className="px-3 py-2 space-y-2.5">
@@ -405,7 +439,7 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
                 <span className="text-[10px] font-mono font-semibold text-slate-300">{pendingApproval.toolName}</span>
               </div>
               {pendingApproval.toolInput && Object.keys(pendingApproval.toolInput).length > 0 && (
-                <ApprovalToolInput toolName={pendingApproval.toolName} toolInput={pendingApproval.toolInput} />
+                <ApprovalToolInput toolName={pendingApproval.toolName} toolInput={pendingApproval.toolInput} language={language} />
               )}
               {pendingApproval.suggestions && pendingApproval.suggestions.length > 0 && (
                 <div className="text-[10px] text-slate-400">
@@ -540,7 +574,7 @@ function ActivityIcon({ type, status }: { type: AgentActivity['type']; status?: 
   }
 }
 
-function ApprovalToolInput({ toolName, toolInput }: { toolName: string; toolInput: Record<string, unknown> }) {
+function ApprovalToolInput({ toolName, toolInput, language }: { toolName: string; toolInput: Record<string, unknown>; language: Language }) {
   const [expanded, setExpanded] = useState(true)
   const entries = Object.entries(toolInput)
   if (entries.length === 0) return null
@@ -554,7 +588,7 @@ function ApprovalToolInput({ toolName, toolInput }: { toolName: string; toolInpu
         className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-slate-800/50 transition-colors">
         <div className="flex items-center gap-1.5">
           <Terminal className="w-3 h-3 text-slate-500" />
-          <span className="text-[10px] text-slate-400 font-medium">Tool Input</span>
+          <span className="text-[10px] text-slate-400 font-medium">{t(language, 'toolInput')}</span>
           <span className="text-[9px] text-slate-600">({entries.length} {entries.length === 1 ? 'param' : 'params'})</span>
         </div>
         {expanded ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
@@ -563,7 +597,7 @@ function ApprovalToolInput({ toolName, toolInput }: { toolName: string; toolInpu
         <div className="border-t border-slate-700/30">
           {commandValue && (
             <div className="px-2.5 py-1.5 border-b border-slate-700/20">
-              <div className="text-[9px] text-slate-500 mb-1 font-medium">command</div>
+              <div className="text-[9px] text-slate-500 mb-1 font-medium">{t(language, 'commandLabel')}</div>
               <pre className="text-[11px] text-green-300/90 bg-black/30 rounded px-2 py-1.5 font-mono whitespace-pre-wrap break-all leading-relaxed overflow-x-auto max-h-40 overflow-y-auto">
                 {commandValue}
               </pre>
@@ -585,7 +619,7 @@ function ApprovalToolInput({ toolName, toolInput }: { toolName: string; toolInpu
   )
 }
 
-function ToolInputPreview({ input }: { input: Record<string, unknown> }) {
+function ToolInputPreview({ input, language }: { input: Record<string, unknown>; language: Language }) {
   const [expanded, setExpanded] = useState(false)
   const entries = Object.entries(input).slice(0, 5)
   if (entries.length === 0) return null
@@ -594,7 +628,7 @@ function ToolInputPreview({ input }: { input: Record<string, unknown> }) {
       <button onClick={() => setExpanded(!expanded)}
         className="text-[9px] text-slate-500 hover:text-slate-400 transition-colors flex items-center gap-0.5">
         {expanded ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
-        参数
+        {t(language, 'parametersLabel')}
       </button>
       {expanded && (
         <div className="mt-0.5 text-[9px] text-slate-500 bg-slate-900/50 rounded px-1.5 py-0.5 font-mono overflow-x-auto max-w-full">

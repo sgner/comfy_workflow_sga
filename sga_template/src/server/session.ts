@@ -24,6 +24,8 @@ export interface Session {
   error?: string
   pendingAction?: PendingAction
   suspendedContext?: SuspendedContext
+  /** 当前使用的 agent backend. 默认 'sga'. Sprint 1+2 新增. */
+  activeAgent?: 'sga' | 'codex'
 }
 
 export interface CreateSessionRequest {

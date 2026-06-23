@@ -67,7 +67,8 @@ export class GitHubSearchTool extends BaseTool {
       }
 
       const searchQuery = `${query} comfyui error issue`
-      const url = `https://api.github.com/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=${limit}&sort=updated&order=desc`
+      const apiBase = process.env.GITHUB_SEARCH_API ?? 'https://api.github.com/search/issues'
+      const url = `${apiBase}?q=${encodeURIComponent(searchQuery)}&per_page=${limit}&sort=updated&order=desc`
 
       const response = await fetch(url, { headers })
 
