@@ -28,6 +28,7 @@ import { computeBudgetAllocation, buildContextFromSlots, type ContextSlot, type 
 import { generateToolUseSummary, type ToolUseInfo } from '../tools/built-in/tool-use-summary.js'
 import { drainPendingNotifications, formatTaskNotificationXml } from '../tools/built-in/agent.js'
 import { isCoordinatorMode } from './coordinator-mode.js'
+import { preserveWorkflowSessionId, type WorkflowJSON } from '../comfyui/verification-strategies.js'
 
 const logger = createLogger('agent-runner')
 
@@ -965,8 +966,20 @@ async function executeAgentLoop(
           try {
             const toolInput = execResult.input as Record<string, unknown>
             const actionType = (toolInput.action_type as string) ?? 'unknown'
-            const workflowJson = (toolInput.workflow_json as string) ?? ''
-            if (workflowJson) {
+            const rawWorkflowJson = (toolInput.workflow_json as string) ?? ''
+            if (rawWorkflowJson) {
+              // 强制复用当前 sessionId 作为工作流 id,避免 session 切换导致历史丢失
+              const sessionId = options.parentContext?.agentId
+              let workflowJson = rawWorkflowJson
+              if (sessionId) {
+                try {
+                  const parsed = JSON.parse(rawWorkflowJson) as WorkflowJSON
+                  const preserved = preserveWorkflowSessionId(parsed, sessionId)
+                  workflowJson = JSON.stringify(preserved)
+                } catch (preserveErr) {
+                  logger.debug(`Failed to preserve workflow sessionId in runner (workflow_action): ${preserveErr instanceof Error ? preserveErr.message : String(preserveErr)}`)
+                }
+              }
               options.onProgress({ type: 'workflow_updated', workflowJson, actionType })
             }
           } catch {

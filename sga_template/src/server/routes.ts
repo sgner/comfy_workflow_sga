@@ -1075,9 +1075,11 @@ async function handleStreamResponse(
     triggerMemoryExtraction(session.messages, provider, model, session.id, session.config.agentType)
 
     try {
-      const { extractWorkflowJSON, validateWorkflowJSON } = await import('../comfyui/verification-strategies.js')
-      const workflowJson = extractWorkflowJSON(result.content)
-      if (workflowJson) {
+      const { extractWorkflowJSON, validateWorkflowJSON, preserveWorkflowSessionId } = await import('../comfyui/verification-strategies.js')
+      const rawWorkflowJson = extractWorkflowJSON(result.content)
+      if (rawWorkflowJson) {
+        // 强制复用当前 sessionId 作为工作流 id,避免 session 切换导致历史丢失
+        const workflowJson = preserveWorkflowSessionId(rawWorkflowJson, session.id)
         // 发送 workflow_updated 事件让前端立刻应用工作流
         sendEvent({ type: 'workflow_updated', workflowJson: JSON.stringify(workflowJson), actionType: 'agent_response' })
         const validationResult = validateWorkflowJSON(workflowJson)
@@ -3063,9 +3065,11 @@ async function handleComfyUIChatStreamWithCoordinator(
 
     // 从最终回复中提取工作流 JSON 并发送 workflow_updated 事件
     try {
-      const { extractWorkflowJSON } = await import('../comfyui/verification-strategies.js')
-      const workflowJson = extractWorkflowJSON(synthesis)
-      if (workflowJson) {
+      const { extractWorkflowJSON, preserveWorkflowSessionId } = await import('../comfyui/verification-strategies.js')
+      const rawWorkflowJson = extractWorkflowJSON(synthesis)
+      if (rawWorkflowJson) {
+        // 强制复用当前 sessionId 作为工作流 id,避免 session 切换导致历史丢失
+        const workflowJson = preserveWorkflowSessionId(rawWorkflowJson, session.id)
         sendEvent({ type: 'workflow_updated', workflowJson: JSON.stringify(workflowJson), actionType: 'coordinator_synthesis' })
       }
     } catch (e) {

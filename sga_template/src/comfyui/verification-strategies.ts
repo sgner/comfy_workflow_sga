@@ -19,6 +19,7 @@ export interface VerificationCheck {
 }
 
 export interface WorkflowJSON {
+  id?: string
   last_node_id?: number | string
   last_link_id?: number | string
   nodes?: WorkflowNode[]
@@ -278,4 +279,72 @@ export function extractWorkflowJSON(text: string): WorkflowJSON | null {
   }
 
   return null
+}
+
+/**
+ * Force-preserve a session-bound id on a workflow JSON.
+ *
+ * Why: agent-generated workflow JSONs come with a fresh `id` / `extra.workspace_info.id`
+ * (or `extra.id`). The ComfyUI frontend treats that id as the canonical "which workflow
+ * am I on" key, and we tie our chat session to that same id (sessionId === workflowId).
+ * If the id changes after the agent response, the frontend will treat it as a brand-new
+ * workflow, switch session, and the previous chat history is lost.
+ *
+ * Strategy:
+ *   1. If `currentWorkflowId` is missing/empty → no-op (caller has nothing to bind to).
+ *   2. If the generated JSON already has a matching id at the canonical location → no-op.
+ *   3. Otherwise, copy the current id into:
+ *        - `extra.workspace_info.id` (ComfyUI's modern location, takes priority)
+ *        - `extra.id` (legacy fallback)
+ *        - top-level `id` (some tools/serializers still read it)
+ *      The original generated ids are moved to `extra.workflow_agent_original_id*`
+ *      so we don't lose the data and we can debug if needed.
+ */
+export function preserveWorkflowSessionId(
+  workflowJson: WorkflowJSON,
+  currentWorkflowId: string | null | undefined,
+): WorkflowJSON {
+  if (!currentWorkflowId) return workflowJson
+
+  const result: WorkflowJSON = { ...workflowJson }
+  const extra = (result.extra && typeof result.extra === 'object'
+    ? { ...(result.extra as Record<string, unknown>) }
+    : {}) as Record<string, unknown>
+
+  // 1) Capture what the agent originally wrote, for forensics
+  const originalTopId = typeof result.id === 'string' ? result.id : undefined
+  const originalExtraId = typeof extra.id === 'string' ? (extra.id as string) : undefined
+  const originalWorkspaceInfo = (extra.workspace_info && typeof extra.workspace_info === 'object'
+    ? { ...(extra.workspace_info as Record<string, unknown>) }
+    : null)
+  const originalWorkspaceId = originalWorkspaceInfo && typeof originalWorkspaceInfo.id === 'string'
+    ? (originalWorkspaceInfo.id as string)
+    : undefined
+
+  if (originalTopId && originalTopId !== currentWorkflowId) {
+    extra.workflow_agent_original_id_top = originalTopId
+  }
+  if (originalExtraId && originalExtraId !== currentWorkflowId) {
+    extra.workflow_agent_original_id_extra = originalExtraId
+  }
+  if (originalWorkspaceId && originalWorkspaceId !== currentWorkflowId) {
+    extra.workflow_agent_original_id_workspace = originalWorkspaceId
+  }
+
+  // 2) Overwrite every location with the session-bound id
+  extra.workspace_info = {
+    ...(originalWorkspaceInfo ?? {}),
+    id: currentWorkflowId,
+  }
+  extra.id = currentWorkflowId
+  result.id = currentWorkflowId
+  result.extra = extra
+
+  logger.debug(
+    `preserveWorkflowSessionId: forced workflow id to '${currentWorkflowId}' ` +
+    `(original top=${originalTopId ?? '∅'}, extra.id=${originalExtraId ?? '∅'}, ` +
+    `workspace_info.id=${originalWorkspaceId ?? '∅'})`,
+  )
+
+  return result
 }

@@ -12,6 +12,7 @@ import { sendMessageToComfyAgent, fetchChatHistory, abortBackendAgent } from './
 import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs, switchAgent, getActiveAgent } from './services/configService'
 import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, AgentActivity, ApprovalRequest, HumanInputRequest, ToolCallInfo, TokenUsage } from './types'
 import { t } from './utils/i18n'
+import { preserveWorkflowSessionId } from './utils/workflowId'
 import { collectWorkflowContext, collectWorkflowContextAsync, contextErrorsToIssues, formatWorkflowContextForPrompt } from './services/workflowContextCollector'
 
 interface AppProps {
@@ -1031,8 +1032,11 @@ const App: React.FC<AppProps> = () => {
           (workflowJson: string, _actionType: string) => {
              try {
                  const parsed = JSON.parse(workflowJson)
-                 setWorkflow(parsed)
-                 applyToCanvas(parsed)
+                 // 强制复用当前 sessionId 作为工作流 id,避免 session 切换导致历史丢失
+                 // (后端已做了一次保留,这里是防御性兜底,防止第三方 SSE/直连模式漏过)
+                 const bound = preserveWorkflowSessionId(parsed, activeSessionId)
+                 setWorkflow(bound)
+                 applyToCanvas(bound)
              } catch {
                  // skip invalid JSON
              }
@@ -1041,8 +1045,9 @@ const App: React.FC<AppProps> = () => {
 
         // Final Update after processing
         if (response.updatedWorkflow) {
-          setWorkflow(response.updatedWorkflow)
-          applyToCanvas(response.updatedWorkflow)
+          const bound = preserveWorkflowSessionId(response.updatedWorkflow, activeSessionId)
+          setWorkflow(bound)
+          applyToCanvas(bound)
         }
 
         const currentAgentIssues = (response.issues && response.issues.length > 0)

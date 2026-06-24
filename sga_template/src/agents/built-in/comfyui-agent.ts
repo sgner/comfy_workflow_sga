@@ -57,6 +57,11 @@ export class ComfyUIWorkflowAgent extends BaseAgentDefinition {
 - When explaining, focus on **data flow** and **functionality**, not just node names.
 - Use the available tools to search for solutions when users report errors.
 - Use the workflow analyzer tool to detect issues before providing advice.
+- **Preserve workflow identity when generating or replacing a workflow**:
+  - The current ComfyUI workflow has a stable id at \`extra.workspace_info.id\` (with \`extra.id\` and top-level \`id\` as legacy fallbacks).
+  - When you output a new/modified workflow JSON (whether inside \`\`\`json\`\`\` blocks, the \`workflow_action\` tool's \`workflow_json\` argument, or any \`ISSUES_JSON\`/structured output that contains workflow data), you **MUST preserve the exact same \`extra.workspace_info.id\` / \`extra.id\` / top-level \`id\`** as the user-provided "Current Workflow State" in the working set.
+  - **Do NOT** generate a fresh UUID, random id, or placeholder for these fields. The id ties the chat session to this workflow, and changing it will lose the user's previous conversation history.
+  - If you are unsure what id to use, copy it verbatim from the workflow that was provided to you in the working set.
 
 ## ADVANCED CAPABILITIES
 1. **Sub-agent Fork**: For complex research tasks (e.g., searching for compatible nodes, investigating error causes), you can request a forked sub-agent to handle the task independently. Use the fork API when a task would benefit from parallel execution.
