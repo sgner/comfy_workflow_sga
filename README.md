@@ -23,6 +23,18 @@
 
 ![系统架构](docs/diagrams/system-architecture.svg)
 
+### 界面预览
+
+聊天面板右侧的 **工作流管理器** 提供了 5 个常用功能 Tab，以下逐一展示：
+
+| Tab | 截图 | 说明 |
+|---|---|---|
+| **概览 (Overview)** | ![Overview](docs/diagrams/screenshot-overview.png) | 节点 / 链接 / 问题的统计图谱，可视化工作流拓扑 |
+| **诊断 (Diagnostics)** | ![Diagnostics](docs/diagrams/screenshot-diagnostics.png) | 实时节点/连接/问题计数，缺失模型一键下载 |
+| **上下文 (Context)** | ![Context](docs/diagrams/screenshot-context.png) | 工作流上下文内容 —— 错误、参数、节点详情 |
+| **技能 (Skills)** | ![Skills](docs/diagrams/screenshot-skills.png) | 内置技能（skillify / remember / simplify / debug 等） |
+| **MCP** | ![MCP](docs/diagrams/screenshot-mcp.png) | MCP 服务器管理（comfyui-api / comfyui stdio） |
+
 ### 项目简介
 
 **ComfyUI Workflow Agent** 是一款 AI 驱动的 ComfyUI 工作流助手插件。它基于 [SGA (Simple General Agent)](./sga_template) 框架构建，能够智能分析工作流结构、诊断错误、搜索 GitHub 解决方案、执行修复操作，并通过流式对话与用户交互。
@@ -302,6 +314,18 @@ A: 不是。SGA 是默认 Agent，完全不依赖 codex。仅当你想切换到 
 ### Visual Overview
 
 ![System Architecture](docs/diagrams/system-architecture.svg)
+
+### UI Preview
+
+The **Workflow Manager** on the right side of the chat panel exposes 5 functional tabs, all shown below:
+
+| Tab | Screenshot | Description |
+|---|---|---|
+| **Overview** | ![Overview](docs/diagrams/screenshot-overview.png) | Node / link / issue statistics with a visual graph of the workflow |
+| **Diagnostics** | ![Diagnostics](docs/diagrams/screenshot-diagnostics.png) | Live node/link/problem counts with one-click model download |
+| **Context** | ![Context](docs/diagrams/screenshot-context.png) | Workflow context content — errors, parameters, node details |
+| **Skills** | ![Skills](docs/diagrams/screenshot-skills.png) | Built-in skills (skillify / remember / simplify / debug, etc.) |
+| **MCP** | ![MCP](docs/diagrams/screenshot-mcp.png) | MCP server management (comfyui-api / comfyui stdio) |
 
 ### Project Overview
 
