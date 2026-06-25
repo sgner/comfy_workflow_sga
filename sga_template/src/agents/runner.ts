@@ -620,6 +620,41 @@ async function executeAgentLoop(
 
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use')
     if (toolUseBlocks.length === 0) {
+      // 区分两种"无工具调用":
+      // 1) LLM 真没说话 (response.content 长度 0) — 通常是上游 stream 解析 bug
+      //    (如 out:0 + end_turn). 这种情况下用户其实没拿到任何东西, 必须
+      //    注入反思 prompt 让 LLM 再试, 而不是 break 把 task 收掉.
+      // 2) LLM 给了完整文本但没调工具 (response.content.length > 0) — 这是
+      //    正常的"任务完成"语义, 直接结束 loop.
+      if (response.content.length === 0) {
+        logger.warn(
+          `Provider returned empty content with stopReason=${response.stopReason}, ` +
+          `usage={in:${response.usage.inputTokens}, out:${response.usage.outputTokens}}. ` +
+          `Injecting reflection prompt and continuing loop.`
+        )
+        if (options.onProgress) {
+          options.onProgress({
+            type: 'stream_delta',
+            text: '\n[orchestrator] 上一次响应为空, 自动请求 LLM 继续思考…\n',
+          })
+        }
+        allMessages.push({
+          id: `reflect-${Date.now()}-${turnCount}`,
+          role: 'user',
+          content: [{
+            type: 'text',
+            text:
+              '你的上一次响应是空的 (没有输出任何文本也没有调用工具). ' +
+              '用户希望任务继续推进. 请立刻:\n' +
+              '1) 调用一个最相关的工具 (例如 Read / Bash / Grep) 来推进任务, 或\n' +
+              '2) 用一段完整文本说明当前已了解的情况以及下一步计划.\n' +
+              '注意: 不要重复上一次的空响应.',
+          }],
+          timestamp: Date.now(),
+        })
+        // 累加一次反思 turn, 防无限循环 (用 maxTurns 上限兜底)
+        continue
+      }
       logger.info(`No tool calls, ending loop at turn ${turnCount}`)
       if (options.onProgress) {
         options.onProgress({ type: 'turn_end', turnCount, usage })

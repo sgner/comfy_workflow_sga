@@ -604,7 +604,20 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     if (content.length === 0) {
-      logger.warn(`Empty response content from provider. Raw data keys: ${Object.keys(data).join(',')}, choice keys: ${choice ? Object.keys(choice).join(',') : 'none'}`)
+      // finish_reason=stop + 空 content + 无 tool_calls 是上游 stream 解析 bug
+      // 的典型签名 (gpt-5.4 在 ai.t8star.org 上出现过 out:0 + end_turn). 单独
+      // warn 出来方便在日志里 grep, 也方便 orchestrator (runner.ts) 决定是否
+      // 注入反思 prompt.
+      const finishReason = choice?.finish_reason
+      if (finishReason === 'stop' || finishReason == null) {
+        logger.warn(
+          `[empty-content] finish_reason=${String(finishReason)} with no text and no tool_calls. ` +
+          `usage=${JSON.stringify(data.usage ?? {})}. ` +
+          `This is a known upstream issue; orchestrator will inject a reflection prompt.`
+        )
+      } else {
+        logger.warn(`Empty response content from provider. Raw data keys: ${Object.keys(data).join(',')}, choice keys: ${choice ? Object.keys(choice).join(',') : 'none'}`)
+      }
     }
 
     const stopReason = choice?.finish_reason ?? 'stop'
