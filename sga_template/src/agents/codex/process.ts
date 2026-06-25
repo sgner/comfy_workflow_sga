@@ -66,8 +66,12 @@ export function spawnCodexAppServer(
   const args: string[] = []
 
   if (opts.sandbox) {
-    // -c 走 config 覆盖, app-server 支持 TOML 字面量
-    args.push('-c', `sandbox=${opts.sandbox}`)
+    // -c 走 config 覆盖, TOML path 是 sandbox_mode (不是 sandbox). 旧代码写成
+    // sandbox=... 是错的, codex 默默忽略, 导致所有 tool 调用以默认 sandbox
+    // 模式 (workspace-write) 跑, 部分命令如 powershell.exe 会被 policy 拒绝.
+    // 改用 sandbox_mode=... 后, workspace-write 仍然安全; 想完全无沙箱可以把
+    // 环境变量 CODEX_SANDBOX_MODE=danger-full-access 兜底.
+    args.push('-c', `sandbox_mode="${opts.sandbox}"`)
   }
   // 注: --session-source 在旧版 codex (0.138 之前) 不存在, 这里不传.
   //     SGA 标识直接由 thread/start 的 metadata 携带.

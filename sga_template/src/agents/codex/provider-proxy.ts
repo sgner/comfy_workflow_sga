@@ -62,6 +62,10 @@ interface ResponsesInputItem {
   // tool call result (codex -> us): 用 function_call_output 类型
   call_id?: string
   output?: string | unknown
+  // tool call request (codex -> us): 用 function_call 类型
+  // 出现于 input[] 中, 反代必须翻译成 assistant message + tool_calls[]
+  name?: string
+  arguments?: string | Record<string, unknown>
 }
 
 interface ResponsesRequest {
@@ -212,6 +216,20 @@ async function handle(
   // 1. Responses -> Chat Completions
   const chatReq = translateRequest(parsed, cfg)
 
+  // 诊断: 统计 input 中 tool call / tool output 的数量, 方便排查
+  // "No tool call found for function call output with call_id ..." 这类错误.
+  let inputToolCalls = 0
+  let inputToolOutputs = 0
+  for (const item of parsed.input ?? []) {
+    if (item.type === 'function_call') inputToolCalls += 1
+    else if (item.type === 'function_call_output') inputToolOutputs += 1
+  }
+  if (inputToolCalls > 0 || inputToolOutputs > 0) {
+    logger.info(
+      `proxy: input has ${inputToolCalls} function_call, ${inputToolOutputs} function_call_output`,
+    )
+  }
+
   // 2. 调供应商
   const upstreamUrl = `${providerBaseUrl}/chat/completions`
   const headers: Record<string, string> = {
@@ -242,7 +260,16 @@ async function handle(
   if (!upstream.ok) {
     stats.errors += 1
     const errBody = await upstream.text()
-    logger.warn(`upstream ${upstream.status} from ${providerBaseUrl}: ${errBody.slice(0, 500)}`)
+    // 诊断: 提取上游报错中的 call_id, 方便定位是哪个 tool result 失败
+    const callIdMatch = errBody.match(/call_id\s+(call_[A-Za-z0-9_-]+)/)
+    const toolCallIdMatch = errBody.match(/tool_call_id\s+(call_[A-Za-z0-9_-]+)/)
+    const callHint = callIdMatch?.[1] ?? toolCallIdMatch?.[1] ?? null
+    const hint = callHint
+      ? ` (matched call_id=${callHint}; check whether function_call was forwarded as assistant tool_calls[])`
+      : ''
+    logger.warn(
+      `upstream ${upstream.status} from ${providerBaseUrl}${hint}: ${errBody.slice(0, 500)}`,
+    )
     // 非 2xx 但供应商给的是 JSON, 透传; 如果是 SSE 也透传
     res.statusCode = upstream.status
     res.setHeader('content-type', upstream.headers.get('content-type') ?? 'application/json')
@@ -319,18 +346,34 @@ function translateRequest(req: ResponsesRequest, cfg: CodexProxyConfig): ChatCom
 
 function inputItemToChatMessages(item: ResponsesInputItem): ChatMessage[] {
   // codex 在 tool_call_output 里同时用 type:"function_call_output" + call_id + output
-  if (item.type === 'function_call_output' || (item.call_id && item.output !== undefined)) {
+  if (item.type === 'function_call_output' || (item.call_id && item.output !== undefined && item.type !== 'function_call')) {
     const out = item.output
+    // 重要: 这里的 call_id 必须是上游 Chat Completions 历史中 assistant message 的
+    // tool_calls[].id. 反代必须保证这两者一致. 见下方 function_call 分支.
     return [{
       role: 'tool',
       tool_call_id: item.call_id ?? '',
       content: typeof out === 'string' ? out : JSON.stringify(out),
     }]
   }
-  // function_call 出现在 assistant message 里, 但 input[] 也可能直接列
+  // function_call: 反代必须把它翻译成 assistant message + tool_calls[], 这样上游
+  // Chat Completions 历史里就有对应的 tool call 记录, 后续 tool 角色的
+  // tool_call_id 才能匹配上. 否则上游会报 "No tool call found for function call
+  // output with call_id ...". 关键: tool_calls[].id 必须使用 codex 的 call_id
+  // (与 function_call_output 保持一致).
   if (item.type === 'function_call') {
-    // 反代不需要自己合成, 由 codex 端保证 assistant message 顺序
-    return []
+    const args = typeof item.arguments === 'string'
+      ? item.arguments
+      : (item.arguments ? JSON.stringify(item.arguments) : '')
+    return [{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: item.call_id ?? '',
+        type: 'function',
+        function: { name: item.name ?? '', arguments: args },
+      }],
+    }]
   }
 
   const role = item.role ?? 'user'
