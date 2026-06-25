@@ -937,6 +937,33 @@ async function executeAgentLoop(
             timestamp: Date.now(),
           })
 
+          // 注入 tool-failure recovery 反思 prompt (无 LLM 开销, 只是文本).
+          // 配合 system-prompt.ts 第 15 条规则一起工作: 让模型在拿到 is_error
+          // 之后, 不用主动去读自己的 system prompt, 就能拿到具体的"换工具/
+          // 换参数/问用户"三步建议. 同时也通过 stream_delta 通知前端, 用户
+          // 看到 "[orchestrator] tool X failed: ..." 时能知道 agent 在自救.
+          consecutiveFailures.push({ turn: turnCount, toolName: name, error: finalErrorMsg ?? formattedError })
+          const recentForThisTool = consecutiveFailures.filter(
+            f => f.toolName === name && f.turn >= turnCount - 1,
+          ).length
+          const recoveryHint =
+            `[orchestrator] tool ${name} failed (${didRetry ? `after ${retryCount} retries, ` : ''}` +
+            `${recentForThisTool}x in last 2 turns). ` +
+            `Per the Tool-failure Recovery rule: ` +
+            `(a) try a different tool (Bash -> Read/Glob/Grep, or vice versa), ` +
+            `(b) try a different parameter set (more specific path, fewer flags, narrower glob), ` +
+            `(c) only after 2+ distinct attempts ask the user with the exact paths/commands/errors. ` +
+            `Last error: ${(finalErrorMsg ?? formattedError).slice(0, 300)}`
+          if (options.onProgress) {
+            options.onProgress({ type: 'stream_delta', text: `\n${recoveryHint}\n` })
+          }
+          allMessages.push({
+            id: `recover-${Date.now()}-${turnCount}`,
+            role: 'user',
+            content: [{ type: 'text', text: recoveryHint }],
+            timestamp: Date.now(),
+          })
+
           if (hookExecutor) {
             try {
               const failureResults = await hookExecutor.executeFailureHooks(

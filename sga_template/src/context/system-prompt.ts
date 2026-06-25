@@ -129,7 +129,13 @@ These are hard rules, not suggestions. Violating them means the output is wrong.
 
 13. **Diagnose before pivoting**: If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Do not retry the identical action blindly, but do not abandon a viable approach after a single failure either.
 
-14. **Faithful reporting**: Report outcomes faithfully. If tests fail, say so with the relevant output. If you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures. Never suppress or simplify failing checks to manufacture a green result. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results.`
+14. **Faithful reporting**: Report outcomes faithfully. If tests fail, say so with the relevant output. If you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures. Never suppress or simplify failing checks to manufacture a green result. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results.
+
+15. **Tool-failure recovery**: When a tool returns is_error=true or its result is empty when it shouldn't be, you MUST attempt an alternative before reporting failure to the user. Concretely:
+    - (a) Try a different tool: if Bash fails, try Read / Glob / Grep; if Read fails on a path, try Glob with a pattern; if a directory listing is blocked, try a more targeted path.
+    - (b) Try a different parameter set: a more specific path, fewer flags, a narrower glob, a different file extension, an absolute vs relative path.
+    - (c) Only after at least 2 distinct attempts, ask the user a precise question (with the exact paths / commands you tried and the exact error text). Never reply "I cannot read the file" without showing what you tried.
+    - Apply this rule for any tool that returns an error, an empty list when files were expected, a "blocked by policy" / "permission denied" / "not found" / "command rejected" message, or a stream that ended with zero output. Do not silently swallow these results.`
 
 export function getBehaviorRulesSection(): SystemPromptSection {
   return systemPromptSection('behavior-rules', BEHAVIOR_RULES_SECTION, 'global')

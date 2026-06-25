@@ -80,7 +80,27 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
 
   isReadOnly(input: { command: string }): boolean {
     const trimmed = input.command.trim()
-    return READ_COMMAND_PREFIXES.some(prefix => trimmed.startsWith(prefix))
+    if (READ_COMMAND_PREFIXES.some(prefix => trimmed.startsWith(prefix))) {
+      // 默认走 prefix 判定. 但有一些情况 prefix 不直接命中, 这里再
+      // 兜底一遍 (例如 `where.exe foo`, `Get-ChildItem -Recurse C:\models`,
+      // `ls -R /data` 等). 全部都是只读递归, 不应触发 'ask' 权限.
+      return true
+    }
+    // 兜底: 这些"明显只读"的关键字 + 常见 flag 组合, 即使不在 prefix 列表里
+    // 也要认为是只读, 否则 sandbox 会拦 ls -R / Get-ChildItem -Recurse 这种
+    // 简单的"列目录"请求, 模型会因为权限弹窗 (ask) 拿不到结果而放弃.
+    const fallbackReadOnlyRegexes = [
+      /^(?:ls|Get-ChildItem|tree|dir)(?:\.exe)?\s+(?:-[a-zA-Z]+\s+)*[^\s|;&]/i,
+      /^(?:cat|Get-Content|type)\s+[^\s|;&]+/i,
+      /^(?:find|Get-ChildItem)\s+/i,        // find /path, Get-ChildItem C:\...
+      /^where(?:\.exe)?\s+/i,
+      /^Test-Path\s+/i,
+      /^(?:echo|printenv|env)\s*/i,
+    ]
+    if (fallbackReadOnlyRegexes.some(r => r.test(trimmed))) {
+      return true
+    }
+    return false
   }
 
   isConcurrencySafe(input: { command: string }): boolean {
