@@ -502,38 +502,85 @@ async function streamChatToResponses(
         text: totalText,
       })
     }
-    emitSseEvent(res, 'response.content_part.done', {
-      item_id: messageId,
-      output_index: 0,
-      content_index: 0,
-      part: { type: 'output_text', text: totalText },
-    })
-    emitSseEvent(res, 'response.output_item.done', {
-      output_index: 0,
-      item: {
-        type: 'message',
-        id: messageId,
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'output_text', text: totalText }],
-      },
-    })
-    flushToolCalls()
-    const u = usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
-    emitSseEvent(res, 'response.completed', {
-      response: {
-        id: responseId,
-        model: incomingModel,
-        status: 'completed',
-        usage: {
-          input_tokens: u.input_tokens,
-          input_tokens_details: null,
-          output_tokens: u.output_tokens,
-          output_tokens_details: null,
-          total_tokens: u.total_tokens,
+    if (totalText.length > 0) {
+      emitSseEvent(res, 'response.content_part.done', {
+        item_id: messageId,
+        output_index: 0,
+        content_index: 0,
+        part: { type: 'output_text', text: totalText },
+      })
+      emitSseEvent(res, 'response.output_item.done', {
+        output_index: 0,
+        item: {
+          type: 'message',
+          id: messageId,
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: totalText }],
         },
-      },
-    })
+      })
+    }
+    flushToolCalls()
+
+    // ===== Critical: 用 finish_reason 决定 response 状态 =====
+    // OpenAI Chat Completions 协议下, finish_reason 有 4 个值:
+    //   - 'stop'             : LLM 正常完成本轮生成
+    //   - 'length'           : 达到 token 上限
+    //   - 'content_filter'   : 内容被过滤
+    //   - 'tool_calls'       : LLM 决定调用工具 (此时不应发 response.completed,
+    //                          否则 codex 会立即认为 turn 结束, 工具还没执行)
+    //
+    // 之前 proxy 永远发 response.completed (status=completed), 导致
+    // finish_reason=tool_calls 时 codex 收到 completed -> 立即发 turn/completed
+    // -> SGA 看到 turn 结束 -> 但工具其实没执行.
+    // 修复: 在 tool_calls 时, 发 response.incomplete + status=requires_action
+    //      并把已收集到的 tool_call_ids 列在 required_action.submit_tool_outputs
+    //      里, 让 codex 知道"还没完成, 需要执行工具并提交 tool_outputs".
+    const u = usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+    const usagePayload = {
+      input_tokens: u.input_tokens,
+      input_tokens_details: null,
+      output_tokens: u.output_tokens,
+      output_tokens_details: null,
+      total_tokens: u.total_tokens,
+    }
+    if (reason === 'tool_calls' && toolCalls.size > 0) {
+      const submitToolOutputs = Array.from(toolCalls.values())
+        .filter(e => e.id)
+        .map(e => ({
+          type: 'function' as const,
+          id: e.id,
+          call_id: e.id,
+          name: e.name,
+          arguments: e.arguments,
+        }))
+      emitSseEvent(res, 'response.incomplete', {
+        response: {
+          id: responseId,
+          model: incomingModel,
+          status: 'requires_action',
+          usage: usagePayload,
+          required_action: {
+            type: 'submit_tool_outputs',
+            submit_tool_outputs: { tool_calls: submitToolOutputs },
+          },
+        },
+      })
+      logger.info(
+        `[codex-proxy] finish_reason=tool_calls with ${submitToolOutputs.length} tool call(s); ` +
+        `emitted response.incomplete + required_action.submit_tool_outputs (NOT response.completed) ` +
+        `so codex will wait for tool execution and submit tool_outputs.`
+      )
+    } else {
+      emitSseEvent(res, 'response.completed', {
+        response: {
+          id: responseId,
+          model: incomingModel,
+          status: 'completed',
+          usage: usagePayload,
+        },
+      })
+    }
     res.end()
     lastFinishReason = reason
   }
