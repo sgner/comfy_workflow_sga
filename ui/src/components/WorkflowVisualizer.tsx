@@ -85,6 +85,10 @@ const WIDGET_HEIGHT = 24
 const NODE_WIDTH_DEFAULT = 210 
 const CANVAS_DOT_COLOR = '#1e293b'
 
+// MCP transport 字段是后端 MCPServerConfig 的 union, 提取到顶层避免在 useState 内部
+// 重复定义 (TS 不允许 type 在使用它的 scope 之外访问).
+type McpTransport = 'stdio' | 'sse' | 'streamable-http'
+
 const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   workflow,
   language,
@@ -112,8 +116,17 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [showAddMcpForm, setShowAddMcpForm] = useState(false)
   const [showAddSkillForm, setShowAddSkillForm] = useState(false)
-  const [mcpForm, setMcpForm] = useState({ name: '', transport: 'stdio', command: '', url: '', args: '' })
+  const [mcpForm, setMcpForm] = useState<{
+    name: string
+    transport: McpTransport
+    command: string
+    url: string
+    args: string
+    env: string // 形如 KEY=val,KEY2=val2
+  }>({ name: '', transport: 'stdio', command: '', url: '', args: '', env: '' })
   const [skillForm, setSkillForm] = useState({ name: '', description: '', whenToUse: '', userInvocable: true })
+  // 表单提交错误提示, 例如后端拒绝非法的 transport
+  const [formError, setFormError] = useState<string | null>(null)
 
   // Graph View State
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
@@ -1342,7 +1355,11 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
               </div>
               <div>
                 <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpTransportType')}</label>
-                <select value={mcpForm.transport} onChange={e => setMcpForm(f => ({ ...f, transport: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none">
+                <select value={mcpForm.transport} onChange={e => {
+                  // transport 是后端 union, 强制 cast 防止拼写错误
+                  const v = e.target.value as McpTransport
+                  setMcpForm(f => ({ ...f, transport: v }))
+                }} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none">
                   <option value="stdio">stdio</option>
                   <option value="sse">sse</option>
                   <option value="streamable-http">streamable-http</option>
@@ -1363,17 +1380,49 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                 <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpArgs')}</label>
                 <input value={mcpForm.args} onChange={e => setMcpForm(f => ({ ...f, args: e.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
               </div>
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-0.5">{t(language, 'mcpEnv')}</label>
+                <input value={mcpForm.env} onChange={e => setMcpForm(f => ({ ...f, env: e.target.value }))} placeholder="KEY=val,KEY2=val2" className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none" />
+              </div>
             </div>
+            {formError && (
+              <div className="text-[11px] text-red-400 bg-red-950/40 border border-red-800/60 rounded px-2 py-1">{formError}</div>
+            )}
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={() => { setShowAddMcpForm(false); setMcpForm({ name: '', transport: 'stdio', command: '', url: '', args: '' }) }} className="px-3 py-1 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">{t(language, 'cancel')}</button>
+              <button onClick={() => { setShowAddMcpForm(false); setMcpForm({ name: '', transport: 'stdio', command: '', url: '', args: '', env: '' }); setFormError(null) }} className="px-3 py-1 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">{t(language, 'cancel')}</button>
               <button onClick={() => {
                 if (!backendUrl || !mcpForm.name) return
+                setFormError(null)
                 const args = mcpForm.args ? mcpForm.args.split(',').map(a => a.trim()).filter(Boolean) : undefined
-                addMCPServer(backendUrl, { name: mcpForm.name, transport: mcpForm.transport, command: mcpForm.command || undefined, url: mcpForm.url || undefined, args }).then(() => {
+                // env 是 "KEY=val,KEY2=val2" 格式, 解析成对象
+                let env: Record<string, string> | undefined
+                if (mcpForm.env && mcpForm.env.trim()) {
+                  env = {}
+                  for (const pair of mcpForm.env.split(',')) {
+                    const trimmed = pair.trim()
+                    if (!trimmed) continue
+                    const eqIdx = trimmed.indexOf('=')
+                    if (eqIdx < 0) {
+                      setFormError(`Invalid env entry: "${trimmed}" (expected KEY=VALUE)`)
+                      return
+                    }
+                    env[trimmed.slice(0, eqIdx)] = trimmed.slice(eqIdx + 1)
+                  }
+                }
+                addMCPServer(backendUrl, { name: mcpForm.name, transport: mcpForm.transport, command: mcpForm.command || undefined, url: mcpForm.url || undefined, args, env }).then((created) => {
                   setShowAddMcpForm(false)
-                  setMcpForm({ name: '', transport: 'stdio', command: '', url: '', args: '' })
+                  setMcpForm({ name: '', transport: 'stdio', command: '', url: '', args: '', env: '' })
                   setMcpLoading(true)
                   fetchMCPServers(backendUrl).then(setMcpServers).catch(() => setMcpServers([])).finally(() => setMcpLoading(false))
+                  // 后端会自动 connect, 状态会变 connected; 失败时 status=error,
+                  // 列表里能看到 error 字段. 用 console 给开发侧可见.
+                  if (created && typeof created === 'object' && (created as { error?: string }).error) {
+                    console.warn('[mcp] auto-connect failed:', (created as { error?: string }).error)
+                  }
+                }).catch((err: unknown) => {
+                  // 之前版本 addMCPServer 失败时静默, 用户看不到任何提示.
+                  const msg = err instanceof Error ? err.message : 'Unknown error'
+                  setFormError(`添加 MCP server 失败: ${msg}`)
                 })
               }} disabled={!mcpForm.name || (mcpForm.transport === 'stdio' && !mcpForm.command) || (mcpForm.transport !== 'stdio' && !mcpForm.url)} className="px-3 py-1 rounded text-xs bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50">{t(language, 'confirm')}</button>
             </div>
@@ -1531,11 +1580,15 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
               <button onClick={() => { setShowAddSkillForm(false); setSkillForm({ name: '', description: '', whenToUse: '', userInvocable: true }) }} className="px-3 py-1 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">{t(language, 'cancel')}</button>
               <button onClick={() => {
                 if (!backendUrl || !skillForm.name || !skillForm.description) return
+                setFormError(null)
                 addSkill(backendUrl, { name: skillForm.name, description: skillForm.description, whenToUse: skillForm.whenToUse || undefined, userInvocable: skillForm.userInvocable }).then(() => {
                   setShowAddSkillForm(false)
                   setSkillForm({ name: '', description: '', whenToUse: '', userInvocable: true })
                   setSkillsLoading(true)
                   fetchSkills(backendUrl).then(setSkills).catch(() => setSkills([])).finally(() => setSkillsLoading(false))
+                }).catch((err: unknown) => {
+                  const msg = err instanceof Error ? err.message : 'Unknown error'
+                  setFormError(`添加 Skill 失败: ${msg}`)
                 })
               }} disabled={!skillForm.name || !skillForm.description} className="px-3 py-1 rounded text-xs bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50">{t(language, 'confirm')}</button>
             </div>

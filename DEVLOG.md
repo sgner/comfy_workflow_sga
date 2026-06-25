@@ -3,6 +3,81 @@
 > 维护者: sgner · 远程仓库: https://github.com/sgner/comfy_workflow_sga.git
 > 本日志按时间倒序记录，每次重要变更后追加一节。
 
+## 2026-06-25 · MCP 持久化 + 自动连接 + 前端错误处理
+
+### 背景
+
+用户在 UI 的 Skills/MCP 标签页里点"+ 添加"创建 MCP server 后, 发现:
+
+1. 重启 SGA 后所有用户加的 server 消失
+2. 创建后还要再点一次"连接"按钮才能用
+3. 提交表单失败时**没有任何错误提示**, 静默失败
+4. transport 字段前端可传任意 string, 后端没校验
+5. env 字段后端支持但前端表单没有输入框
+
+### 完成的改动
+
+#### 1. 后端: 持久化 (`sga_template/src/mcp/manager.ts`)
+
+新增 `getAllMCPServerConfigs()` + `persistMCPServers()`:
+
+```ts
+export async function persistMCPServers(): Promise<void> {
+  const { writeFile, mkdir } = await import('fs/promises')
+  const { join } = await import('path')
+  const { getSgaHome } = await import('../memory/paths.js')
+  const dir = getSgaHome()
+  const file = join(dir, 'mcp-servers.json')
+  try {
+    await mkdir(dir, { recursive: true })
+    const configs = getAllMCPServerConfigs()
+    await writeFile(file, JSON.stringify(configs, null, 2), 'utf-8')
+    logger.info(`persisted ${configs.length} MCP server(s) to ${file}`)
+  } catch (error) { /* ... */ }
+}
+```
+
+写盘位置是 `<SGA_HOME>/mcp-servers.json`, 与 `app.ts` 启动时 `loadMCPServersFromConfig()`
+读的位置一致, 形成闭环.
+
+#### 2. 后端: 自动连接 + 写盘 (`skills-mcp-routes.ts`)
+
+`handleAddMCPServer` 改造:
+
+```ts
+const server = registerMCPServer(config)
+let connectError: string | undefined
+try {
+  await connectMCPServer(server.name)  // 立刻连
+} catch (error) {
+  connectError = error instanceof Error ? error.message : String(error)
+  // 不 throw, 用户可以稍后手动重试
+}
+try { await persistMCPServers() } catch { /* log */ }
+```
+
+`handleDeleteMCPServer` 同样加 `persistMCPServers()`.
+
+transport 字段加白名单校验 (`'stdio' | 'sse' | 'streamable-http'`), 拒绝非法值返回 400.
+
+#### 3. 前端: 错误处理 + env 字段 (`WorkflowVisualizer.tsx`)
+
+- `formError` state, 红色边框小条显示在表单底部
+- `addMCPServer` / `addSkill` 提交都加 `.catch(err => setFormError(...))`
+- `mcpForm` 新增 `env: string` 字段, 提交时按 `KEY=val,KEY2=val2` 解析
+- `transport` 字段类型从 `string` 改为 `McpTransport` union, 顶层定义 (`McpTransport = 'stdio' | 'sse' | 'streamable-http'`)
+
+#### 4. i18n 4 语种补全 (`i18n.ts`)
+
+新增 `mcpEnv` 翻译 (zh/en/ja/ko).
+
+### 验收
+
+- ✅ `tsc` 后端通过
+- ✅ `npm run build` 前端通过 (3.38s)
+- ✅ 注册 server 后立即看到 status: 'connected' (或 error 含原因)
+- ✅ 重启 SGA 后 MCP 列表保持不变
+
 ---
 
 ## 2026-06-23 · Codex "Comfy Workflow Agent" 身份注入 + 共享记忆

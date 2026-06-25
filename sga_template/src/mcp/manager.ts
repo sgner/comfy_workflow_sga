@@ -173,6 +173,34 @@ export function onMCPEvent(event: string, listener: (...args: unknown[]) => void
   mcpEmitter.on(event, listener)
 }
 
+// ============================================================================
+// 持久化: 把所有已注册的 MCP 服务器配置写到 <SGA_HOME>/mcp-servers.json,
+// 启动时由 app.ts 调用 loadMCPServersFromConfig() 加载. 否则用户加的 server
+// 重启后丢失.
+// ============================================================================
+
+export function getAllMCPServerConfigs(): MCPServerConfig[] {
+  return Array.from(mcpServers.values()).map(s => s.config)
+}
+
+export async function persistMCPServers(): Promise<void> {
+  const { writeFile, mkdir } = await import('fs/promises')
+  const { join } = await import('path')
+  // getSgaHome 在 memory/paths.js, 这里异步 import 避免循环依赖
+  const { getSgaHome } = await import('../memory/paths.js')
+  const dir = getSgaHome()
+  const file = join(dir, 'mcp-servers.json')
+  try {
+    await mkdir(dir, { recursive: true })
+    const configs = getAllMCPServerConfigs()
+    await writeFile(file, JSON.stringify(configs, null, 2), 'utf-8')
+    logger.info(`persisted ${configs.length} MCP server(s) to ${file}`)
+  } catch (error) {
+    logger.error('failed to persist MCP servers', error)
+    throw error
+  }
+}
+
 export function loadMCPServersFromConfig(configs: MCPServerConfig[]): MCPServerState[] {
   const states: MCPServerState[] = []
   for (const config of configs) {

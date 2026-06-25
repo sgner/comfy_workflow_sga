@@ -5,7 +5,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP server persistence** (`sga_template/src/mcp/manager.ts`, `skills-mcp-routes.ts`)
+  - MCP servers added at runtime were lost on SGA restart because `registerMCPServer` only
+    mutated the in-memory map. New `persistMCPServers()` writes the full config list to
+    `<SGA_HOME>/mcp-servers.json`; `app.ts` already loads it on boot via
+    `loadMCPServersFromConfig()` + `connectAllMCPServers()`. Add/Delete now also call
+    persist so the file stays in sync.
+  - Transport field is now strictly validated server-side: only `stdio | sse | streamable-http`
+    are accepted; the previous weak `string` type allowed the frontend to inject anything.
+- **MCP auto-connect on add** (`skills-mcp-routes.ts`)
+  - `POST /api/v1/mcp/servers` now immediately calls `connectMCPServer` so the new server
+    is up in one click instead of two. If connect fails (bad command, port in use, etc.) the
+    server is still created with `status: 'error'` and the error message is returned in the
+    response body so the UI can surface it.
+- **MCP/Skill form silent failure** (`ui/src/components/WorkflowVisualizer.tsx`)
+  - Add forms previously had no `.catch`; a 4xx/5xx from the backend disappeared. Both
+    `addMCPServer` and `addSkill` now surface errors via a new `formError` state rendered
+    above the action buttons.
+- **MCP transport type safety** (`WorkflowVisualizer.tsx`)
+  - `mcpForm.transport` is now a strict `'stdio' | 'sse' | 'streamable-http'` union instead of
+    `string`; the `<select>` cast guards the boundary.
+
 ### Added
+
+- **MCP environment-variable input** (`WorkflowVisualizer.tsx`, i18n)
+  - The backend's `MCPServerConfig.env` was always supported but the form had no input for
+    it. New `mcpForm.env` field accepts `KEY=val,KEY2=val2` syntax and is parsed into a
+    `Record<string, string>` before submit. Missing `=` triggers a frontend form error.
+- **MCP `getAllMCPServerConfigs()`** (`mcp/manager.ts`)
+  - Small helper that returns the list of currently-registered `MCPServerConfig` objects;
+    used by `persistMCPServers()` but exported for tests / future tooling.
+
+### Changed
+
+- **MCP connect-startup diagnostic** (`server/app.ts`)
+  - Boot now logs `MCP servers: N/M connected` so operators can see at a glance whether
+    their persisted servers came up cleanly.
 
 - **Codex Comfy Workflow Agent identity** (`sga_template/codex-rs/core/src/comfyui_agent.rs`)
   - New Rust module that injects a `## IDENTITY OVERRIDE (HIGHEST PRIORITY)` system-prompt

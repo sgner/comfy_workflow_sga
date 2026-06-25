@@ -7,6 +7,7 @@ import {
   connectMCPServer,
   disconnectMCPServer,
   getAllMCPTools,
+  persistMCPServers,
 } from '../mcp/index.js'
 import {
   getAllBundledSkills,
@@ -78,9 +79,21 @@ export async function handleAddMCPServer(req: Request, res: Response): Promise<v
       return
     }
 
+    // 校验 transport 字段, 防止前端传非法值 (configService 中 transport 字段是 string).
+    const allowedTransport = ['stdio', 'sse', 'streamable-http'] as const
+    type Allowed = typeof allowedTransport[number]
+    const isAllowed = (t: unknown): t is Allowed =>
+      typeof t === 'string' && (allowedTransport as readonly string[]).includes(t)
+    if (transport !== undefined && transport !== null && !isAllowed(transport)) {
+      res.status(400).json({
+        error: `Invalid transport "${String(transport)}". Allowed: ${allowedTransport.join(', ')}`,
+      })
+      return
+    }
+
     const config: MCPServerConfig = {
       name,
-      transport: transport || (command ? 'stdio' : 'sse'),
+      transport: (transport || (command ? 'stdio' : 'sse')) as Allowed,
       command,
       url,
       args,
@@ -88,6 +101,25 @@ export async function handleAddMCPServer(req: Request, res: Response): Promise<v
     }
 
     const server = registerMCPServer(config)
+
+    // 新注册 server 后立即尝试连接, 这样用户不需要再点一次"连接"按钮.
+    // 如果连接失败 (例如 command 不存在), 仍然返回 201, 但 status 标记为 error,
+    // 用户可以稍后手动重试.
+    let connectError: string | undefined
+    try {
+      await connectMCPServer(server.name)
+    } catch (error) {
+      connectError = error instanceof Error ? error.message : String(error)
+      logger.warn(`MCP server "${server.name}" registered but auto-connect failed: ${connectError}`)
+    }
+
+    // 写盘到 <SGA_HOME>/mcp-servers.json, 重启不丢.
+    try {
+      await persistMCPServers()
+    } catch (persistError) {
+      logger.error('failed to persist MCP server', persistError)
+    }
+
     res.status(201).json({
       name: server.name,
       status: server.status,
@@ -95,6 +127,7 @@ export async function handleAddMCPServer(req: Request, res: Response): Promise<v
       command: server.config.command,
       url: server.config.url,
       toolCount: server.tools.length,
+      error: connectError ?? server.error,
     })
   } catch (error) {
     logger.error('Failed to add MCP server', error)
@@ -109,6 +142,12 @@ export async function handleDeleteMCPServer(req: Request, res: Response): Promis
     if (!success) {
       res.status(404).json({ error: 'MCP server not found' })
       return
+    }
+    // 删除时同步更新 mcp-servers.json
+    try {
+      await persistMCPServers()
+    } catch (persistError) {
+      logger.error('failed to persist MCP servers after delete', persistError)
     }
     res.status(204).send()
   } catch (error) {
