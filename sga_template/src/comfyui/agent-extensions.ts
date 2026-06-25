@@ -24,7 +24,7 @@ export const COMFYUI_AGENT_EXTENSIONS: ComfyUIAdapterConfig = {
     minHours: envInt('SGA_AUTODREAM_MIN_HOURS', 12),
     minSessions: envInt('SGA_AUTODREAM_MIN_SESSIONS', 3),
     maxOutputTokens: envInt('SGA_AUTODREAM_MAX_OUTPUT_TOKENS', 12_000),
-    model: process.env.SGA_AUTODREAM_MODEL ?? 'haiku',
+    model: process.env.SGA_AUTODREAM_MODEL ?? 'gpt-4o-mini',
   },
   autoInjectWorkflowContext: envBool('SGA_AUTO_INJECT_WORKFLOW_CONTEXT', true),
   autoInitWorkingSet: envBool('SGA_AUTO_INIT_WORKING_SET', true),

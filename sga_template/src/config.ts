@@ -156,7 +156,7 @@ export function loadSgaConfig(): SgaEnvConfig {
       minHours: envInt('SGA_CONSOLIDATION_MIN_HOURS', 24),
       minSessions: envInt('SGA_CONSOLIDATION_MIN_SESSIONS', 5),
       maxOutputTokens: envInt('SGA_CONSOLIDATION_MAX_OUTPUT_TOKENS', 16_000),
-      model: envStr('SGA_CONSOLIDATION_MODEL', 'haiku'),
+      model: envStr('SGA_CONSOLIDATION_MODEL', 'gpt-4o-mini'),
       lockStaleMs: envInt('SGA_CONSOLIDATION_LOCK_STALE_MS', 60 * 60 * 1000),
       scanIntervalMs: envInt('SGA_CONSOLIDATION_SCAN_INTERVAL_MS', 10 * 60 * 1000),
     },

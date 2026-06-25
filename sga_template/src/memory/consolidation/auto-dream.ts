@@ -32,7 +32,7 @@ export const DEFAULT_AUTO_DREAM_CONFIG: AutoDreamConfig = {
   minSessions: 5,
   enabled: true,
   maxOutputTokens: 16_000,
-  model: 'haiku',
+  model: 'gpt-4o-mini',
 }
 
 export interface ConsolidationResult {

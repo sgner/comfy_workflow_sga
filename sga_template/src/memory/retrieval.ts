@@ -18,7 +18,7 @@ export const DEFAULT_RETRIEVER_CONFIG: MemoryRetrieverConfig = {
 }
 
 let cachedProvider: LLMProvider | null = null
-let cachedModel: string = 'haiku'
+let cachedModel: string = 'gpt-4o-mini'
 
 export function setRetrievalProvider(provider: LLMProvider, model?: string): void {
   cachedProvider = provider

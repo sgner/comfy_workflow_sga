@@ -53,7 +53,7 @@ export class MemoryExtractor {
   ) {
     this.memoryManager = memoryManager
     this.config = config
-    this.model = 'haiku'
+    this.model = 'gpt-4o-mini'
   }
 
   setProvider(provider: LLMProvider, model?: string): void {

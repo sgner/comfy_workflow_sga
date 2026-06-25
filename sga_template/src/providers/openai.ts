@@ -21,6 +21,17 @@ export const OPENAI_MODEL_ALIASES: Record<string, string> = {
   'o1': 'o1',
   'o1-mini': 'o1-mini',
   'o3-mini': 'o3-mini',
+  // Anthropic-style aliases that SGA uses in its built-in sub-tasks
+  // (memory extractor, auto-dream, tool-use summary, agent subagent dispatch).
+  // These were copied over from the original claude-code SGA template; on an
+  // OpenAI-compatible provider (e.g. the bundled ai.t8star.org proxy) they
+  // would resolve to the literal string "haiku"/"sonnet"/"opus" and get a
+  // 503 from upstream. Map them to a cheap fast model that the provider
+  // almost certainly supports. Users can override per-task via
+  // SGA_AUTODREAM_MODEL / SGA_CONSOLIDATION_MODEL / SGA_TOOL_SUMMARY_MODEL.
+  'haiku': 'gpt-4o-mini',
+  'sonnet': 'gpt-4o-mini',
+  'opus': 'gpt-4o',
 }
 
 export const OPENAI_DEFAULT_MAX_TOKENS = 4096
@@ -295,7 +306,19 @@ export class OpenAIProvider implements LLMProvider {
     if (this.config.modelConfigs?.[model]) {
       return this.config.modelConfigs[model].id
     }
-    return this.config.models?.[model] ?? OPENAI_MODEL_ALIASES[model] ?? model
+    if (this.config.models?.[model]) {
+      return this.config.models[model]
+    }
+    if (OPENAI_MODEL_ALIASES[model]) {
+      const resolved = OPENAI_MODEL_ALIASES[model]
+      // 当 alias 是 Anthropic 风格 (haiku/sonnet/opus) 时, 打 log 提示
+      // 用户这是兼容性 fallback, 不是 provider 原生 alias.
+      if (model !== resolved && /^(haiku|sonnet|opus)$/.test(model)) {
+        logger.info(`[model-alias] ${model} -> ${resolved} (Anthropic-style alias fallback for OpenAI-compatible provider)`)
+      }
+      return resolved
+    }
+    return model
   }
 
   getModelConfig(model: string): ModelConfig | undefined {
