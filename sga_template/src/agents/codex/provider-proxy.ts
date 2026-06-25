@@ -348,13 +348,27 @@ function inputItemToChatMessages(item: ResponsesInputItem): ChatMessage[] {
   // codex 在 tool_call_output 里同时用 type:"function_call_output" + call_id + output
   if (item.type === 'function_call_output' || (item.call_id && item.output !== undefined && item.type !== 'function_call')) {
     const out = item.output
-    // 重要: 这里的 call_id 必须是上游 Chat Completions 历史中 assistant message 的
-    // tool_calls[].id. 反代必须保证这两者一致. 见下方 function_call 分支.
-    return [{
+    const toolContent = typeof out === 'string' ? out : JSON.stringify(out)
+    const toolName = item.name ?? ''
+    const messages: ChatMessage[] = [{
       role: 'tool',
       tool_call_id: item.call_id ?? '',
-      content: typeof out === 'string' ? out : JSON.stringify(out),
+      content: toolContent,
     }]
+
+    // ===== Tool-failure recovery 注入 (与 SGA runner.ts 的 is_error 注入对齐) =====
+    // 检测 codex tool 输出的失败信号: "blocked by policy" / "rejected" /
+    // "permission denied" / "not found" / "command not found" / "exit code 1+"
+    // / 空输出. 如果命中, 在 tool message 之后追加一条 user 反思消息, 强制
+    // LLM 在下一轮换工具/换参数/问用户, 而不是连续重试同一个失败命令.
+    if (looksLikeToolFailure(toolContent, toolName)) {
+      const recoveryHint = buildRecoveryHint(toolName, toolContent, item.call_id ?? '')
+      messages.push({ role: 'user', content: recoveryHint })
+    }
+
+    // 重要: 这里的 call_id 必须是上游 Chat Completions 历史中 assistant message 的
+    // tool_calls[].id. 反代必须保证这两者一致. 见下方 function_call 分支.
+    return messages
   }
   // function_call: 反代必须把它翻译成 assistant message + tool_calls[], 这样上游
   // Chat Completions 历史里就有对应的 tool call 记录, 后续 tool 角色的
@@ -592,6 +606,86 @@ async function streamChatToResponses(
 }
 
 // ============== 非流响应转译 ==============
+
+// ========= Tool-failure detection & recovery hint =========
+
+/**
+ * 检测 codex tool 的输出是否暗示"失败 / 被拦 / 空结果".
+ * 命中后 provider-proxy 会在 tool message 后追加一条 user 反思消息,
+ * 强制 LLM 在下一轮换工具/换参数/问用户, 而不是继续重试同一个失败命令.
+ *
+ * 注意: 这与 SGA runner.ts 的反思注入是"双层防护"中的第二层 ——
+ *   SGA agent 用 runner.ts (process-local 注入)
+ *   Codex agent 用 provider-proxy (process-remote 注入, 跨进程)
+ * 两层都触发时, 后触发的会堆在前面的 user message 后面, 不冲突.
+ */
+function looksLikeToolFailure(content: string, toolName: string): boolean {
+  if (!content) return false
+  const trimmed = content.trim()
+  if (trimmed.length === 0) return true   // 完全空输出
+
+  const lower = content.toLowerCase()
+  const failureSignals = [
+    'blocked by policy',
+    'rejected by policy',
+    'rejected',
+    'permission denied',
+    'access is denied',
+    'access denied',
+    'not recognized',
+    'commandnotfound',
+    'is not recognized as',
+    'not found',
+    'no such file',
+    'no such directory',
+    'cannot find path',
+    'cannot find the path',
+    '路径找不到',
+    '拒绝访问',
+    '未找到',
+    'exit code 1',
+    'exit code 2',
+    'exit code 3',
+    'exit code 4',
+    'exit code 5',
+    'exit code: 1',
+    'exit code: 2',
+    'fatal error',
+    'panic',
+    'failed:',
+    'error:',
+    'err:',
+  ]
+  if (failureSignals.some(s => lower.includes(s))) return true
+
+  // exit code 数字 1-9 (regex 单独算, 避免被 "exit 1xxx" 误命中)
+  if (/\bexit\s+code\s*[1-9]\b/.test(lower)) return true
+  if (/\bexit\s+[1-9]\b/.test(lower)) return true
+
+  // bash 工具 + 输出全是空白 + 长度 < 5 也算空
+  if (toolName === 'Bash' && trimmed.length < 5) return true
+
+  return false
+}
+
+function buildRecoveryHint(toolName: string, content: string, callId: string): string {
+  const shortContent = content.length > 300 ? content.slice(0, 300) + '...' : content
+  return (
+    `[codex-proxy: tool-failure recovery] The tool "${toolName}" ` +
+    `(call_id=${callId}) returned output that looks like a failure or an empty ` +
+    `result. Before you try the exact same command again, you MUST follow the ` +
+    `Tool-failure Recovery rule:\n` +
+    `(a) Try a different tool: if Bash fails, try Read / Glob / Grep; if Read ` +
+    `fails on a path, try Glob with a pattern; if a directory listing is ` +
+    `blocked, try a more targeted path.\n` +
+    `(b) Try a different parameter set: a more specific path, fewer flags, a ` +
+    `narrower glob, a different file extension, an absolute vs relative path.\n` +
+    `(c) Only after at least 2 distinct attempts, ask the user a precise ` +
+    `question (with the exact paths / commands you tried and the exact error ` +
+    `text). Never reply "I cannot read the file" without showing what you tried.\n` +
+    `Last tool output: ${shortContent}`
+  )
+}
 
 function chatCompletionsToResponseObject(chunk: ChatCompletionsChunk, model: string): Record<string, unknown> {
   const choice = chunk.choices?.[0]
