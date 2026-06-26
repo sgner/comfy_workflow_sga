@@ -129,6 +129,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.1.1] — 2026-06-26
+
+### Fixed
+
+- **Codex PowerShell pipeline rejection** (`sga_template/codex-rs/shell-command/src/command_safety/windows_safe_commands.rs`)
+  - On Windows, codex's hard-coded PowerShell safelist rejected any pipeline
+    that contained a "filter / format" cmdlet the safelist didn't know
+    about. Both `Get-ChildItem ... | Where-Object { ... } | Select-Object ...`
+    and `Get-Content -LiteralPath extra_model_paths.yaml` (with `if (Test-Path ...)`)
+    failed with `<cmd> rejected: blocked by policy`.
+  - Root cause: `is_safe_powershell_words()` only listed the obvious "read"
+    cmdlets (get-childitem, select-object, get-content, test-path, ...). Once a
+    pipeline contained a second-stage cmdlet that was not in the safelist
+    (where-object, sort-object, group-object, format-\*, ...), the words[0]
+    match fell through to the default `_ => false` branch and the whole
+    command was classified as unsafe. With `approval_policy = "never"`, an
+    unsafe command short-circuits to the `rejected: blocked by policy`
+    fallback in `core/src/exec_policy.rs:derive_forbidden_reason()`.
+  - Fix: add the following "pure filter / format" cmdlets to the safelist
+    (with their common aliases): `where-object | where | ?`,
+    `foreach-object | foreach | %`, `sort-object | sort`,
+    `group-object | group`, `format-table | ft`, `format-list | fl`,
+    `format-wide | fw`, `out-string`. None of these cmdlets have side effects
+    on disk, network, or processes; they only transform the pipeline stream.
+    The inner-trim unsafe-cmdlet guard is left untouched, so a malicious
+    expression like `Write-Output (Set-Content foo6.txt 'abc')` is still
+    correctly rejected.
+  - New built `codex-app-server.exe` SHA256:
+    `A9DA8F2EB26278AF88F7E9B05D56E6AC234BF2B433A00F0F057AED75F2560B86`
+    (previously `77cbaacaaad46ec91d00484644a0c51c1f83d5cf6a5b0aa52cf080030719d524`)
+
 ## [0.1.0] — 2026-06-23
 
 ### Added
