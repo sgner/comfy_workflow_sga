@@ -187,6 +187,19 @@ pub(crate) fn is_safe_powershell_words(words: &[String]) -> bool {
         "resolve-path" | "rvpa" => true,
         "select-object" | "select" => true,
         "get-item" => true,
+        // SGA-patch: 允许 PowerShell 管道中的纯过滤 / 格式化 cmdlet. 这些
+        // 都没有副作用, 跟 `select-object` 一样只是转换流. 不加的话, 类似
+        // `Get-ChildItem ... | Where-Object { $_.Name -like 'foo*' }` 这样的
+        // 常见只读命令会被 `is_safe_powershell_words` 误判为不安全, 然后
+        // 走到 `rejected: blocked by policy` 的 fallback.
+        "where-object" | "where" | "?" => true,
+        "foreach-object" | "foreach" | "%" => true,
+        "sort-object" | "sort" => true,
+        "group-object" | "group" => true,
+        "format-table" | "ft" => true,
+        "format-list" | "fl" => true,
+        "format-wide" | "fw" => true,
+        "out-string" => true,
 
         "git" => is_safe_git_command(words),
 
