@@ -1,13 +1,8 @@
 import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult } from '../base.js'
 import { createLogger } from '../../utils/logger.js'
+import { getComfyUIApiBaseUrl, COMFYUI_DEFAULT_TIMEOUT_MS } from '../../comfyui/api-base.js'
 
 const logger = createLogger('comfyui-api')
-
-function getComfyUIApiBaseUrl(): string {
-  const host = process.env.COMFYUI_API_HOST ?? '127.0.0.1'
-  const port = process.env.COMFYUI_API_PORT ?? '8188'
-  return `http://${host}:${port}`
-}
 
 const READ_ONLY_ENDPOINTS: Record<string, string[]> = {
   GET: ['/system_stats', '/object_info', '/object_info/', '/queue', '/history', '/view', '/extensions', '/userdata', '/settings'],
@@ -84,7 +79,7 @@ export class ComfyUIAPITool extends BaseTool<
       const fetchOptions: RequestInit = {
         method,
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(COMFYUI_DEFAULT_TIMEOUT_MS),
       }
 
       if (method === 'POST' && input.body) {
