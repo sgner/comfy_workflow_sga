@@ -3,32 +3,9 @@ import { readdir, stat, readFile } from 'fs/promises'
 import { join, resolve, extname } from 'path'
 import { existsSync } from 'fs'
 import { createLogger } from '../../utils/logger.js'
+import { MODEL_EXTENSIONS, MODEL_CATEGORIES } from '../../comfyui/model-categories.js'
 
 const logger = createLogger('comfyui-model-list')
-
-const MODEL_EXTENSIONS = new Set([
-  '.safetensors', '.ckpt', '.pt', '.bin', '.pth', '.onnx', '.engine',
-])
-
-const MODEL_CATEGORIES: Record<string, string[]> = {
-  checkpoints: ['checkpoints'],
-  loras: ['loras', 'lycoris'],
-  vae: ['vae'],
-  controlnet: ['controlnet', 'controlnets'],
-  embeddings: ['embeddings', 'textual_inversion'],
-  upscale_models: ['upscale_models', 'upscale', 'upscalers'],
-  clip: ['clip', 'clip_vision'],
-  unet: ['unet', 'diffusion_models'],
-  style_models: ['style_models'],
-  hypernetworks: ['hypernetworks', 'hypernetwork'],
-  gligen: ['gligen'],
-  vae_approx: ['vae_approx'],
-  inpaint: ['inpaint', 'inpaint_models'],
-  classifier: ['classifier'],
-  diffusion_models: ['diffusion_models'],
-  animatediff_models: ['animatediff_models'],
-  animatediff_motion_lora: ['animatediff_motion_lora'],
-}
 
 function getComfyUIBaseDir(): string {
   return process.env.COMFYUI_BASE_DIR ?? process.cwd()
