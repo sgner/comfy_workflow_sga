@@ -10,6 +10,7 @@
 import type { NodeDef } from './node-def-index.js'
 
 interface GraphNode {
+  [key: string]: unknown
   id: number | string
   type: string
   mode?: number
