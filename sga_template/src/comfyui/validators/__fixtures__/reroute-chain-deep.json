@@ -1,0 +1,46 @@
+{
+  "name": "reroute-chain-deep",
+  "description": "10-deep Reroute chain exceeding SGA_MAX_REROUTE_DEPTH default of 8",
+  "objectInfo": {
+    "Reroute": {
+      "name": "Reroute", "category": "utils",
+      "input": { "required": {} },
+      "output": ["*"], "output_name": ["*"]
+    },
+    "SaveImage": {
+      "name": "SaveImage", "category": "image",
+      "input": { "required": { "images": ["IMAGE"] } },
+      "output": [], "output_name": []
+    }
+  },
+  "models": {},
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": null } ], "outputs": [ { "name": "*", "type": "*", "links": [1] } ] },
+      { "id": 2, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 1 } ], "outputs": [ { "name": "*", "type": "*", "links": [2] } ] },
+      { "id": 3, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 2 } ], "outputs": [ { "name": "*", "type": "*", "links": [3] } ] },
+      { "id": 4, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 3 } ], "outputs": [ { "name": "*", "type": "*", "links": [4] } ] },
+      { "id": 5, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 4 } ], "outputs": [ { "name": "*", "type": "*", "links": [5] } ] },
+      { "id": 6, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 5 } ], "outputs": [ { "name": "*", "type": "*", "links": [6] } ] },
+      { "id": 7, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 6 } ], "outputs": [ { "name": "*", "type": "*", "links": [7] } ] },
+      { "id": 8, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 7 } ], "outputs": [ { "name": "*", "type": "*", "links": [8] } ] },
+      { "id": 9, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 8 } ], "outputs": [ { "name": "*", "type": "*", "links": [9] } ] },
+      { "id": 10, "type": "Reroute", "inputs": [ { "name": "*", "type": "*", "link": 9 } ], "outputs": [ { "name": "*", "type": "*", "links": [10] } ] },
+      { "id": 11, "type": "SaveImage", "widgets_values": ["output"], "inputs": [ { "name": "images", "type": "IMAGE", "link": 10 } ] }
+    ],
+    "links": [
+      [1, 1, 0, 2, 0, "*"],
+      [2, 2, 0, 3, 0, "*"],
+      [3, 3, 0, 4, 0, "*"],
+      [4, 4, 0, 5, 0, "*"],
+      [5, 5, 0, 6, 0, "*"],
+      [6, 6, 0, 7, 0, "*"],
+      [7, 7, 0, 8, 0, "*"],
+      [8, 8, 0, 9, 0, "*"],
+      [9, 9, 0, 10, 0, "*"],
+      [10, 10, 0, 11, 0, "*"]
+    ]
+  },
+  "expectedIssueIds": ["unsupported_structure:1:deep_reroute_chain"]
+}

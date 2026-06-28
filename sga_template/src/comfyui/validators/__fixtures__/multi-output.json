@@ -1,0 +1,43 @@
+{
+  "name": "multi-output",
+  "description": "KSampler branches to two SaveImage nodes",
+  "objectInfo": {
+    "CheckpointLoaderSimple": {
+      "name": "CheckpointLoaderSimple", "category": "loaders",
+      "input": { "required": { "ckpt_name": [["v1-5-pruned-emaonly.safetensors"]] } },
+      "output": ["MODEL", "CLIP", "VAE"], "output_name": ["MODEL", "CLIP", "VAE"]
+    },
+    "VAEDecode": {
+      "name": "VAEDecode", "category": "latent",
+      "input": { "required": { "samples": ["LATENT"], "vae": ["VAE"] } },
+      "output": ["IMAGE"], "output_name": ["IMAGE"]
+    },
+    "SaveImage": {
+      "name": "SaveImage", "category": "image",
+      "input": { "required": { "images": ["IMAGE"] } },
+      "output": [], "output_name": []
+    }
+  },
+  "models": { "checkpoints": ["v1-5-pruned-emaonly.safetensors"] },
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "CheckpointLoaderSimple", "widgets_values": ["v1-5-pruned-emaonly.safetensors"],
+        "outputs": [ { "name": "MODEL", "type": "MODEL", "links": [1] }, { "name": "CLIP", "type": "CLIP", "links": null }, { "name": "VAE", "type": "VAE", "links": [3] } ] },
+      { "id": 2, "type": "VAEDecode",
+        "inputs": [ { "name": "vae", "type": "VAE", "link": 3 } ],
+        "outputs": [ { "name": "IMAGE", "type": "IMAGE", "links": [4, 5] } ] },
+      { "id": 3, "type": "SaveImage", "widgets_values": ["output_a"],
+        "inputs": [ { "name": "images", "type": "IMAGE", "link": 4 } ] },
+      { "id": 4, "type": "SaveImage", "widgets_values": ["output_b"],
+        "inputs": [ { "name": "images", "type": "IMAGE", "link": 5 } ] }
+    ],
+    "links": [
+      [1, 1, 0, 2, 0, "MODEL"],
+      [3, 1, 2, 2, 1, "VAE"],
+      [4, 2, 0, 3, 0, "IMAGE"],
+      [5, 2, 0, 4, 0, "IMAGE"]
+    ]
+  },
+  "expectedIssueIds": []
+}

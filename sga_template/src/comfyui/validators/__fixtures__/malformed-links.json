@@ -1,0 +1,33 @@
+{
+  "name": "malformed-links",
+  "description": "Links with dangling reference, slot OOB, bidirectional inconsistency, and self-loop",
+  "objectInfo": {
+    "CLIPTextEncode": {
+      "name": "CLIPTextEncode", "category": "conditioning",
+      "input": { "required": { "text": ["STRING"], "clip": ["CLIP"] } },
+      "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]
+    }
+  },
+  "models": {},
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "CLIPTextEncode", "widgets_values": ["prompt"],
+        "inputs": [ { "name": "clip", "type": "CLIP", "link": null } ],
+        "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": [1] } ] },
+      { "id": 2, "type": "CLIPTextEncode", "widgets_values": ["prompt"],
+        "inputs": [ { "name": "clip", "type": "CLIP", "link": null } ],
+        "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": [3] } ] }
+    ],
+    "links": [
+      [1, 1, 0, 99, 0, "CONDITIONING"],
+      [2, 1, 5, 2, 0, "CONDITIONING"],
+      [3, 2, 0, 2, 0, "CONDITIONING"]
+    ]
+  },
+  "expectedIssueIds": [
+    "illegal_link:1:dangling",
+    "illegal_link:2:slot_oob",
+    "illegal_link:3:self_loop"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "missing-model",
+  "description": "CheckpointLoaderSimple references a non-existent checkpoint file",
+  "objectInfo": {
+    "CheckpointLoaderSimple": {
+      "name": "CheckpointLoaderSimple", "category": "loaders",
+      "input": { "required": { "ckpt_name": [["v1-5-pruned-emaonly.safetensors", "nonexistent.safetensors"]] } },
+      "output": ["MODEL", "CLIP", "VAE"], "output_name": ["MODEL", "CLIP", "VAE"]
+    }
+  },
+  "models": { "checkpoints": ["v1-5-pruned-emaonly.safetensors"] },
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "CheckpointLoaderSimple", "widgets_values": ["nonexistent.safetensors"],
+        "outputs": [ { "name": "MODEL", "type": "MODEL", "links": null }, { "name": "CLIP", "type": "CLIP", "links": null }, { "name": "VAE", "type": "VAE", "links": null } ] }
+    ],
+    "links": []
+  },
+  "expectedIssueIds": ["missing_model:1"]
+}

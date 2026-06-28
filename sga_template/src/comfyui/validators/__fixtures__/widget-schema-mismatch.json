@@ -1,0 +1,38 @@
+{
+  "name": "widget-schema-mismatch",
+  "description": "PrimitiveNode output connected to inputs of different types (STRING and INT)",
+  "objectInfo": {
+    "PrimitiveNode": {
+      "name": "PrimitiveNode", "category": "utils",
+      "input": { "required": { "value": ["STRING"] } },
+      "output": ["*"], "output_name": ["*"]
+    },
+    "CLIPTextEncode": {
+      "name": "CLIPTextEncode", "category": "conditioning",
+      "input": { "required": { "text": ["STRING"], "clip": ["CLIP"] } },
+      "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]
+    },
+    "KSampler": {
+      "name": "KSampler", "category": "sampling",
+      "input": { "required": { "model": ["MODEL"], "positive": ["CONDITIONING"], "negative": ["CONDITIONING"], "latent_image": ["LATENT"], "seed": ["INT"] } },
+      "output": ["LATENT"], "output_name": ["LATENT"]
+    }
+  },
+  "models": {},
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "PrimitiveNode", "widgets_values": ["hello"],
+        "outputs": [ { "name": "*", "type": "*", "links": [1, 2] } ] },
+      { "id": 2, "type": "CLIPTextEncode",
+        "inputs": [ { "name": "text", "type": "STRING", "link": 1 }, { "name": "clip", "type": "CLIP", "link": null } ] },
+      { "id": 3, "type": "KSampler",
+        "inputs": [ { "name": "seed", "type": "INT", "link": 2 } ] }
+    ],
+    "links": [
+      [1, 1, 0, 2, 0, "STRING"],
+      [2, 1, 0, 3, 4, "INT"]
+    ]
+  },
+  "expectedIssueIds": ["unsupported_structure:1:primitive_multi_type"]
+}
