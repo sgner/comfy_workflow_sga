@@ -70,7 +70,7 @@ function readBuildStatus(): CodexBuildStatus {
   }
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
@@ -80,7 +80,23 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+// TTL 缓存: 避免每次请求都执行同步文件 IO
+let _cachedStatus: CodexCapabilityStatus | null = null
+let _cachedAt = 0
+const STATUS_CACHE_TTL_MS = 2000
+
 export function getCodexCapabilityStatus(): CodexCapabilityStatus {
+  const now = Date.now()
+  if (_cachedStatus && now - _cachedAt < STATUS_CACHE_TTL_MS) {
+    return _cachedStatus
+  }
+  const result = computeCodexCapabilityStatus()
+  _cachedStatus = result
+  _cachedAt = now
+  return result
+}
+
+function computeCodexCapabilityStatus(): CodexCapabilityStatus {
   const mode = getCodexMode()
   const enabled = mode !== 'false'
   const build = readBuildStatus()

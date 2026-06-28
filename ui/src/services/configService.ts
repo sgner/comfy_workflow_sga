@@ -271,7 +271,7 @@ export const checkBackendHealth = async (backendUrl: string): Promise<{ status: 
 
 // --- Agent Backend Switch ---
 
-export const getActiveAgent = async (backendUrl: string, sessionId: string): Promise<{ activeAgent: 'sga' | 'codex'; handoff?: unknown; lastSwitchAt?: number | null }> => {
+export const getActiveAgent = async (backendUrl: string, sessionId: string): Promise<{ activeAgent: 'sga' | 'codex'; handoff?: unknown; lastSwitchAt?: string | null }> => {
     try {
         const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/agent`);
         if (!res.ok) return { activeAgent: 'sga' };

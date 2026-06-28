@@ -50,9 +50,13 @@ const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({ backend
 
   const copyJson = useCallback(async () => {
     if (!diagnostics) return
-    await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2))
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2))
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // 剪贴板不可用 (非安全上下文 / 权限拒绝), 静默忽略
+    }
   }, [diagnostics])
 
   return (

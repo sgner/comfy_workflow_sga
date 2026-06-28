@@ -101,7 +101,7 @@ export function buildSystemDiagnostics(configStore: DiagnosticsConfigStore): Sys
       nodeVersion: process.version,
       cwdConfigured: process.cwd().length > 0,
       sgaHomeConfigured: sgaHome.length > 0,
-      sessionDirExists: existsSync(sessionDir),
+      sessionDirExists: !missingSessionDir,
       configDirExists: existsSync(configDir),
     },
     providers: {

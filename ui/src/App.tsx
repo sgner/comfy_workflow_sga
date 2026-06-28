@@ -456,7 +456,7 @@ const App: React.FC<AppProps> = () => {
     try {
       const result = await switchAgent(appSettings.pythonBackendUrl, activeSessionId, target)
       setActiveAgent(result.activeAgent)
-      const audit = result.audit as any
+      const audit = result.audit as { lastExport?: { ok: boolean; messageCount: number; keyFactCount: number }; lastImport?: { ok: boolean; targetAgent: string } } | undefined
       const exportInfo = audit?.lastExport
       const importInfo = audit?.lastImport
       const warningText = result.warnings?.length ? `, ${result.warnings.length} warning(s)` : ''
@@ -589,7 +589,7 @@ const App: React.FC<AppProps> = () => {
           getActiveAgent(appSettings.pythonBackendUrl, activeSessionId).then(r => {
             setActiveAgent(r.activeAgent)
           }).catch(() => {})
-          fetchHandoffStatus(appSettings.pythonBackendUrl, activeSessionId).then(status => {
+          void fetchHandoffStatus(appSettings.pythonBackendUrl, activeSessionId).then(status => {
             if (!status || (!status.lastExport && !status.lastImport)) return
             const warningText = status.warnings.length ? `, ${status.warnings.length} warning(s)` : ''
             setHandoffSummary(`Handoff: exported ${status.messageCount} messages, ${status.keyFactCount} key facts; active ${status.activeAgent}${warningText}.`)

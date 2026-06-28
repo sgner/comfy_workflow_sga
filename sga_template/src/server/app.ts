@@ -39,7 +39,6 @@ import {
   handleSystemDiagnostics,
   handleGetSessionAgent,
   handleGetHandoffStatus,
-  handleSwitchSessionAgent,
   handleSwitchSessionAgentStable,
   handleClearHandoff,
   handleListTasks,

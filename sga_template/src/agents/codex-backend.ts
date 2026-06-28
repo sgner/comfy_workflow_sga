@@ -492,10 +492,8 @@ export class CodexBackend implements AgentBackend {
 
   async healthCheck(): Promise<BackendHealth> {
     const start = Date.now()
-    if (!this.binary) {
-      this.binary = detectCodexBinary()
-    }
-    if (!this.binary) {
+    const binary = this.binary ?? detectCodexBinary()
+    if (!binary) {
       return {
         ok: false,
         latencyMs: 0,
@@ -507,8 +505,8 @@ export class CodexBackend implements AgentBackend {
       return {
         ok: false,
         latencyMs: 0,
-        details: `codex binary available at ${this.binary.path} but backend not started`,
-        version: this.binary.revision ? `git:${this.binary.revision}` : 'unknown',
+        details: `codex binary available at ${binary.path} but backend not started`,
+        version: binary.revision ? `git:${binary.revision}` : 'unknown',
       }
     }
     const alive = this.state.proc.pid > 0
@@ -518,7 +516,7 @@ export class CodexBackend implements AgentBackend {
       details: alive
         ? `running (threadId=${this.state.threadId ?? 'none'})`
         : (this.lastStartError ?? 'process not running'),
-      version: this.binary.revision ? `git:${this.binary.revision}` : 'unknown',
+      version: binary.revision ? `git:${binary.revision}` : 'unknown',
     }
   }
 
@@ -608,6 +606,13 @@ export class CodexBackend implements AgentBackend {
         customNotes: `Exported from codex thread ${state.threadId ?? 'unknown'}`,
       }
       logger.info(`exportHandoff: ${recentMessages.length} messages from thread ${state.threadId ?? 'none'}`)
+      // 与 sga-backend.exportHandoff 保持一致: 写入 handoff store, 供 target backend consume
+      try {
+        const { getHandoffStore } = await import('./handoff/store.js')
+        await getHandoffStore().write(bundle)
+      } catch (storeErr) {
+        logger.warn(`exportHandoff: failed to write handoff store: ${storeErr instanceof Error ? storeErr.message : String(storeErr)}`)
+      }
       return bundle
     } catch (err) {
       logger.error(`exportHandoff failed: ${err instanceof Error ? err.message : String(err)}`)

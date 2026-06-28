@@ -1443,7 +1443,7 @@ export function handleGetUsage(req: Request, res: Response): void {
 
 import { getBackendRegistry, BackendNotAvailableError, getHandoffStore, getBlackboard } from '../agents/index.js'
 import type { AgentType } from '../agents/backend.js'
-import { codexSwitchError, getCodexCapabilityStatus } from './codex-status.js'
+import { codexSwitchError, getCodexCapabilityStatus, isProcessAlive } from './codex-status.js'
 import { buildSystemDiagnostics } from './diagnostics.js'
 
 /**
@@ -1489,7 +1489,7 @@ export function handleCodexBuildStatus(_req: Request, res: Response): void {
       try { return getSgaHome() } catch { return null }
     })()
     if (!sgaHome) {
-      res.json({ status: 'idle', note: 'SGA_HOME not set' })
+      res.json({ status: 'error', note: 'SGA_HOME not set' })
       return
     }
     const statusFile = join(sgaHome, 'codex-build.json')
@@ -1534,17 +1534,6 @@ export function handleSystemDiagnostics(_req: Request, res: Response): void {
   }
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    // EPERM 表示存在但无权限, 也算 alive; 其它情况视为已死
-    const err = e as NodeJS.ErrnoException
-    return err.code === 'EPERM'
-  }
-}
-
 /**
  * 获取 session 当前使用的 backend
  * GET /api/v1/sessions/:id/agent
@@ -1569,7 +1558,7 @@ export async function handleGetSessionAgent(req: Request, res: Response): Promis
       sessionId,
       activeAgent,
       pendingHandoff: peek ? { sourceAgent: peek.sourceAgent, exportedAt: peek.exportedAt } : null,
-      lastSwitchAt: audit?.switchedAt ?? bbData.lastSwitchAt,
+      lastSwitchAt: audit?.switchedAt ? new Date(audit.switchedAt).toISOString() : (bbData.lastSwitchAt ? new Date(bbData.lastSwitchAt).toISOString() : null),
       handoff: audit,
       blackboard: {
         currentAgent: bbData.currentAgent,
@@ -1599,115 +1588,14 @@ export async function handleGetHandoffStatus(req: Request, res: Response): Promi
       pendingHandoff: !!pending,
       lastExport: audit?.lastExport ?? null,
       lastImport: audit?.lastImport ?? null,
-      messageCount: audit?.lastExport.messageCount ?? pending?.recentMessages.length ?? 0,
-      keyFactCount: audit?.lastExport.keyFactCount ?? pending?.keyFacts.length ?? 0,
+      messageCount: audit?.lastExport?.messageCount ?? pending?.recentMessages.length ?? 0,
+      keyFactCount: audit?.lastExport?.keyFactCount ?? pending?.keyFacts.length ?? 0,
       warnings: audit?.warnings ?? [],
       errors: audit?.errors ?? [],
     })
   } catch (err) {
     logger.error(`handleGetHandoffStatus failed: ${err instanceof Error ? err.message : String(err)}`)
     res.status(500).json({ error: 'failed to get handoff status' })
-  }
-}
-
-/**
- * 切换 session 使用的 backend (触发 handoff)
- * POST /api/v1/sessions/:id/agent
- * body: { target: 'sga' | 'codex' }
- */
-export async function handleSwitchSessionAgent(req: Request, res: Response): Promise<void> {
-  try {
-    const sessionId = getSessionId(req)
-    const body = req.body as { target?: AgentType }
-    const target = body?.target
-    if (target !== 'sga' && target !== 'codex') {
-      res.status(400).json({ error: 'target must be "sga" or "codex"' })
-      return
-    }
-
-    const store = getSessionStore()
-    let session = store.get(sessionId)
-    if (!session) {
-      // session 不存在时自动创建 (用户可能在发消息前就切换 agent)
-      session = createSession({
-        agentType: 'comfyui-workflow',
-      })
-      session.id = sessionId
-      store.set(session)
-      logger.info(`handleSwitchSessionAgent: auto-created session ${sessionId}`)
-    }
-    const currentAgent = ((session as any).activeAgent ?? 'sga') as AgentType
-    if (currentAgent === target) {
-      res.json({ sessionId, activeAgent: currentAgent, handoff: null, message: 'no change' })
-      return
-    }
-
-    const registry = getBackendRegistry()
-    registry.setActive(target)
-
-    // 1. 源 agent 导出 handoff
-    let handoff: any = null
-    let handoffError: string | null = null
-    try {
-      const sourceBackend = registry.get(currentAgent)
-      if (await sourceBackend.canExportHandoff()) {
-        const bundle = await sourceBackend.exportHandoff(sessionId)
-        handoff = bundle ? { sourceAgent: bundle.sourceAgent, exportedAt: bundle.exportedAt, keyFactCount: bundle.keyFacts.length, messageCount: bundle.recentMessages.length } : null
-      } else {
-        handoffError = `${currentAgent} backend cannot export handoff at this moment`
-      }
-    } catch (err) {
-      handoffError = err instanceof Error ? err.message : String(err)
-      logger.warn(`handoff export failed: ${handoffError}`)
-    }
-
-    // 2. 更新 session.activeAgent
-    ;(session as any).activeAgent = target
-
-    // 3. 目标 agent 启动 + import handoff
-    //    关键: codex 需要拿到 session 的 provider/model 才能起反代 + 写 config.toml,
-    //    否则会 fallback 到 codex 默认的 OpenAI 登录路径.
-    let startError: string | null = null
-    try {
-      const targetBackend = registry.get(target)
-      const provider = getProviderForSession(session)
-      const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
-      await targetBackend.start({
-        provider,
-        model,
-        cwd: process.cwd(),
-      })
-      // consume bundle (read + delete)
-      const handoffStore = getHandoffStore()
-      const bundle = await handoffStore.consume(sessionId)
-      if (bundle) {
-        await targetBackend.importHandoff(bundle)
-      }
-    } catch (err) {
-      if (err instanceof BackendNotAvailableError) {
-        startError = err.message
-      } else {
-        startError = err instanceof Error ? err.message : String(err)
-      }
-      logger.error(`target backend ${target} start/import failed: ${startError}`)
-    }
-
-    // 4. 更新 blackboard
-    const bb = getBlackboard()
-    await bb.recordSwitch(currentAgent, target)
-
-    res.json({
-      sessionId,
-      previousAgent: currentAgent,
-      activeAgent: target,
-      handoff,
-      handoffError,
-      startError,
-      success: !startError,
-    })
-  } catch (err) {
-    logger.error(`handleSwitchSessionAgent failed: ${err instanceof Error ? err.message : String(err)}`)
-    res.status(500).json({ error: 'failed to switch agent' })
   }
 }
 
@@ -1867,7 +1755,11 @@ export async function handleSwitchSessionAgentStable(req: Request, res: Response
       warnings,
       errors,
     }
-    await handoffStore.writeAudit(audit)
+    try {
+      await handoffStore.writeAudit(audit)
+    } catch (auditErr) {
+      logger.warn(`writeAudit failed (switch succeeded): ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`)
+    }
 
     res.json({
       sessionId,
