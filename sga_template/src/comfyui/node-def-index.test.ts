@@ -139,4 +139,64 @@ describe('node-def-index', () => {
     expect(def?.inputs.find(i => i.name === 'config_name')?.required).toBe(false)
     expect(def?.outputs.length).toBe(3)
   })
+
+  it('extracts widget definitions from /object_info including combo options', async () => {
+    const loaderInfo = {
+      CheckpointLoaderSimple: {
+        name: 'CheckpointLoaderSimple',
+        category: 'loaders',
+        input: {
+          required: {
+            ckpt_name: [['model1.safetensors', 'model2.safetensors']],
+            config_name: ['STRING', { default: '', multiline: false }],
+          },
+        },
+        output: ['MODEL', 'CLIP', 'VAE'],
+        output_name: ['MODEL', 'CLIP', 'VAE'],
+      },
+      KSampler: {
+        name: 'KSampler',
+        category: 'sampling',
+        input: {
+          required: {
+            seed: ['INT', { default: 0, min: 0, max: 18446744073709551615, step: 1 }],
+            cfg: ['FLOAT', { default: 8.0, min: 0.0, max: 100.0, step: 0.1 }],
+            sampler_name: [['euler', 'euler_ancestral', 'dpmpp_2m']],
+            denoise: ['FLOAT', { default: 1.0 }],
+          },
+        },
+        output: ['LATENT'],
+        output_name: ['LATENT'],
+      },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => loaderInfo,
+    } as unknown as Response))
+    const { getNodeDef } = await import('./node-def-index.js')
+
+    const ckptDef = await getNodeDef('CheckpointLoaderSimple')
+    expect(ckptDef?.widgets).toHaveLength(2)
+    const ckptWidget = ckptDef?.widgets.find(w => w.name === 'ckpt_name')
+    expect(ckptWidget?.type).toBe('combo')
+    expect(ckptWidget?.options).toEqual(['model1.safetensors', 'model2.safetensors'])
+
+    const kSamplerDef = await getNodeDef('KSampler')
+    expect(kSamplerDef?.widgets).toHaveLength(4)
+    const seedWidget = kSamplerDef?.widgets.find(w => w.name === 'seed')
+    expect(seedWidget?.type).toBe('INT')
+    expect(seedWidget?.defaultValue).toBe(0)
+    expect(seedWidget?.min).toBe(0)
+    expect(seedWidget?.max).toBe(18446744073709551615)
+    expect(seedWidget?.step).toBe(1)
+    const samplerWidget = kSamplerDef?.widgets.find(w => w.name === 'sampler_name')
+    expect(samplerWidget?.type).toBe('combo')
+    expect(samplerWidget?.options).toEqual(['euler', 'euler_ancestral', 'dpmpp_2m'])
+  })
+
+  it('honors SGA_NODE_DEF_INDEX_TTL_MS env override', async () => {
+    vi.stubEnv('SGA_NODE_DEF_INDEX_TTL_MS', '5000')
+    vi.resetModules()
+    const { NODE_DEF_INDEX_TTL_MS } = await import('./node-def-index.js')
+    expect(NODE_DEF_INDEX_TTL_MS).toBe(5000)
+  })
 })

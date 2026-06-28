@@ -12,7 +12,7 @@ export type IssueSource = 'native' | 'agent'
 export type IssueCategory =
   | 'missing_model' | 'missing_node' | 'missing_media' | 'runtime_error'
   | 'port_type_mismatch' | 'orphaned_output' | 'missing_required_widget'
-  | 'invalid_link' | 'unknown_node_type'
+  | 'invalid_link' | 'illegal_link' | 'unsupported_structure' | 'unknown_node_type'
 
 export interface WorkflowIssue {
   /** Stable unique id, e.g. 'port_type_mismatch:<nodeId>:<inputSlot>' */
