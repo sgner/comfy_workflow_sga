@@ -9,16 +9,19 @@
 
 Complete Workstream 3 (Validation Engine) by adding 4 new validation rules on top of the existing `port-type-validator`, and establish Workstream 6 (Domain Test Corpus) with 10 fixtures. Two parallel implementations are planned:
 
-- **Branch A** (`feat/validation-engine-modular`): Approach A — modular validators (one file per concern). Mirrors the existing `port-type-validator.ts` pattern. **This is the spec's primary focus.**
-- **Branch C** (`feat/validation-engine-graph-walker`): Approach C — graph walker + rule plugins. Becomes the future default for `ModelIndex` and reroute-related rules. **Spec sketches the architecture; full plan deferred to a follow-up.**
+* **Branch A** (`feat/validation-engine-modular`): Approach A — modular validators (one file per concern). Mirrors the existing `port-type-validator.ts` pattern. **This is the spec's primary focus.**
+
+* **Branch C** (`feat/validation-engine-graph-walker`): Approach C — graph walker + rule plugins. Becomes the future default for `ModelIndex` and reroute-related rules. **Spec sketches the architecture; full plan deferred to a follow-up.**
 
 Both branches ship the same 4 rules and the same 10 fixtures. Two PRs (one per branch).
 
 ### Out of scope
 
-- Workstream 1 (Workflow Normalizer) — future
-- Workstream 4/5/7 (Patch Planner / Transactional Apply / UI Diagnostics Upgrade) — future
-- Refactoring the existing `port-type-validator.ts` — left as-is to avoid regression
+* Workstream 1 (Workflow Normalizer) — future
+
+* Workstream 4/5/7 (Patch Planner / Transactional Apply / UI Diagnostics Upgrade) — future
+
+* Refactoring the existing `port-type-validator.ts` — left as-is to avoid regression
 
 ## 2. Validation Rules (common to both branches)
 
@@ -30,9 +33,11 @@ All issues use the backend-canonical `WorkflowIssue` type (from `sga_template/sr
 **Category:** `missing_model`
 **Trigger:** A model-loader node references a model filename not present on disk.
 
-- Iterates over model-loader nodes (identified by node type → widget name → category mapping in `model-categories.ts`).
-- Primary check: `ModelIndex.getModelFile(category, widgetValue)` returns `null`.
-- Emits one issue per missing reference, with `nodeId`, `nodeType`, `message` ("Model file 'X' not found in checkpoints/"), `fixSuggestion` ("Check that the file exists under models/checkpoints/ or restart ComfyUI to re-index").
+* Iterates over model-loader nodes (identified by node type → widget name → category mapping in `model-categories.ts`).
+
+* Primary check: `ModelIndex.getModelFile(category, widgetValue)` returns `null`.
+
+* Emits one issue per missing reference, with `nodeId`, `nodeType`, `message` ("Model file 'X' not found in checkpoints/"), `fixSuggestion` ("Check that the file exists under models/checkpoints/ or restart ComfyUI to re-index").
 
 ### 2.2 missing-media (media file existence)
 
@@ -40,20 +45,21 @@ All issues use the backend-canonical `WorkflowIssue` type (from `sga_template/sr
 **Category:** `missing_media`
 **Trigger:** A `LoadImage` / `LoadVideo` / `VHS_LoadVideo` node references an input file not present in `COMFYUI_BASE_DIR/input/`.
 
-- Uses `ModelIndex.getMediaFile(widgetValue)` (media listing is part of `model-index.ts` — see §4.1).
-- Same shape as `missing_model`.
+* Uses `ModelIndex.getMediaFile(widgetValue)` (media listing is part of `model-index.ts` — see §4.1).
+
+* Same shape as `missing_model`.
 
 ### 2.3 illegal-link (4 sub-rules)
 
 **Severity:** `error` for all four
 **Category:** `illegal_link` with subcategory in `message` / `impact`
 
-| Sub-rule | id suffix | Trigger |
-|---|---|---|
-| a) Dangling link | `:dangling` | `link.from_node_id` or `link.to_node_id` not in `nodeMap` |
-| b) Slot out of bounds | `:slot_oob` | `from_slot >= node.outputs.length` OR `to_slot >= node.inputs.length` |
+| Sub-rule                       | id suffix        | Trigger                                                                                                |
+| ------------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------ |
+| a) Dangling link               | `:dangling`      | `link.from_node_id` or `link.to_node_id` not in `nodeMap`                                              |
+| b) Slot out of bounds          | `:slot_oob`      | `from_slot >= node.outputs.length` OR `to_slot >= node.inputs.length`                                  |
 | c) Bidirectional inconsistency | `:bidirectional` | `link` declared in `links[]` but neither endpoint's `inputs[].link` nor `outputs[].link` references it |
-| d) Self-loop | `:self_loop` | `from_node_id === to_node_id` |
+| d) Self-loop                   | `:self_loop`     | `from_node_id === to_node_id`                                                                          |
 
 Pure graph topology — no async dependencies. Can run synchronously.
 
@@ -62,11 +68,11 @@ Pure graph topology — no async dependencies. Can run synchronously.
 **Severity:** `info` for all four
 **Category:** `unsupported_structure`
 
-| Sub-rule | id suffix | Trigger |
-|---|---|---|
-| a) Reroute unconnected | `:reroute_unconnected` | `Reroute` node with `inputs[0].link === null` OR `outputs[0].links` empty/null |
-| b) Note/Primitive orphaned | `:orphaned_aux` | `Note` or `PrimitiveNode` not connected to any other node |
-| c) Deep Reroute chain | `:deep_reroute_chain` | Chain of `Reroute` nodes longer than `SGA_MAX_REROUTE_DEPTH` (default 8) |
+| Sub-rule                       | id suffix               | Trigger                                                                                                                    |
+| ------------------------------ | ----------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| a) Reroute unconnected         | `:reroute_unconnected`  | `Reroute` node with `inputs[0].link === null` OR `outputs[0].links` empty/null                                             |
+| b) Note/Primitive orphaned     | `:orphaned_aux`         | `Note` or `PrimitiveNode` not connected to any other node                                                                  |
+| c) Deep Reroute chain          | `:deep_reroute_chain`   | Chain of `Reroute` nodes longer than `SGA_MAX_REROUTE_DEPTH` (default 8)                                                   |
 | d) Primitive multi-type output | `:primitive_multi_type` | `PrimitiveNode`'s single output connected to inputs of different `NodeDef.inputs[].type` (requires async `NodeDef` lookup) |
 
 Rule (d) requires `NodeDef` lookups → validator is async overall.
@@ -171,10 +177,14 @@ export function getModelIndexStats(): ModelIndexStats
 ```
 
 **Data source:**
-- `COMFYUI_BASE_DIR/models/{category}/` (recursive walk)
-- `extra_model_paths.yaml` parsed for additional roots
-- Media: `COMFYUI_BASE_DIR/input/` recursive walk (matches ComfyUI `LoadImage` which allows subdirectories)
-- File extensions: reuse `MODEL_EXTENSIONS` set from `comfyui-model-list.ts`; media extensions: `.png .jpg .jpeg .webp .gif .mp4 .webm .mov .avi`
+
+* `COMFYUI_BASE_DIR/models/{category}/` (recursive walk)
+
+* `extra_model_paths.yaml` parsed for additional roots
+
+* Media: `COMFYUI_BASE_DIR/input/` recursive walk (matches ComfyUI `LoadImage` which allows subdirectories)
+
+* File extensions: reuse `MODEL_EXTENSIONS` set from `comfyui-model-list.ts`; media extensions: `.png .jpg .jpeg .webp .gif .mp4 .webm .mov .avi`
 
 **Cache:** `<SGA_HOME>/model-index.json` (atomic write via `.tmp` + `fs.rename`).
 
@@ -272,10 +282,10 @@ export const MEDIA_LOADER_TYPES = new Set([
 
 ## 5. Environment Configuration
 
-| Env var | Default | Purpose |
-|---|---|---|
-| `SGA_MODEL_INDEX_TTL_MS` | `300000` (5 min) | ModelIndex cache TTL |
-| `SGA_MAX_REROUTE_DEPTH` | `8` | unsupported-structure rule (c) threshold |
+| Env var                     | Default             | Purpose                                                    |
+| --------------------------- | ------------------- | ---------------------------------------------------------- |
+| `SGA_MODEL_INDEX_TTL_MS`    | `300000` (5 min)    | ModelIndex cache TTL                                       |
+| `SGA_MAX_REROUTE_DEPTH`     | `8`                 | unsupported-structure rule (c) threshold                   |
 | `SGA_NODE_DEF_INDEX_TTL_MS` | `120000` (existing) | Existing NodeDefIndex TTL — surface to env for consistency |
 
 Validators read these via a small `config.ts` helper (or directly via `process.env` with the `||` fallback pattern from `api-base.ts`).
@@ -284,11 +294,11 @@ Validators read these via a small `config.ts` helper (or directly via `process.e
 
 **Design principle:** When ComfyUI is offline, the SGA agent itself is offline (its tools and chat endpoints are unreachable). Therefore the validator does not implement silent degradation.
 
-| Failure | Behavior |
-|---|---|
-| `NodeDefIndex` fetch fails AND no cache file | `NodeDefIndex.getNodeDef()` throws → validator throws → `validateWorkflow()` rejects with the original error |
-| `ModelIndex` filesystem scan fails (e.g. `COMFYUI_BASE_DIR` unset, permission error) | `ModelIndex` throws → validator throws → `validateWorkflow()` rejects |
-| Validator encounters a malformed workflow (missing `nodes` or `links` field) | Throws `Error('Invalid workflow: missing nodes[]')` etc. |
+| Failure                                                                              | Behavior                                                                                                     |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `NodeDefIndex` fetch fails AND no cache file                                         | `NodeDefIndex.getNodeDef()` throws → validator throws → `validateWorkflow()` rejects with the original error |
+| `ModelIndex` filesystem scan fails (e.g. `COMFYUI_BASE_DIR` unset, permission error) | `ModelIndex` throws → validator throws → `validateWorkflow()` rejects                                        |
+| Validator encounters a malformed workflow (missing `nodes` or `links` field)         | Throws `Error('Invalid workflow: missing nodes[]')` etc.                                                     |
 
 **Rationale:** The caller (SGA agent / API handler) already knows whether ComfyUI is reachable — it should not call `validateWorkflow()` when ComfyUI is offline. Silent degradation would mask real problems (e.g. misconfigured `COMFYUI_BASE_DIR` looks identical to "no models installed").
 
@@ -323,7 +333,7 @@ Fixtures:
 4. `lora-stack.json` — multiple LoraLoaders
 5. `multi-output.json` — workflow branches to multiple SaveImage
 6. `missing-model.json` — CheckpointLoaderSimple references non-existent checkpoint
-7. `missing-custom-node.json` — workflow uses "CustomNode_X" not in object_info
+7. `missing-custom-node.json` — workflow uses "CustomNode\_X" not in object\_info
 8. `malformed-links.json` — dangling link, slot OOB, bidirectional inconsistency
 9. `widget-schema-mismatch.json` — INT widget fed STRING via Primitive
 10. `reroute-chain-deep.json` — 10-deep Reroute chain
@@ -346,23 +356,26 @@ export function listFixtures(): string[]
 
 ### 7.2 Test files
 
-| File | Tests | Notes |
-|---|---|---|
-| `model-index.test.ts` | 6 | Mirrors `node-def-index.test.ts` structure: empty / fresh / cache-file / stale / unknown / multi-category |
-| `missing-ref-validator.test.ts` | 8 | clean / missing ckpt / missing lora / missing vae / missing media / present-on-disk-not-in-widget-options / unknown loader type / unknown widget name |
-| `illegal-link-validator.test.ts` | 8 | clean / dangling / slot OOB / bidirectional / self-loop / multiple violations / valid link ignored / source=native |
-| `unsupported-structure-validator.test.ts` | 8 | clean / reroute unconnected / Note orphaned / Primitive orphaned / 8-deep OK / 9-deep warn / Primitive multi-type / source=native |
-| `validate-workflow.test.ts` | 3 | runs all 4 / dedup by id / source ordering |
-| `fixture-loader.test.ts` | 1 | all 10 fixtures parse and have required fields |
+| File                                      | Tests | Notes                                                                                                                                                 |
+| ----------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model-index.test.ts`                     | 6     | Mirrors `node-def-index.test.ts` structure: empty / fresh / cache-file / stale / unknown / multi-category                                             |
+| `missing-ref-validator.test.ts`           | 8     | clean / missing ckpt / missing lora / missing vae / missing media / present-on-disk-not-in-widget-options / unknown loader type / unknown widget name |
+| `illegal-link-validator.test.ts`          | 8     | clean / dangling / slot OOB / bidirectional / self-loop / multiple violations / valid link ignored / source=native                                    |
+| `unsupported-structure-validator.test.ts` | 8     | clean / reroute unconnected / Note orphaned / Primitive orphaned / 8-deep OK / 9-deep warn / Primitive multi-type / source=native                     |
+| `validate-workflow.test.ts`               | 3     | runs all 4 / dedup by id / source ordering                                                                                                            |
+| `fixture-loader.test.ts`                  | 1     | all 10 fixtures parse and have required fields                                                                                                        |
 
-**Total new tests: ~34** (plus 10 fixtures). Existing 28 tests untouched.
+**Total new tests: \~34** (plus 10 fixtures). Existing 28 tests untouched.
 
 ### 7.3 Test setup pattern
 
 Following the existing pattern from `port-type-validator.test.ts`:
-- `vi.stubEnv('SGA_HOME', '<tmpdir>')` to redirect cache files
-- `vi.stubGlobal('fetch', vi.fn(...))` to stub `/object_info` (return fixture's `objectInfo`)
-- Stub `ModelIndex` filesystem scan by pointing `COMFYUI_BASE_DIR` at fixture's virtual fs (or by mocking `getModelFile` directly — fixture-driven approach preferred)
+
+* `vi.stubEnv('SGA_HOME', '<tmpdir>')` to redirect cache files
+
+* `vi.stubGlobal('fetch', vi.fn(...))` to stub `/object_info` (return fixture's `objectInfo`)
+
+* Stub `ModelIndex` filesystem scan by pointing `COMFYUI_BASE_DIR` at fixture's virtual fs (or by mocking `getModelFile` directly — fixture-driven approach preferred)
 
 For Branch A, the existing `vi.useFakeTimers()` + `vi.resetModules()` pattern from `node-def-index.test.ts` is reused.
 
@@ -412,20 +425,22 @@ export async function validateWorkflow(workflow: Record<string, unknown>): Promi
 
 ### 8.2 Differences from Branch A
 
-| Aspect | Branch A (modular) | Branch C (graph walker) |
-|---|---|---|
-| Graph walk | Once per validator (4× total) | Once total (`compileGraph`) |
-| Rule definition | Function per file | `ValidationRule` object |
-| Adding new rule | New file + register in orchestrator | Push to `RULES` array |
-| Rule API | Free-form signature | Standardized `(graph) => issues` |
-| Testability | Validator-level (current pattern) | Rule-level (more granular) |
-| Migration of `port-type-validator.ts` | Untouched | Refactored into `portTypeRule` |
+| Aspect                                | Branch A (modular)                  | Branch C (graph walker)          |
+| ------------------------------------- | ----------------------------------- | -------------------------------- |
+| Graph walk                            | Once per validator (4× total)       | Once total (`compileGraph`)      |
+| Rule definition                       | Function per file                   | `ValidationRule` object          |
+| Adding new rule                       | New file + register in orchestrator | Push to `RULES` array            |
+| Rule API                              | Free-form signature                 | Standardized `(graph) => issues` |
+| Testability                           | Validator-level (current pattern)   | Rule-level (more granular)       |
+| Migration of `port-type-validator.ts` | Untouched                           | Refactored into `portTypeRule`   |
 
 ### 8.3 Defaults
 
 Branch C becomes the default for:
-- `ModelIndex` (the new `model-index.ts` is shared, but Branch C's `missingModelRule` is the canonical consumer)
-- Reroute rules (consolidated under `deepRerouteChainRule` + `rerouteUnconnectedRule`)
+
+* `ModelIndex` (the new `model-index.ts` is shared, but Branch C's `missingModelRule` is the canonical consumer)
+
+* Reroute rules (consolidated under `deepRerouteChainRule` + `rerouteUnconnectedRule`)
 
 After both PRs merge, Branch A's modular files are deprecated in favor of Branch C's rule plugins (deprecation path: 1 release with both available, then remove Branch A's modular files).
 
@@ -435,7 +450,7 @@ After both PRs merge, Branch A's modular files are deprecated in favor of Branch
 
 **Branch:** `feat/validation-engine-modular` (new branch from `main` after PR #1 of the previous feature merges)
 **Implements:** All of §2, §3, §4, §5, §6, §7
-**Size:** ~10 new files + 10 fixtures + ~34 tests
+**Size:** \~10 new files + 10 fixtures + \~34 tests
 **Reviewer note:** Approach C is sketched in §8 but NOT implemented in this PR.
 
 ### PR 2: Approach C (parallel branch)
@@ -449,32 +464,46 @@ Both PRs use the SAME fixtures and the SAME rule semantics — they differ only 
 
 ## 10. Backward Compatibility
 
-- `NodeDef` schema extension is additive — existing consumers see new `widgets` field, no breakage.
-- `comfyui-model-list.ts` refactored to import from `model-categories.ts`; external tool behavior unchanged.
-- `port-type-validator.ts` untouched (Approach A) / refactored (Approach C, but only on Branch C).
-- No public API removals.
+* `NodeDef` schema extension is additive — existing consumers see new `widgets` field, no breakage.
+
+* `comfyui-model-list.ts` refactored to import from `model-categories.ts`; external tool behavior unchanged.
+
+* `port-type-validator.ts` untouched (Approach A) / refactored (Approach C, but only on Branch C).
+
+* No public API removals.
 
 ## 11. Open Questions (resolve during plan writing)
 
-1. **Fixture `objectInfo` shape** — should fixtures include a full `/object_info` stub, or only the node types they reference? (Lean: minimal — only referenced types, to keep fixtures small.)
-2. ~~**`ModelIndex` media scan depth** — recursive or flat for `input/`?~~ **Resolved:** recursive (see §4.1).
-3. **`MODEL_LOADER_MAPPING` completeness** — should we cover all custom-node loaders (AnimateDiff, IPAdapter, etc.) or just core ComfyUI loaders? (Lean: core only for v1; custom-node loaders fall through to widget-name heuristic.)
+1. **Fixture** **`objectInfo`** **shape** — should fixtures include a full `/object_info` stub, or only the node types they reference? (Lean: minimal — only referenced types, to keep fixtures small.)
+2. **~~`ModelIndex`~~~~media scan depth~~**  ~~— recursive or flat for~~ ~~`input/`?~~ **Resolved:** recursive (see §4.1).
+3. **`MODEL_LOADER_MAPPING`** **completeness** — should we cover all custom-node loaders (AnimateDiff, IPAdapter, etc.) or just core ComfyUI loaders? (Lean: core only for v1; custom-node loaders fall through to widget-name heuristic.)
 4. **Dedup collision** — what if two validators legitimately flag the same node with different `id` strings? (Lean: keep both — `id` includes the rule name, so collisions mean different issues.)
 
 ## 12. Acceptance Criteria
 
-- [ ] All 4 new validation rules implemented (Approach A) with the exact semantics in §2.
-- [ ] 10 fixtures present and parseable by `fixture-loader.ts`.
-- [ ] ~34 new tests pass; existing 28 tests still pass; `tsc --noEmit` clean.
-- [ ] Env vars `SGA_MODEL_INDEX_TTL_MS` and `SGA_MAX_REROUTE_DEPTH` honored.
-- [ ] No degradation logic — failures propagate (per §6).
-- [ ] `comfyui-model-list.ts` refactored to use shared `model-categories.ts`; tool behavior unchanged.
-- [ ] `NodeDef.widgets` field populated from `/object_info` for at least the loader node types in `MODEL_LOADER_MAPPING`.
-- [ ] PR 1 (Approach A) mergeable independently; PR 2 (Approach C) plan sketched in §8.
+* [ ] All 4 new validation rules implemented (Approach A) with the exact semantics in §2.
+
+* [ ] 10 fixtures present and parseable by `fixture-loader.ts`.
+
+* [ ] \~34 new tests pass; existing 28 tests still pass; `tsc --noEmit` clean.
+
+* [ ] Env vars `SGA_MODEL_INDEX_TTL_MS` and `SGA_MAX_REROUTE_DEPTH` honored.
+
+* [ ] No degradation logic — failures propagate (per §6).
+
+* [ ] `comfyui-model-list.ts` refactored to use shared `model-categories.ts`; tool behavior unchanged.
+
+* [ ] `NodeDef.widgets` field populated from `/object_info` for at least the loader node types in `MODEL_LOADER_MAPPING`.
+
+* [ ] PR 1 (Approach A) mergeable independently; PR 2 (Approach C) plan sketched in §8.
 
 ## References
 
-- Predecessor plan: `docs/superpowers/plans/2026-06-28-node-def-index-and-port-validator.md`
-- Capability plan: `docs/workflow-domain-capability-plan.md` (Workstreams 3 + 6)
-- Architecture: `ARCHITECTURE.md`
-- Existing patterns: `sga_template/src/comfyui/node-def-index.ts`, `sga_template/src/comfyui/validators/port-type-validator.ts`, `sga_template/src/tools/built-in/comfyui-model-list.ts`
+* Predecessor plan: `docs/superpowers/plans/2026-06-28-node-def-index-and-port-validator.md`
+
+* Capability plan: `docs/workflow-domain-capability-plan.md` (Workstreams 3 + 6)
+
+* Architecture: `ARCHITECTURE.md`
+
+* Existing patterns: `sga_template/src/comfyui/node-def-index.ts`, `sga_template/src/comfyui/validators/port-type-validator.ts`, `sga_template/src/tools/built-in/comfyui-model-list.ts`
+
