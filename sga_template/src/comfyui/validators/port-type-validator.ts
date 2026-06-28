@@ -146,6 +146,8 @@ export async function validatePortTypes(workflow: Record<string, unknown>): Prom
     if (!Array.isArray(node.widgets_values)) continue
     const widgetCount = node.widgets_values.length
     if (widgetCount < requiredWidgets.length) {
+      // NOTE: positional mapping — widgets_values[i] is assumed to align with requiredWidgets[i].
+      // In real ComfyUI graphs with converted inputs, this may report wrong widget names.
       const missing = requiredWidgets.slice(widgetCount).map(w => w.name).join(', ')
       issues.push({
         id: `missing_required_widget:${node.id}`,

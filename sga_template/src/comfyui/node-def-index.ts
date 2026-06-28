@@ -36,7 +36,7 @@ export interface NodeDef {
 export interface NodeDefIndexStats {
   size: number
   fetchedAt: number | null
-  source: 'memory' | 'cache-file' | 'fresh' | 'empty'
+  source: 'cache-file' | 'fresh' | 'empty'
 }
 
 interface CacheFile {
