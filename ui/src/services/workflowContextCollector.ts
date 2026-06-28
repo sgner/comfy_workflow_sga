@@ -601,7 +601,7 @@ function collectSystemInfo(): SystemInfo {
     return _cachedSystemInfo
   }
 
-  getSystemInfoAsync()
+  void getSystemInfoAsync()
   return {}
 }
 

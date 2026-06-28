@@ -201,6 +201,8 @@ interface ChatPanelProps {
   tokenUsage: TokenUsage | null
   activeAgent?: 'sga' | 'codex'
   onAgentSwitch?: (target: 'sga' | 'codex') => void
+  codexSwitchDisabled?: boolean
+  codexSwitchReason?: string
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
@@ -218,7 +220,9 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
   onHumanInputResponse,
   tokenUsage,
   activeAgent = 'sga',
-  onAgentSwitch
+  onAgentSwitch,
+  codexSwitchDisabled = false,
+  codexSwitchReason
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
   const approvalRef = useRef<HTMLDivElement>(null)
@@ -324,13 +328,13 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
               </button>
               <button
                 onClick={() => onAgentSwitch('codex')}
-                disabled={isProcessing}
+                disabled={isProcessing || codexSwitchDisabled}
                 className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                   activeAgent === 'codex'
                     ? 'bg-emerald-600 text-white'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
-                title={t(language, 'useCodexBackend')}
+                title={codexSwitchDisabled ? codexSwitchReason : t(language, 'useCodexBackend')}
               >
                 Codex
               </button>

@@ -89,6 +89,98 @@ export const fetchCodexBuildStatus = async (backendUrl: string): Promise<CodexBu
     }
 };
 
+export type CodexCapabilityState = 'disabled' | 'unavailable' | 'source-present' | 'building' | 'ready' | 'failed'
+
+export interface CodexCapabilityStatus {
+    enabled: boolean
+    mode: 'auto' | 'true' | 'false'
+    state: CodexCapabilityState
+    build: {
+        status: string
+        lastCheckedAt: string
+        error: string | null
+        pid?: number
+    }
+    binary: {
+        available: boolean
+        source?: string
+        revision?: string
+    }
+    canSwitchToCodex: boolean
+    message: string
+}
+
+export interface HandoffStatus {
+    sessionId: string
+    activeAgent: 'sga' | 'codex'
+    lastSwitchAt: string | null
+    pendingHandoff: boolean
+    lastExport: { ok: boolean; messageCount: number; keyFactCount: number; error?: string } | null
+    lastImport: { ok: boolean; targetAgent: 'sga' | 'codex'; error?: string } | null
+    messageCount: number
+    keyFactCount: number
+    warnings: string[]
+    errors: string[]
+}
+
+export interface SystemDiagnostics {
+    status: 'ok' | 'degraded'
+    backend: {
+        healthy: boolean
+        service: string
+        nodeVersion: string
+        cwdConfigured: boolean
+        sgaHomeConfigured: boolean
+        sessionDirExists: boolean
+        configDirExists: boolean
+    }
+    providers: {
+        count: number
+        defaultProvider: string | null
+        missingKeys: string[]
+        providers: Array<{ id: string; name: string; provider: string; isDefault: boolean; hasApiKey: boolean }>
+        hasGitHubToken: boolean
+        sgaProviderCount: number
+        sgaDefaultProvider: string | null
+    }
+    codex: Pick<CodexCapabilityStatus, 'enabled' | 'mode' | 'state' | 'build' | 'binary' | 'canSwitchToCodex' | 'message'>
+    mcp: {
+        connected: number
+        total: number
+        servers: Array<{ name: string; status: string; toolCount: number; error?: string }>
+    }
+    comfyui: {
+        reachable: boolean | null
+        baseUrl: string | null
+        note?: string
+    }
+    errors: string[]
+}
+
+export const fetchCodexStatus = async (backendUrl: string): Promise<CodexCapabilityStatus | null> => {
+    try {
+        const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/codex/status`, {
+            signal: AbortSignal.timeout(5000)
+        })
+        if (!res.ok) return null
+        return res.json()
+    } catch {
+        return null
+    }
+};
+
+export const fetchSystemDiagnostics = async (backendUrl: string): Promise<SystemDiagnostics | null> => {
+    try {
+        const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/diagnostics`, {
+            signal: AbortSignal.timeout(5000)
+        })
+        if (!res.ok) return null
+        return res.json()
+    } catch {
+        return null
+    }
+};
+
 // --- GitHub Token Endpoints ---
 
 export const getGitHubStatus = async (backendUrl: string): Promise<GitHubTokenStatus> => {
@@ -179,25 +271,46 @@ export const checkBackendHealth = async (backendUrl: string): Promise<{ status: 
 
 // --- Agent Backend Switch ---
 
-export const getActiveAgent = async (backendUrl: string, sessionId: string): Promise<{ activeAgent: 'sga' | 'codex' }> => {
+export const getActiveAgent = async (backendUrl: string, sessionId: string): Promise<{ activeAgent: 'sga' | 'codex'; handoff?: unknown; lastSwitchAt?: number | null }> => {
     try {
         const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/agent`);
         if (!res.ok) return { activeAgent: 'sga' };
         const data = await res.json();
-        return { activeAgent: data.activeAgent ?? 'sga' };
+        return { activeAgent: data.activeAgent ?? 'sga', handoff: data.handoff, lastSwitchAt: data.lastSwitchAt ?? null };
     } catch {
         return { activeAgent: 'sga' };
     }
 };
 
-export const switchAgent = async (backendUrl: string, sessionId: string, target: 'sga' | 'codex'): Promise<{ activeAgent: string; handoff: unknown | null }> => {
+export const switchAgent = async (backendUrl: string, sessionId: string, target: 'sga' | 'codex'): Promise<{ activeAgent: 'sga' | 'codex'; handoff: unknown | null; audit?: unknown; warnings?: string[]; errors?: string[]; success?: boolean }> => {
     const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target })
     });
-    if (!res.ok) throw new Error(`Failed to switch agent to ${target}`);
+    if (!res.ok) {
+        let message = `Failed to switch agent to ${target}`
+        try {
+            const body = await res.json()
+            message = body.error || body.message || message
+        } catch {
+            // keep generic message
+        }
+        throw new Error(message);
+    }
     return res.json();
+};
+
+export const fetchHandoffStatus = async (backendUrl: string, sessionId: string): Promise<HandoffStatus | null> => {
+    try {
+        const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/sessions/${encodeURIComponent(sessionId)}/handoff/status`, {
+            signal: AbortSignal.timeout(5000)
+        })
+        if (!res.ok) return null
+        return res.json()
+    } catch {
+        return null
+    }
 };
 
 export const analyzeWorkflow = async (backendUrl: string, workflow: Record<string, unknown>, language: string): Promise<{

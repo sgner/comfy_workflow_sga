@@ -105,6 +105,9 @@ export class CodexBackend implements AgentBackend {
 
   async start(opts: BackendStartOptions): Promise<void> {
     if (!this.binary) {
+      this.binary = detectCodexBinary()
+    }
+    if (!this.binary) {
       throw new BackendNotAvailableError(
         'codex',
         'codex binary not found. Build it via scripts/build-codex.ps1 or set CODEX_BINARY env.',
@@ -489,6 +492,9 @@ export class CodexBackend implements AgentBackend {
 
   async healthCheck(): Promise<BackendHealth> {
     const start = Date.now()
+    if (!this.binary) {
+      this.binary = detectCodexBinary()
+    }
     if (!this.binary) {
       return {
         ok: false,

@@ -35,8 +35,12 @@ import {
   handleListBackends,
   handleBackendsHealth,
   handleCodexBuildStatus,
+  handleCodexStatus,
+  handleSystemDiagnostics,
   handleGetSessionAgent,
+  handleGetHandoffStatus,
   handleSwitchSessionAgent,
+  handleSwitchSessionAgentStable,
   handleClearHandoff,
   handleListTasks,
   handleGetTask,
@@ -187,8 +191,11 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.get(`${base}/backends`, handleListBackends)
   app.get(`${base}/backends/health`, handleBackendsHealth)
   app.get(`${base}/codex/build-status`, handleCodexBuildStatus)
+  app.get(`${base}/codex/status`, handleCodexStatus)
+  app.get(`${base}/diagnostics`, handleSystemDiagnostics)
   app.get(`${base}/sessions/:sessionId/agent`, handleGetSessionAgent)
-  app.post(`${base}/sessions/:sessionId/agent`, handleSwitchSessionAgent)
+  app.post(`${base}/sessions/:sessionId/agent`, handleSwitchSessionAgentStable)
+  app.get(`${base}/sessions/:sessionId/handoff/status`, handleGetHandoffStatus)
   app.delete(`${base}/sessions/:sessionId/handoff`, handleClearHandoff)
 
   app.get(`${base}/tasks`, handleListTasks)

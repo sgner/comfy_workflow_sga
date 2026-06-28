@@ -1443,6 +1443,8 @@ export function handleGetUsage(req: Request, res: Response): void {
 
 import { getBackendRegistry, BackendNotAvailableError, getHandoffStore, getBlackboard } from '../agents/index.js'
 import type { AgentType } from '../agents/backend.js'
+import { codexSwitchError, getCodexCapabilityStatus } from './codex-status.js'
+import { buildSystemDiagnostics } from './diagnostics.js'
 
 /**
  * 列出所有可用的 agent backend
@@ -1514,6 +1516,24 @@ export function handleCodexBuildStatus(_req: Request, res: Response): void {
 }
 
 /** 探活 PID. 跨平台. */
+export function handleCodexStatus(_req: Request, res: Response): void {
+  try {
+    res.json(getCodexCapabilityStatus())
+  } catch (err) {
+    logger.error(`handleCodexStatus failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to get codex status' })
+  }
+}
+
+export function handleSystemDiagnostics(_req: Request, res: Response): void {
+  try {
+    res.json(buildSystemDiagnostics(getComfyUIConfigStore()))
+  } catch (err) {
+    logger.error(`handleSystemDiagnostics failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ status: 'degraded', error: 'failed to build diagnostics' })
+  }
+}
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -1542,12 +1562,15 @@ export async function handleGetSessionAgent(req: Request, res: Response): Promis
     const activeAgent = (session as any).activeAgent ?? 'sga'
     const handoffStore = getHandoffStore()
     const peek = await handoffStore.peek(sessionId)
+    const audit = await handoffStore.readAudit(sessionId)
     const bb = getBlackboard()
     const bbData = await bb.read()
     res.json({
       sessionId,
       activeAgent,
       pendingHandoff: peek ? { sourceAgent: peek.sourceAgent, exportedAt: peek.exportedAt } : null,
+      lastSwitchAt: audit?.switchedAt ?? bbData.lastSwitchAt,
+      handoff: audit,
       blackboard: {
         currentAgent: bbData.currentAgent,
         lastSwitchAt: bbData.lastSwitchAt,
@@ -1556,6 +1579,34 @@ export async function handleGetSessionAgent(req: Request, res: Response): Promis
   } catch (err) {
     logger.error(`handleGetSessionAgent failed: ${err instanceof Error ? err.message : String(err)}`)
     res.status(500).json({ error: 'failed to get session agent' })
+  }
+}
+
+export async function handleGetHandoffStatus(req: Request, res: Response): Promise<void> {
+  try {
+    const sessionId = getSessionId(req)
+    const store = getSessionStore()
+    const session = store.get(sessionId)
+    const handoffStore = getHandoffStore()
+    const pending = await handoffStore.peek(sessionId)
+    const audit = await handoffStore.readAudit(sessionId)
+    const activeAgent = ((session as any)?.activeAgent ?? audit?.activeAgent ?? 'sga') as AgentType
+
+    res.json({
+      sessionId,
+      activeAgent,
+      lastSwitchAt: audit?.switchedAt ? new Date(audit.switchedAt).toISOString() : null,
+      pendingHandoff: !!pending,
+      lastExport: audit?.lastExport ?? null,
+      lastImport: audit?.lastImport ?? null,
+      messageCount: audit?.lastExport.messageCount ?? pending?.recentMessages.length ?? 0,
+      keyFactCount: audit?.lastExport.keyFactCount ?? pending?.keyFacts.length ?? 0,
+      warnings: audit?.warnings ?? [],
+      errors: audit?.errors ?? [],
+    })
+  } catch (err) {
+    logger.error(`handleGetHandoffStatus failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to get handoff status' })
   }
 }
 
@@ -1656,6 +1707,180 @@ export async function handleSwitchSessionAgent(req: Request, res: Response): Pro
     })
   } catch (err) {
     logger.error(`handleSwitchSessionAgent failed: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).json({ error: 'failed to switch agent' })
+  }
+}
+
+export async function handleSwitchSessionAgentStable(req: Request, res: Response): Promise<void> {
+  try {
+    const sessionId = getSessionId(req)
+    const body = req.body as { target?: AgentType }
+    const target = body?.target
+    if (target !== 'sga' && target !== 'codex') {
+      res.status(400).json({ error: 'target must be "sga" or "codex"' })
+      return
+    }
+
+    const store = getSessionStore()
+    let session = store.get(sessionId)
+    if (!session) {
+      session = createSession({ agentType: 'comfyui-workflow' })
+      session.id = sessionId
+      store.set(session)
+      logger.info(`handleSwitchSessionAgentStable: auto-created session ${sessionId}`)
+    }
+
+    const currentAgent = ((session as any).activeAgent ?? 'sga') as AgentType
+    if (currentAgent === target) {
+      res.json({ sessionId, activeAgent: currentAgent, handoff: null, message: 'no change', success: true })
+      return
+    }
+
+    if (target === 'codex') {
+      const codexStatus = getCodexCapabilityStatus()
+      const switchError = codexSwitchError(codexStatus)
+      if (switchError) {
+        res.status(409).json({
+          sessionId,
+          previousAgent: currentAgent,
+          activeAgent: currentAgent,
+          success: false,
+          code: switchError.code,
+          error: switchError.message,
+          codex: codexStatus,
+        })
+        return
+      }
+    }
+
+    const registry = getBackendRegistry()
+    const handoffStore = getHandoffStore()
+    const warnings: string[] = []
+    const errors: string[] = []
+    let handoff: { sourceAgent: AgentType; exportedAt: number; keyFactCount: number; messageCount: number } | null = null
+    let exportError: string | undefined
+    let importError: string | undefined
+
+    try {
+      const sourceBackend = registry.get(currentAgent)
+      if (await sourceBackend.canExportHandoff()) {
+        const bundle = await sourceBackend.exportHandoff(sessionId)
+        handoff = bundle
+          ? {
+              sourceAgent: bundle.sourceAgent,
+              exportedAt: bundle.exportedAt,
+              keyFactCount: bundle.keyFacts.length,
+              messageCount: bundle.recentMessages.length,
+            }
+          : null
+      } else {
+        exportError = `${currentAgent} backend cannot export handoff at this moment`
+        warnings.push(exportError)
+      }
+    } catch (err) {
+      exportError = err instanceof Error ? err.message : String(err)
+      warnings.push(`handoff export failed: ${exportError}`)
+      logger.warn(`handoff export failed: ${exportError}`)
+    }
+
+    try {
+      const targetBackend = registry.get(target)
+      const provider = getProviderForSession(session)
+      const model = session.config.model ?? provider.config.defaultModel ?? 'sonnet'
+      await targetBackend.start({ provider, model, cwd: process.cwd() })
+
+      const bundle = await handoffStore.consume(sessionId)
+      if (bundle) {
+        try {
+          await targetBackend.importHandoff(bundle)
+        } catch (err) {
+          importError = err instanceof Error ? err.message : String(err)
+          warnings.push(`handoff import failed: ${importError}`)
+          logger.warn(`handoff import failed: ${importError}`)
+        }
+      }
+    } catch (err) {
+      const startError = err instanceof BackendNotAvailableError
+        ? err.message
+        : err instanceof Error ? err.message : String(err)
+      errors.push(startError)
+      logger.error(`target backend ${target} start/import failed: ${startError}`)
+
+      await handoffStore.writeAudit({
+        sessionId,
+        fromAgent: currentAgent,
+        toAgent: target,
+        switchedAt: Date.now(),
+        activeAgent: currentAgent,
+        lastExport: {
+          ok: !exportError,
+          sourceAgent: currentAgent,
+          messageCount: handoff?.messageCount ?? 0,
+          keyFactCount: handoff?.keyFactCount ?? 0,
+          ...(exportError ? { error: exportError } : {}),
+        },
+        lastImport: { ok: false, targetAgent: target, error: startError },
+        warnings,
+        errors,
+      })
+
+      res.status(409).json({
+        sessionId,
+        previousAgent: currentAgent,
+        activeAgent: currentAgent,
+        requestedAgent: target,
+        handoff,
+        warnings,
+        errors,
+        startError,
+        success: false,
+      })
+      return
+    }
+
+    ;(session as any).activeAgent = target
+    session.updatedAt = Date.now()
+    store.markDirty(sessionId)
+    registry.setActive(target)
+
+    const bb = getBlackboard()
+    await bb.recordSwitch(currentAgent, target)
+
+    const audit = {
+      sessionId,
+      fromAgent: currentAgent,
+      toAgent: target,
+      switchedAt: Date.now(),
+      activeAgent: target,
+      lastExport: {
+        ok: !exportError,
+        sourceAgent: currentAgent,
+        messageCount: handoff?.messageCount ?? 0,
+        keyFactCount: handoff?.keyFactCount ?? 0,
+        ...(exportError ? { error: exportError } : {}),
+      },
+      lastImport: {
+        ok: !importError,
+        targetAgent: target,
+        ...(importError ? { error: importError } : {}),
+      },
+      warnings,
+      errors,
+    }
+    await handoffStore.writeAudit(audit)
+
+    res.json({
+      sessionId,
+      previousAgent: currentAgent,
+      activeAgent: target,
+      handoff,
+      audit,
+      warnings,
+      errors,
+      success: true,
+    })
+  } catch (err) {
+    logger.error(`handleSwitchSessionAgentStable failed: ${err instanceof Error ? err.message : String(err)}`)
     res.status(500).json({ error: 'failed to switch agent' })
   }
 }

@@ -142,7 +142,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   const [checkpoints, setCheckpoints] = useState<WorkflowCheckpoint[]>([])
 
   const handleCopyJson = () => {
-    navigator.clipboard.writeText(JSON.stringify(workflow, null, 2))
+    void navigator.clipboard.writeText(JSON.stringify(workflow, null, 2))
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -168,7 +168,6 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
     if (Array.isArray(node.size) && node.size.length >= 1) {
         w = Number(node.size[0]);
     } else if (node.size && typeof node.size === 'object') {
-        // @ts-ignore
         if ('0' in node.size) w = Number(node.size[0]);
     }
     if (w < NODE_WIDTH_DEFAULT) w = NODE_WIDTH_DEFAULT;
@@ -185,7 +184,6 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
     if (Array.isArray(node.size) && node.size.length >= 2) {
         h = Math.max(h, Number(node.size[1]));
     } else if (node.size && typeof node.size === 'object') {
-        // @ts-ignore
         if ('1' in node.size) h = Math.max(h, Number(node.size[1]));
     }
     
@@ -1080,7 +1078,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
 
   useEffect(() => {
     if (activeTab === 'context' && !contextData) {
-      handleRefreshContext()
+      void handleRefreshContext()
     }
   }, [activeTab])
 
@@ -1136,7 +1134,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
           <button
             onClick={() => {
               if (contextFormatted) {
-                navigator.clipboard.writeText(contextFormatted)
+                void navigator.clipboard.writeText(contextFormatted)
               }
             }}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs transition-colors"
@@ -1448,7 +1446,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                     <button
                       onClick={() => {
                         if (backendUrl) {
-                          disconnectMCPServer(backendUrl, server.name).then(() => {
+                          void disconnectMCPServer(backendUrl, server.name).then(() => {
                             setMcpServers(prev => prev.map(s => s.name === server.name ? { ...s, status: 'disconnected' } : s))
                           })
                         }
@@ -1476,7 +1474,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                   <button
                     onClick={() => {
                       if (backendUrl) {
-                        deleteMCPServer(backendUrl, server.name).then(() => {
+                        void deleteMCPServer(backendUrl, server.name).then(() => {
                           setMcpServers(prev => prev.filter(s => s.name !== server.name))
                         })
                       }
@@ -1617,7 +1615,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
                   <button
                     onClick={() => {
                       if (backendUrl) {
-                        deleteSkill(backendUrl, skill.name).then(() => {
+                        void deleteSkill(backendUrl, skill.name).then(() => {
                           setSkills(prev => prev.filter(s => s.name !== skill.name))
                         })
                       }

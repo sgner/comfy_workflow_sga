@@ -1,6 +1,6 @@
 ﻿# 技术栈总览
 
-> 版本: v0.7 · 最后更新: 2026-06-22
+> Version: stabilization baseline · Last updated: 2026-06-28
 > 范围: `comfy_workflow_agent` ComfyUI 自定义节点 + SGA Agent 框架 + Codex Agent 子模块
 
 本项目是一个 **ComfyUI 自定义节点**，内嵌一个 **Node.js + TypeScript** 的 Agent 后端服务（SGA），并通过子进程方式集成一个 **Rust** 编写的 Codex Agent。本文档列出项目所采用的全部主要技术栈。
@@ -28,7 +28,7 @@
 | 日志 | 自研 `utils/logger.ts`（控制台 + 可选文件） | 通过 `LOG_DIR` / `LOG_ENABLE_FILE` 控制 |
 | Lint/Format | **ESLint 8 + Prettier 3 + @typescript-eslint 8** | 仅前端 `ui/` 启用 |
 | 构建 | **tsc 5.7**（后端） + **tsc + vite build**（前端） | 后端直接 `tsc`；前端 `tsc && vite build` |
-| 测试 | 暂无统一框架 | 内置 `codex-e2e-*.ts` 等冒烟脚本 |
+| 测试 | **Vitest** (backend baseline) | `sga_template` includes `npm test`; UI still uses typecheck/lint/build as baseline |
 | 进程管理 | **PowerShell + msiexec/zip**（Windows）/ **apt-style**（Linux/macOS） | `__init__.py` 自动安装 Node.js |
 | 国际化（前端） | 自研 4 语言（zh / en / ja / ko） | 嵌入式字典，无外部 i18n 库 |
 | 国际化（后端） | 通过 `language` 请求参数动态切 prompt | 详见 `src/comfyui/context-injector.ts` |
@@ -273,6 +273,7 @@ cd sga_template
 npm install
 npm run dev      # tsx watch src/server/main.ts
 npm run typecheck
+npm test
 npm run build    # tsc → dist/
 ```
 
@@ -283,9 +284,38 @@ cd ui
 npm install
 npm run dev      # vite dev server
 npm run typecheck
-npm run build    # tsc && vite build → ../web/
 npm run lint
+npm run build    # tsc && vite build → ../web/
 ```
+
+### 8.5 发布验证基线
+
+后端:
+
+```bash
+cd sga_template
+npm run typecheck
+npm test
+```
+
+前端:
+
+```bash
+cd ui
+npm run typecheck
+npm run lint
+npm run build
+```
+
+这些检查默认不依赖真实 Codex binary、网络或外部 API key。
+
+### 8.6 可观测性 API
+
+| API | 用途 |
+|---|---|
+| `GET /api/v1/codex/status` | 查询 Codex capability state: `disabled`, `unavailable`, `source-present`, `building`, `ready`, `failed`。 |
+| `GET /api/v1/diagnostics` | 聚合后端、provider、Codex、MCP、ComfyUI 与最近错误状态，输出已脱敏。 |
+| `GET /api/v1/sessions/:sessionId/handoff/status` | 查看最近一次 SGA/Codex agent handoff 的导出/导入摘要。 |
 
 ### 8.3 一键启动（生产）
 

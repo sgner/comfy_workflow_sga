@@ -1,5 +1,4 @@
 import pluginJs from '@eslint/js'
-import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended'
 import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
@@ -23,7 +22,6 @@ export default [
   },
   pluginJs.configs.recommended,
   ...tseslint.configs.recommended,
-  eslintPluginPrettierRecommended,
   {
     plugins: {
       'unused-imports': unusedImports

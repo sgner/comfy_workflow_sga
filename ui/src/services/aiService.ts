@@ -161,9 +161,13 @@ async function callCustomLLM(
     let fullText = "";
     let buffer = "";
 
-    while (true) {
+    let reading = true;
+    while (reading) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+            reading = false;
+            break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -410,9 +414,13 @@ async function callPythonBackendStream(
         return content.slice(0, 80)
     }
 
-    while (true) {
+    let reading = true;
+    while (reading) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+            reading = false;
+            break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -478,11 +486,12 @@ async function callPythonBackendStream(
                                 });
                             }
                             break;
-                        case 'stream_delta':
+                        case 'stream_delta': {
                             const streamText = data.text || '';
                             fullText += streamText;
                             if (onStream) onStream(streamText);
                             break;
+                        }
                         case 'tool_use_start':
                             if (onToolUseStart) {
                                 onToolUseStart({
@@ -965,13 +974,13 @@ function cleanHistoryText(text: string, isAssistant: boolean): string {
         }
     } else {
         text = text
-            .replace(/\[FULL WORKFLOW JSON\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
-            .replace(/\[WORKFLOW PANEL CONTEXT[^\]]*\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
-            .replace(/\[RUNTIME ERRORS\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
-            .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
-            .replace(/\[Current Workflow Context\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[FULL WORKFLOW JSON\][\s\S]*?(?=\n\[|\n\n[^[\]]|$)/g, '')
+            .replace(/\[WORKFLOW PANEL CONTEXT[^\]]*\][\s\S]*?(?=\n\[|\n\n[^[\]]|$)/g, '')
+            .replace(/\[RUNTIME ERRORS\][\s\S]*?(?=\n\[|\n\n[^[\]]|$)/g, '')
+            .replace(/\[CURRENT WORKFLOW STATE\][\s\S]*?(?=\n\[|\n\n[^[\]]|$)/g, '')
+            .replace(/\[Current Workflow Context\][\s\S]*?(?=\n\[|\n\n[^[\]]|$)/g, '')
             .replace(/IMPORTANT: You MUST respond in the following language code: "[^"]*"\.[^\n]*\n?/g, '')
-            .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\[|\n\n[^\[]|$)/g, '')
+            .replace(/\[WORKFLOW CONTEXT\][\s\S]*?(?=\n\[|\n\n[^[\]]|$)/g, '')
             .replace(/\[USER REQUEST\]\s*"?/g, '')
     }
     return text.replace(/\n{3,}/g, '\n\n').trim();
@@ -1256,7 +1265,7 @@ export const sendMessageToComfyAgent = async (
             }
         }
 
-        let issues: WorkflowIssue[] = parseIssuesFromText(textResponse);
+        const issues: WorkflowIssue[] = parseIssuesFromText(textResponse);
 
         let relatedQuestions: string[] = [];
         const relatedJsonStr = findJsonArrayAfterMarker(textResponse, 'RELATED_QUESTIONS:');

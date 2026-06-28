@@ -5,7 +5,7 @@ import App from './App'
 // Importing index.css here is crucial so Vite knows to bundle it into the output style.css
 import './index.css'
 
-// @ts-ignore
+// @ts-expect-error ComfyUI injects this browser module at runtime.
 import { app } from "/scripts/app.js";
 
 function loadStylesheet() {

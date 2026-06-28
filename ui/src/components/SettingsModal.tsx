@@ -106,7 +106,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   // Fetch backend data when modal opens or backend URL changes
   useEffect(() => {
       if (isOpen && settings.usePythonBackend && settings.pythonBackendUrl) {
-          refreshBackendData();
+          void refreshBackendData();
       }
   }, [isOpen, settings.usePythonBackend, settings.pythonBackendUrl]);
 

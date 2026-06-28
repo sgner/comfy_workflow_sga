@@ -82,12 +82,12 @@ const CodexBuildProgressCard: React.FC<CodexBuildProgressCardProps> = ({
   }, [backendUrl, onSwitchToCodex])
 
   useEffect(() => {
-    tick()
+    void tick()
     const timer = setInterval(tick, pollIntervalMs)
     return () => clearInterval(timer)
   }, [tick, pollIntervalMs])
 
-  useEffect(() => { loadLog() }, [loadLog])
+  useEffect(() => { void loadLog() }, [loadLog])
 
   // 决定是否显示
   const isTerminal = status?.status === 'success' || status?.status === 'failed' || status?.status === 'error'

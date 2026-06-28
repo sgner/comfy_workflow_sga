@@ -14,6 +14,7 @@ import { join } from 'path'
 import { getSgaHome } from '../../memory/paths.js'
 import { createLogger } from '../../utils/logger.js'
 import type { HandoffBundle } from '../backend.js'
+import type { AgentType } from '../backend.js'
 import { HandoffImportError } from '../backend.js'
 
 const logger = createLogger('handoff-store')
@@ -23,6 +24,28 @@ export interface HandoffStoreOptions {
   sgaHome?: string
   /** 保留的 history 数量 */
   maxHistory?: number
+}
+
+export interface HandoffAuditRecord {
+  sessionId: string
+  fromAgent: AgentType
+  toAgent: AgentType
+  switchedAt: number
+  activeAgent: AgentType
+  lastExport: {
+    ok: boolean
+    sourceAgent: AgentType
+    messageCount: number
+    keyFactCount: number
+    error?: string
+  }
+  lastImport: {
+    ok: boolean
+    targetAgent: AgentType
+    error?: string
+  }
+  warnings: string[]
+  errors: string[]
 }
 
 export class HandoffStore {
@@ -40,6 +63,10 @@ export class HandoffStore {
 
   private historyFileFor(sessionId: string): string {
     return join(this.baseDir, `${this.sanitize(sessionId)}.history.json`)
+  }
+
+  private auditFileFor(sessionId: string): string {
+    return join(this.baseDir, `${this.sanitize(sessionId)}.audit.json`)
   }
 
   private sanitize(sessionId: string): string {
@@ -137,8 +164,26 @@ export class HandoffStore {
     await Promise.allSettled([
       fs.unlink(this.fileFor(sessionId)).catch(() => {}),
       fs.unlink(this.historyFileFor(sessionId)).catch(() => {}),
+      fs.unlink(this.auditFileFor(sessionId)).catch(() => {}),
     ])
     logger.debug(`Cleared handoff for session ${sanitized}`)
+  }
+
+  async writeAudit(record: HandoffAuditRecord): Promise<void> {
+    await this.ensureDir()
+    const file = this.auditFileFor(record.sessionId)
+    const tmp = `${file}.tmp`
+    await fs.writeFile(tmp, JSON.stringify(record, null, 2), 'utf-8')
+    await fs.rename(tmp, file)
+  }
+
+  async readAudit(sessionId: string): Promise<HandoffAuditRecord | null> {
+    try {
+      const raw = await fs.readFile(this.auditFileFor(sessionId), 'utf-8')
+      return JSON.parse(raw) as HandoffAuditRecord
+    } catch {
+      return null
+    }
   }
 }
 

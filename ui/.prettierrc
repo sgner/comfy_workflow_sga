@@ -2,6 +2,7 @@
   "singleQuote": true,
   "tabWidth": 2,
   "semi": false,
+  "endOfLine": "auto",
   "trailingComma": "none",
   "printWidth": 80,
   "importOrder": ["^@core/(.*)$", "<THIRD_PARTY_MODULES>", "^@/(.*)$", "^[./]"],

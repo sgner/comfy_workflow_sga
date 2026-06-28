@@ -18,6 +18,9 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm test",
     "start": "tsx src/server/main.ts",
     "start:dist": "node dist/server/main.js",
     "dev": "tsx watch src/server/main.ts"
@@ -42,7 +45,8 @@
     "@types/node": "^22.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/uuid": "^10.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.9"
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": ">=0.80.0"

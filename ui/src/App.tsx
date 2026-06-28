@@ -6,10 +6,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ChatPanel from './components/ChatPanel'
 import CodexBuildProgressCard from './components/CodexBuildProgressCard'
 import SettingsModal from './components/SettingsModal'
+import SystemDiagnosticsPanel from './components/SystemDiagnosticsPanel'
 import WorkflowVisualizer from './components/WorkflowVisualizer'
 import { DEFAULT_WORKFLOW } from './constants'
 import { sendMessageToComfyAgent, fetchChatHistory, abortBackendAgent } from './services/aiService'
-import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs, switchAgent, getActiveAgent } from './services/configService'
+import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs, switchAgent, getActiveAgent, fetchHandoffStatus, fetchCodexStatus, CodexCapabilityStatus } from './services/configService'
 import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, AgentActivity, ApprovalRequest, HumanInputRequest, ToolCallInfo, TokenUsage } from './types'
 import { t } from './utils/i18n'
 import { preserveWorkflowSessionId } from './utils/workflowId'
@@ -158,6 +159,8 @@ const App: React.FC<AppProps> = () => {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null)
   const [activeAgent, setActiveAgent] = useState<'sga' | 'codex'>('sga')
+  const [handoffSummary, setHandoffSummary] = useState<string | null>(null)
+  const [codexStatus, setCodexStatus] = useState<CodexCapabilityStatus | null>(null)
 
   // --- ComfyUI Integration Hooks ---
   const app = (window as any).app;
@@ -256,7 +259,7 @@ const App: React.FC<AppProps> = () => {
             app.loadGraphData(data)
           }
         } catch {
-          try { app.loadGraphData(data) } catch {}
+          try { app.loadGraphData(data) } catch { /* Ignore fallback load failures. */ }
         }
         const graphData = app.graph.serialize()
         setWorkflow(graphData as unknown as ComfyWorkflow)
@@ -342,9 +345,10 @@ const App: React.FC<AppProps> = () => {
 
   useEffect(() => {
     if (appSettings.usePythonBackend && appSettings.pythonBackendUrl && isVisible) {
-      checkBackendHealth(appSettings.pythonBackendUrl).then(result => {
+      void checkBackendHealth(appSettings.pythonBackendUrl).then(result => {
         setBackendOnline(result !== null)
       })
+      void fetchCodexStatus(appSettings.pythonBackendUrl).then(setCodexStatus).catch(() => setCodexStatus(null))
       if (!appSettings.activeBackendConfigId) {
         fetchBackendConfigs(appSettings.pythonBackendUrl).then(cfgs => {
           if (cfgs.length > 0) {
@@ -355,6 +359,7 @@ const App: React.FC<AppProps> = () => {
       }
     } else {
       setBackendOnline(null)
+      setCodexStatus(null)
     }
   }, [appSettings.usePythonBackend, appSettings.pythonBackendUrl, isVisible])
 
@@ -449,10 +454,20 @@ const App: React.FC<AppProps> = () => {
   const handleAgentSwitch = useCallback(async (target: 'sga' | 'codex') => {
     if (!appSettings.pythonBackendUrl || !activeSessionId) return
     try {
-      await switchAgent(appSettings.pythonBackendUrl, activeSessionId, target)
-      setActiveAgent(target)
+      const result = await switchAgent(appSettings.pythonBackendUrl, activeSessionId, target)
+      setActiveAgent(result.activeAgent)
+      const audit = result.audit as any
+      const exportInfo = audit?.lastExport
+      const importInfo = audit?.lastImport
+      const warningText = result.warnings?.length ? `, ${result.warnings.length} warning(s)` : ''
+      if (exportInfo || importInfo) {
+        setHandoffSummary(`Handoff: exported ${exportInfo?.messageCount ?? 0} messages, ${exportInfo?.keyFactCount ?? 0} key facts; import ${importInfo?.ok ? 'ok' : 'partial'}${warningText}.`)
+      } else {
+        setHandoffSummary(`Agent switched to ${result.activeAgent}${warningText}.`)
+      }
     } catch (e) {
       console.error('Failed to switch agent:', e)
+      setHandoffSummary((e as Error).message)
     }
   }, [appSettings.pythonBackendUrl, activeSessionId])
 
@@ -567,12 +582,17 @@ const App: React.FC<AppProps> = () => {
             }
             lastLoadedSessionId.current = activeSessionId;
         };
-        loadHistory();
+        void loadHistory();
 
         // 同步当前 session 的 activeAgent
         if (appSettings.pythonBackendUrl) {
           getActiveAgent(appSettings.pythonBackendUrl, activeSessionId).then(r => {
             setActiveAgent(r.activeAgent)
+          }).catch(() => {})
+          fetchHandoffStatus(appSettings.pythonBackendUrl, activeSessionId).then(status => {
+            if (!status || (!status.lastExport && !status.lastImport)) return
+            const warningText = status.warnings.length ? `, ${status.warnings.length} warning(s)` : ''
+            setHandoffSummary(`Handoff: exported ${status.messageCount} messages, ${status.keyFactCount} key facts; active ${status.activeAgent}${warningText}.`)
           }).catch(() => {})
         }
     }
@@ -722,7 +742,7 @@ const App: React.FC<AppProps> = () => {
 
     const setupApiListener = async () => {
         try {
-             // @ts-ignore
+             // @ts-expect-error ComfyUI injects this browser module at runtime.
              const module = await import("/scripts/api.js");
              apiInstance = module.api;
         } catch (e) {
@@ -740,7 +760,7 @@ const App: React.FC<AppProps> = () => {
         }
     };
     
-    setupApiListener();
+    void setupApiListener();
 
     window.addEventListener('comfy-workflow-agent:graph-loaded', handleWorkflowLoaded)
 
@@ -774,13 +794,17 @@ const App: React.FC<AppProps> = () => {
           app.loadGraphData(newWorkflow)
         }
       } catch {
-        try { app.loadGraphData(newWorkflow) } catch {}
+        try { app.loadGraphData(newWorkflow) } catch { /* Ignore fallback load failures. */ }
       }
       setTimeout(() => {
         if (app.canvas && app.graph && newWorkflow.nodes && newWorkflow.nodes.length > 0) {
           try {
-            app.canvas.fitGraphToView?.() ?? app.canvas.zoomFit()
-          } catch {}
+            if (typeof app.canvas.fitGraphToView === 'function') {
+              app.canvas.fitGraphToView()
+            } else {
+              app.canvas.zoomFit()
+            }
+          } catch { /* Best-effort viewport adjustment. */ }
         }
       }, 100)
     }
@@ -1127,7 +1151,7 @@ const App: React.FC<AppProps> = () => {
       }).join('\n\n')
 
       const prompt = `Please fix the following runtime error(s):\n\n${errorDetails}`
-      handleSendMessage(prompt, errorDetails)
+      void handleSendMessage(prompt, errorDetails)
   }, [handleSendMessage])
 
   const handleResolveIssue = useCallback((issue: WorkflowIssue) => {
@@ -1138,7 +1162,7 @@ const App: React.FC<AppProps> = () => {
       if (issue.traceback) prompt += `\nTraceback:\n${issue.traceback}`
       if (issue.currentInputs) prompt += `\nCurrent Inputs: ${JSON.stringify(issue.currentInputs, null, 2)}`
       if (issue.fixSuggestion) prompt += `\nSuggested Fix: ${issue.fixSuggestion}`
-      handleSendMessage(prompt)
+      void handleSendMessage(prompt)
   }, [handleSendMessage])
 
   const handleDownloadModel = useCallback((modelName: string, modelFolder?: string) => {
@@ -1147,7 +1171,7 @@ const App: React.FC<AppProps> = () => {
           prompt += ` It should be placed in the "${modelFolder}" folder.`
       }
       prompt += ` Try using huggingface-cli or wget from https://hf-mirror.com/ to download it to the correct ComfyUI models directory.`
-      handleSendMessage(prompt)
+      void handleSendMessage(prompt)
   }, [handleSendMessage])
 
   const handleDownloadModelFromCivitai = useCallback((modelName: string, modelFolder?: string) => {
@@ -1156,7 +1180,7 @@ const App: React.FC<AppProps> = () => {
           prompt += ` It should be placed in the "${modelFolder}" folder.`
       }
       prompt += ` Use the civitai tool: first call action=search with query="${modelName}" to find the right model, then action=get to inspect versions and files, and finally action=download with the chosen model_version_id to fetch the file into the correct ComfyUI models subfolder. The tool auto-infers the target folder (LORA -> loras, Checkpoint -> checkpoints, VAE -> vae, etc.) from the CivitAI ModelType / ModelFileType.`
-      handleSendMessage(prompt)
+      void handleSendMessage(prompt)
   }, [handleSendMessage])
 
   const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), [])
@@ -1164,6 +1188,7 @@ const App: React.FC<AppProps> = () => {
   const isConfigured = appSettings.usePythonBackend 
     ? !!appSettings.pythonBackendUrl && !!appSettings.activeBackendConfigId
     : (appSettings.provider === 'google' || !!appSettings.apiKey);
+  const codexSwitchDisabled = !!codexStatus && !codexStatus.canSwitchToCodex
 
   if (!isVisible) return null;
 
@@ -1271,11 +1296,17 @@ const App: React.FC<AppProps> = () => {
                         {/* Left: Chat Panel (35%) */}
                         <div className="w-[35%] min-w-[300px] border-r border-slate-800 flex flex-col bg-slate-950">
                             {appSettings.usePythonBackend && appSettings.pythonBackendUrl && (
-                                <CodexBuildProgressCard
-                                    backendUrl={appSettings.pythonBackendUrl}
-                                    language={appSettings.language}
-                                    onSwitchToCodex={() => handleAgentSwitch('codex')}
-                                />
+                                <>
+                                    <SystemDiagnosticsPanel
+                                        backendUrl={appSettings.pythonBackendUrl}
+                                        handoffSummary={handoffSummary}
+                                    />
+                                    <CodexBuildProgressCard
+                                        backendUrl={appSettings.pythonBackendUrl}
+                                        language={appSettings.language}
+                                        onSwitchToCodex={() => handleAgentSwitch('codex')}
+                                    />
+                                </>
                             )}
                             {sessionNotification && (
                                 <div className="flex items-center gap-2 px-3 py-2 bg-amber-900/30 border-b border-amber-700/30 text-amber-300 text-xs">
@@ -1325,6 +1356,8 @@ const App: React.FC<AppProps> = () => {
                                 tokenUsage={tokenUsage}
                                 activeAgent={activeAgent}
                                 onAgentSwitch={appSettings.usePythonBackend ? handleAgentSwitch : undefined}
+                                codexSwitchDisabled={codexSwitchDisabled}
+                                codexSwitchReason={codexStatus?.message}
                             />
 
                             {activeToolCalls.length > 0 && (
