@@ -223,7 +223,7 @@ UI 中 **System Diagnostics 面板**与工作流诊断面板**分开**：前者�
 | ![Overview](docs/diagrams/screenshot-overview.png) | 主界面：左 Chat + 右 Visualizer（Overview / Diagnostics / JSON / Context / MCP / Skills） |
 | ![Diagnostics](docs/diagrams/screenshot-diagnostics.png) | 工作流诊断：按 severity 过滤、运行时错误、缺模型 / 缺节点修复入口 |
 | ![Context](docs/diagrams/screenshot-context.png) | 上下文面板：errors / parameters / nodes / settings / node defs，一键复制为 Prompt |
-| ![MCP](docs/diagrams/screenshot-mcp.png) | MCP 管理：增删 server、自动连接、transport 白名单校验、env 字段 |
+| ![MCP](docs/diagrams/screenshot-mcp.png) | MCP 管理：增删 server、自动连接、transport 白名单校验、env字段 |
 | ![Skills](docs/diagrams/screenshot-skills.png) | Skills 管理：bundled + 用户自定义、API / 文件 / Agent 三种添加方式 |
 
 ## 数据存储
