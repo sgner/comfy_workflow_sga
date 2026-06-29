@@ -27,7 +27,13 @@
       { "id": 2, "type": "CLIPTextEncode",
         "inputs": [ { "name": "text", "type": "STRING", "link": 1 }, { "name": "clip", "type": "CLIP", "link": null } ] },
       { "id": 3, "type": "KSampler",
-        "inputs": [ { "name": "seed", "type": "INT", "link": 2 } ] }
+        "inputs": [
+          { "name": "model", "type": "MODEL", "link": null },
+          { "name": "positive", "type": "CONDITIONING", "link": null },
+          { "name": "negative", "type": "CONDITIONING", "link": null },
+          { "name": "latent_image", "type": "LATENT", "link": null },
+          { "name": "seed", "type": "INT", "link": 2 }
+        ] }
     ],
     "links": [
       [1, 1, 0, 2, 0, "STRING"],
