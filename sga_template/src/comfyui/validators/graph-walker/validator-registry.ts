@@ -9,6 +9,8 @@ import { bidirectionalLinkRule } from './rules/bidirectional-link.js'
 import { rerouteUnconnectedRule } from './rules/reroute-unconnected.js'
 import { orphanedAuxRule } from './rules/orphaned-aux.js'
 import { deepRerouteChainRule } from './rules/deep-reroute-chain.js'
+import { missingModelRule } from './rules/missing-model.js'
+import { missingMediaRule } from './rules/missing-media.js'
 
 export const RULES: ValidationRule[] = [
   danglingLinkRule,
@@ -18,4 +20,6 @@ export const RULES: ValidationRule[] = [
   rerouteUnconnectedRule,
   orphanedAuxRule,
   deepRerouteChainRule,
+  missingModelRule,
+  missingMediaRule,
 ]
