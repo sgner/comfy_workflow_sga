@@ -11,6 +11,7 @@ import { orphanedAuxRule } from './rules/orphaned-aux.js'
 import { deepRerouteChainRule } from './rules/deep-reroute-chain.js'
 import { missingModelRule } from './rules/missing-model.js'
 import { missingMediaRule } from './rules/missing-media.js'
+import { portTypeRule } from './rules/port-type.js'
 
 export const RULES: ValidationRule[] = [
   danglingLinkRule,
@@ -22,4 +23,5 @@ export const RULES: ValidationRule[] = [
   deepRerouteChainRule,
   missingModelRule,
   missingMediaRule,
+  portTypeRule,
 ]
