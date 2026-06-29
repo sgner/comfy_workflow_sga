@@ -33,8 +33,10 @@ describe('deepRerouteChainRule', () => {
     expect(issues[0].source).toBe('native')
   })
 
-  it('terminates on cycle (visited set prevents infinite loop)', () => {
-    // Two reroutes pointing at each other — cycle
+  it('terminates on cycle (vacuous — both reroutes have incoming links, walk never starts)', () => {
+    // Two reroutes pointing at each other — cycle. Both have incoming
+    // reroute links, so the hasIncoming guard skips both and the walk
+    // never starts. Kept for regression coverage of the guard.
     const graph = compileGraph({
       nodes: [
         { id: 1, type: 'Reroute', inputs: [{ name: '*', type: '*', link: 2 }], outputs: [{ name: '*', type: '*', links: [1] }] },
@@ -45,9 +47,31 @@ describe('deepRerouteChainRule', () => {
         [2, 2, 0, 1, 0, '*'],
       ],
     })
-    // Must not hang — visited set breaks the cycle
+    // Must not hang — both reroutes are skipped via the hasIncoming guard
     const issues = deepRerouteChainRule.run(graph)
     // Depth 2, below threshold of 8 — no issue
+    expect(issues).toEqual([])
+  })
+
+  it('terminates on cycle when walk starts (visited set prevents infinite loop)', () => {
+    // Node 1 has no incoming reroute link → hasIncoming guard returns
+    // false and the walk starts. Walk: 1 → 2 → 3 → 2 (cycle). The
+    // `if (visited.has(next)) break` line MUST fire to stop the walk;
+    // without it this test would hang in an infinite 2↔3 loop.
+    const graph = compileGraph({
+      nodes: [
+        { id: 1, type: 'Reroute', inputs: [{ name: '*', type: '*', link: null }], outputs: [{ name: '*', type: '*', links: [1] }] },
+        { id: 2, type: 'Reroute', inputs: [{ name: '*', type: '*', link: 1 }], outputs: [{ name: '*', type: '*', links: [2] }] },
+        { id: 3, type: 'Reroute', inputs: [{ name: '*', type: '*', link: 2 }], outputs: [{ name: '*', type: '*', links: [3] }] },
+      ],
+      links: [
+        [1, 1, 0, 2, 0, '*'],
+        [2, 2, 0, 3, 0, '*'],
+        [3, 3, 0, 2, 0, '*'],  // cycle: 3 → 2
+      ],
+    })
+    const issues = deepRerouteChainRule.run(graph)
+    // Depth 3 < 8 → no issue; but no infinite loop either
     expect(issues).toEqual([])
   })
 
