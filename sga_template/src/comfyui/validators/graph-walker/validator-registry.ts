@@ -6,10 +6,16 @@ import { danglingLinkRule } from './rules/dangling-link.js'
 import { slotOobRule } from './rules/slot-oob.js'
 import { selfLoopRule } from './rules/self-loop.js'
 import { bidirectionalLinkRule } from './rules/bidirectional-link.js'
+import { rerouteUnconnectedRule } from './rules/reroute-unconnected.js'
+import { orphanedAuxRule } from './rules/orphaned-aux.js'
+import { deepRerouteChainRule } from './rules/deep-reroute-chain.js'
 
 export const RULES: ValidationRule[] = [
   danglingLinkRule,
   slotOobRule,
   selfLoopRule,
   bidirectionalLinkRule,
+  rerouteUnconnectedRule,
+  orphanedAuxRule,
+  deepRerouteChainRule,
 ]
