@@ -27,6 +27,7 @@ function getMaxRerouteDepth(): number {
   return Number(process.env.SGA_MAX_REROUTE_DEPTH) || 8
 }
 
+/** @deprecated Use graph-walker/rules/reroute-unconnected.ts, orphaned-aux.ts, deep-reroute-chain.ts, and primitive-multi-type.ts instead. Will be removed after the next release. */
 export async function validateUnsupportedStructures(workflow: Record<string, unknown>): Promise<WorkflowIssue[]> {
   const nodeMap = buildNodeMap(workflow)
   const links = buildLinkList(workflow)

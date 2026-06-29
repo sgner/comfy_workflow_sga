@@ -38,6 +38,7 @@ interface NodeContext {
   def: NodeDef | null
 }
 
+/** @deprecated Use graph-walker/rules/port-type.ts instead. Will be removed after the next release. */
 export async function validatePortTypes(workflow: Record<string, unknown>): Promise<WorkflowIssue[]> {
   const nodes = ((workflow.nodes as GraphNode[] | undefined) ?? []).filter(n => n && typeof n.id !== 'undefined')
   const links = ((workflow.links as GraphLink[] | undefined) ?? [])

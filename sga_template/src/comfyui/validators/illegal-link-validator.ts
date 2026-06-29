@@ -19,6 +19,7 @@ interface GraphNode {
   outputs?: Array<{ name: string; type: string; links?: Array<number | null> | null }>
 }
 
+/** @deprecated Use graph-walker/rules/dangling-link.ts, slot-oob.ts, self-loop.ts, and bidirectional-link.ts instead. Will be removed after the next release. */
 export function validateLinkStructure(workflow: Record<string, unknown>): WorkflowIssue[] {
   const nodeMap = buildNodeMap(workflow)
   const links = buildLinkList(workflow)
