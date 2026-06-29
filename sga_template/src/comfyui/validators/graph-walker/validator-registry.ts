@@ -1,7 +1,15 @@
 /**
  * Rule registry — all validation rules registered here run on each validateWorkflow call.
- * Starts empty; later tasks append rules as they are implemented.
  */
 import type { ValidationRule } from './rule.js'
+import { danglingLinkRule } from './rules/dangling-link.js'
+import { slotOobRule } from './rules/slot-oob.js'
+import { selfLoopRule } from './rules/self-loop.js'
+import { bidirectionalLinkRule } from './rules/bidirectional-link.js'
 
-export const RULES: ValidationRule[] = []
+export const RULES: ValidationRule[] = [
+  danglingLinkRule,
+  slotOobRule,
+  selfLoopRule,
+  bidirectionalLinkRule,
+]
