@@ -1,6 +1,6 @@
 # ComfyUI Computer Use Capability Design Spec
 
-> **Status:** Draft for review
+> **Status:** Approved — ready for implementation planning
 > **Date:** 2026-06-29
 > **Author:** SGA team (brainstormed with user)
 > **Branch plan:** `feat/computer-use` (stacked on current `main`)
@@ -149,7 +149,19 @@ The feature is delivered in five phases. Each phase produces a self-contained, t
 
 **Exit criteria:** User can toggle computer use on, see the dedicated browser open, see the tool register; toggling off closes the browser.
 
-### Phase 1 — A: Visual diagnostics (read-only)
+### Phase 1 — C: Canvas automation via JS extension
+
+**Goal:** Agent can manipulate the workflow graph directly (high-efficiency path). Delivered first because the JS extension is the highest-value and most efficient path, and does not depend on Playwright interaction precision.
+
+- `web/computer-use-extension.js` — the browser-side extension with WS client and LiteGraph API bridge.
+- WS protocol spec (`docs/superpowers/specs/computer-use-ws-protocol.md`): message envelope, canvas op request/response, error codes.
+- `action-executor.ts` canvas actions: `addNode`, `removeNode`, `connect`, `disconnect`, `setWidget`, `getCanvasState`, `runQueue`.
+- `providers/openai.ts` — OpenAI CUA adapter (native computer use for UI actions).
+- Tests: extension unit tests (mock `window.app` + LiteGraph), WS protocol tests, end-to-end canvas op tests against a running ComfyUI instance.
+
+**Exit criteria:** Agent can perform "add a KSampler node, connect it to the existing CheckpointLoader, set seed to 42, run queue" via canvas actions, no Playwright clicks needed.
+
+### Phase 2 — A: Visual diagnostics (read-only)
 
 **Goal:** Agent can see ComfyUI and report visual findings.
 
@@ -159,18 +171,6 @@ The feature is delivered in five phases. Each phase produces a self-contained, t
 - Tests: fixture-based visual analysis tests (synthetic ComfyUI screenshots with known issues).
 
 **Exit criteria:** Agent can answer "what's wrong with my current workflow visually?" by screenshotting and analyzing.
-
-### Phase 2 — C: Canvas automation via JS extension
-
-**Goal:** Agent can manipulate the workflow graph directly (high-efficiency path).
-
-- `web/computer-use-extension.js` — the browser-side extension with WS client and LiteGraph API bridge.
-- WS protocol spec (`docs/superpowers/specs/computer-use-ws-protocol.md`): message envelope, canvas op request/response, error codes.
-- `action-executor.ts` canvas actions: `addNode`, `removeNode`, `connect`, `disconnect`, `setWidget`, `getCanvasState`, `runQueue`.
-- `providers/openai.ts` — OpenAI CUA adapter (native computer use for UI actions).
-- Tests: extension unit tests (mock `window.app` + LiteGraph), WS protocol tests, end-to-end canvas op tests against a running ComfyUI instance.
-
-**Exit criteria:** Agent can perform "add a KSampler node, connect it to the existing CheckpointLoader, set seed to 42, run queue" via canvas actions, no Playwright clicks needed.
 
 ### Phase 3 — B: Dialog & UI interaction via Playwright
 
@@ -231,15 +231,49 @@ Additional safeguards:
 - **Automated GUI testing of ComfyUI itself.** While the capability could be used for that, it's not a design goal. GUI testing is a separate concern with different tooling (Playwright test runner, fixtures).
 - **Always-on operation.** Computer use is opt-in per session. The agent never auto-starts it.
 
-## Open Questions (for review)
+## Design Decisions
 
-1. **WS vs. ComfyUI custom route for JS extension RPC** — this spec picks WebSocket. Alternative: register a Python-side route in `comfy_workflow_agent`'s `__init__.py` via `@PromptServer.instance.routes.post("/computer-use/canvas-op")` that pushes to a queue the extension polls. Less efficient (polling) but no WS lifecycle to manage. Decision needed: is WS complexity acceptable, or prefer HTTP polling?
+The following decisions were resolved during the brainstorming review with the user.
 
-2. **Dedicated browser visibility** — this spec defaults to `--headless=false` (visible window). Should we instead default to headless and only show a "what's the agent doing" view inside the SGA chat panel (rendering the screenshots the agent takes)? This would avoid a second visible window but loses the "watch the agent work live" experience.
+### 1. JS extension RPC transport: WebSocket (not HTTP polling)
 
-3. **Generic provider action validation** — when `generic.ts` parses a model's text response into a `ComputerUseAction`, how strict should validation be? Reject unknown action types? Reject out-of-canvas coordinates? Or accept-and-best-effort-execute with audit logging?
+**Decision:** Use WebSocket as the control channel between the SGA backend and the JS extension.
 
-4. **Phase ordering** — current order is P0 (foundation) → P1 (visual, read-only) → P2 (canvas via JS) → P3 (UI via Playwright) → P4 (polish). Alternative: P0 → P2 (canvas first, since JS extension is the highest-value and most efficient path) → P1 → P3. Which delivers user value sooner?
+**Rationale:** (a) the SGA backend cannot directly call into a browser tab without a long-lived connection; (b) ComfyUI custom_nodes cannot register server-side HTTP routes that proxy into the browser; (c) WS gives the low-latency bidirectional flow needed for canvas ops. HTTP polling was rejected as less efficient and still requiring a server-side route to push into.
+
+**Degradation:** if WS is unavailable, the orchestrator reports the JS extension as not-ready and degrades to Playwright-only mode (canvas ops in scope C unavailable; visual diagnostics A and UI interaction B still work). HTTP polling fallback is a non-goal.
+
+**See:** Architecture → Components → JS Extension; Open Question alternative considered was a Python-side `@PromptServer.instance.routes.post(...)` queue polled by the extension.
+
+### 2. Dedicated browser visibility: visible window (`--headless=false`)
+
+**Decision:** Launch Playwright Chromium with a visible window by default.
+
+**Rationale:** the user can observe what the agent is doing, which is essential for trust and for the "destructive actions require explicit confirmation" safety tier. A headless default with screenshots rendered inside the SGA chat panel was considered but rejected for the initial release because it loses the "watch the agent work live" experience.
+
+**Future extension:** a `--headless=true` flag can be added for background-only mode once the audit-log replay view in the React UI is mature; not in the initial scope.
+
+**See:** Trigger & Session Model → "Why a visible browser window".
+
+### 3. Generic provider action validation: strict (reject unknown actions and out-of-canvas coordinates)
+
+**Decision:** the `generic` adapter validates every parsed action strictly against the `ComputerUseAction` union schema before dispatching.
+
+**Rationale:** the `generic` adapter parses free-form model text into a `ComputerUseAction`; strict validation prevents hallucinated element references and coordinate drift from causing wild actions. Accept-and-best-effort-execute with audit logging was rejected because the failure modes are silent (wrong node edited, wrong button clicked) and hard to recover from.
+
+**Behavior:** invalid actions are logged with the model's raw output and returned to the model as an error for self-correction on the next loop iteration. Repeated validation failures trip the circuit breaker (see Phase 4).
+
+**See:** Architecture → Components → Provider Adapters → `generic.ts`.
+
+### 4. Phase ordering: P0 → P1 (canvas via JS) → P2 (visual) → P3 (UI via Playwright) → P4 (polish)
+
+**Decision:** Deliver the JS extension canvas automation (scope C) as Phase 1, before visual diagnostics (scope A) which becomes Phase 2.
+
+**Rationale:** the JS extension is the highest-value and most efficient path — no coordinates, no screenshots, direct LiteGraph API. It does not depend on Playwright interaction precision or multimodal model vision quality. Delivering it first gives users the most useful capability sooner and de-risks the project by validating the WS protocol and extension distribution mechanism early.
+
+**Renumbering note:** the original draft had visual as Phase 1 and canvas as Phase 2. The phases were renumbered to reflect the chosen order (canvas first). The content of each phase is unchanged; only the numbering and order were swapped.
+
+**See:** Phasing & Deliverables.
 
 ## References
 
