@@ -1,5 +1,5 @@
 /**
- * Rule registry — all validation rules registered here run on each validateWorkflow call.
+ * Rule registry — all 11 validation rules registered here run on each validateWorkflow call.
  */
 import type { ValidationRule } from './rule.js'
 import { danglingLinkRule } from './rules/dangling-link.js'
@@ -12,6 +12,7 @@ import { deepRerouteChainRule } from './rules/deep-reroute-chain.js'
 import { missingModelRule } from './rules/missing-model.js'
 import { missingMediaRule } from './rules/missing-media.js'
 import { portTypeRule } from './rules/port-type.js'
+import { primitiveMultiTypeRule } from './rules/primitive-multi-type.js'
 
 export const RULES: ValidationRule[] = [
   danglingLinkRule,
@@ -24,4 +25,5 @@ export const RULES: ValidationRule[] = [
   missingModelRule,
   missingMediaRule,
   portTypeRule,
+  primitiveMultiTypeRule,
 ]
