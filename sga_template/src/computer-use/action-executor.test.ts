@@ -20,16 +20,63 @@ describe('ActionExecutor', () => {
     expect(result.action.type).toBe('screenshot')
   })
 
-  it('returns error for unimplemented visual action (click)', async () => {
+  it('returns error for unimplemented visual action (scroll)', async () => {
     const mockPage = {} as any
 
     const result = await executor.executeVisualAction(
-      { type: 'click', x: 100, y: 200 },
+      { type: 'scroll', dx: 10, dy: 20 },
       mockPage,
     )
 
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/not implemented/i)
+  })
+
+  it('executes click via Playwright mouse', async () => {
+    const mockPage = {
+      mouse: {
+        click: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any
+
+    const result = await executor.executeVisualAction(
+      { type: 'click', x: 150, y: 250, button: 'left' },
+      mockPage,
+    )
+
+    expect(result.success).toBe(true)
+    expect(result.action.type).toBe('click')
+    expect(mockPage.mouse.click).toHaveBeenCalledWith(150, 250, { button: 'left' })
+  })
+
+  it('executes type via Playwright keyboard', async () => {
+    const mockPage = {
+      keyboard: {
+        type: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any
+
+    const result = await executor.executeVisualAction(
+      { type: 'type', text: 'hello world' },
+      mockPage,
+    )
+
+    expect(result.success).toBe(true)
+    expect(mockPage.keyboard.type).toHaveBeenCalledWith('hello world')
+  })
+
+  it('executes wait via Playwright waitForTimeout', async () => {
+    const mockPage = {
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as any
+
+    const result = await executor.executeVisualAction(
+      { type: 'wait', ms: 500 },
+      mockPage,
+    )
+
+    expect(result.success).toBe(true)
+    expect(mockPage.waitForTimeout).toHaveBeenCalledWith(500)
   })
 
   it('returns error for canvas action when bridge not set', async () => {

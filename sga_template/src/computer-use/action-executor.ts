@@ -25,12 +25,25 @@ export class ActionExecutor {
         }
       }
 
-      case 'click':
-      case 'type':
+      case 'click': {
+        const button = action.button ?? 'left'
+        await page.mouse.click(action.x, action.y, { button })
+        return { success: true, action }
+      }
+
+      case 'type': {
+        await page.keyboard.type(action.text)
+        return { success: true, action }
+      }
+
+      case 'wait': {
+        await page.waitForTimeout(action.ms)
+        return { success: true, action }
+      }
+
       case 'scroll':
       case 'drag':
       case 'key':
-      case 'wait':
         // Phase 3 — not implemented yet
         return {
           success: false,
