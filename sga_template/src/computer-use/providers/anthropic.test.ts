@@ -65,3 +65,51 @@ describe('AnthropicComputerUseAdapter', () => {
     )
   })
 })
+
+describe('AnthropicComputerUseAdapter.interpretActionResult', () => {
+  const adapter = new AnthropicComputerUseAdapter({
+    apiKey: 'sk-test',
+    model: 'claude-3-5-sonnet-20241022',
+  })
+
+  it('returns screenshot feedback for successful screenshot', () => {
+    const result = {
+      success: true,
+      screenshot: 'abc123',
+      action: { type: 'screenshot' },
+    } as any
+    const feedback = adapter.interpretActionResult(result)
+    expect(feedback).toMatch(/screenshot.*captured/i)
+  })
+
+  it('returns data feedback for successful canvas action', () => {
+    const result = {
+      success: true,
+      data: { nodeId: '42' },
+      action: { type: 'addNode', nodeType: 'KSampler' },
+    } as any
+    const feedback = adapter.interpretActionResult(result)
+    expect(feedback).toContain('Action succeeded')
+    expect(feedback).toContain('nodeId')
+  })
+
+  it('returns error feedback for failed action', () => {
+    const result = {
+      success: false,
+      error: 'Node not found',
+      action: { type: 'removeNode', nodeId: '99' },
+    } as any
+    const feedback = adapter.interpretActionResult(result)
+    expect(feedback).toContain('Action failed')
+    expect(feedback).toContain('Node not found')
+  })
+
+  it('returns generic success for action without screenshot or data', () => {
+    const result = {
+      success: true,
+      action: { type: 'click', x: 10, y: 20 },
+    } as any
+    const feedback = adapter.interpretActionResult(result)
+    expect(feedback).toBe('Action succeeded')
+  })
+})

@@ -1,5 +1,5 @@
 import { createLogger } from '../../utils/logger.js'
-import type { ComputerUseAction } from '../types.js'
+import type { ComputerUseAction, ComputerUseResult } from '../types.js'
 
 const logger = createLogger('computer-use:anthropic')
 
@@ -196,5 +196,18 @@ export class AnthropicComputerUseAdapter {
     }
 
     return normalizeAnthropicAction((toolUseBlock as { input: AnthropicRawAction }).input)
+  }
+
+  interpretActionResult(result: ComputerUseResult): string {
+    if (result.success) {
+      if (result.screenshot) {
+        return `Screenshot captured (${result.screenshot.length} bytes base64)`
+      }
+      if (result.data !== undefined) {
+        return `Action succeeded. Response: ${JSON.stringify(result.data).slice(0, 500)}`
+      }
+      return 'Action succeeded'
+    }
+    return `Action failed: ${result.error ?? 'unknown error'}`
   }
 }
