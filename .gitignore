@@ -50,11 +50,9 @@ __pycache__/
 .venv/
 venv/
 
-# Build output (web/ contains both build artifacts and source files)
+# Build output (web/ contains Vite build artifacts; extension source lives in ui/public/)
 ui/dist/
 web/*
-# Exception: ComfyUI Computer Use extension is a source file (loaded via WEB_DIRECTORY)
-!web/computer-use-extension.js
 
 # SGA template (managed as git submodule)
 
