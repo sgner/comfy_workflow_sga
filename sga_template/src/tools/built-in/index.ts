@@ -22,6 +22,7 @@ export { ComfyUIModelListTool } from './comfyui-model-list.js'
 export { ComfyUINodeSearchTool } from './comfyui-node-search.js'
 export { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
 export { ComfyUIAPITool } from './comfyui-api.js'
+export { ComputerUseTool, setComputerUseOrchestrator, getComputerUseOrchestrator } from './computer-use.js'
 
 import { BashTool } from './bash.js'
 import { FileReadTool } from './file-read.js'
@@ -47,6 +48,7 @@ import { ComfyUIModelListTool } from './comfyui-model-list.js'
 import { ComfyUINodeSearchTool } from './comfyui-node-search.js'
 import { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
 import { ComfyUIAPITool } from './comfyui-api.js'
+import { ComputerUseTool } from './computer-use.js'
 import type { Tool } from '../base.js'
 import type { AgentDefinition } from '../../agents/definition.js'
 
@@ -76,5 +78,6 @@ export function createBuiltinTools(agentDefinitions?: AgentDefinition[]): Tool[]
     new ComfyUINodeSearchTool(),
     new ComfyUIWorkflowValidateTool(),
     new ComfyUIAPITool(),
+    new ComputerUseTool(),
   ]
 }
