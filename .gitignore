@@ -50,9 +50,11 @@ __pycache__/
 .venv/
 venv/
 
-# Build output
+# Build output (web/ contains both build artifacts and source files)
 ui/dist/
-web/
+web/*
+# Exception: ComfyUI Computer Use extension is a source file (loaded via WEB_DIRECTORY)
+!web/computer-use-extension.js
 
 # SGA template (managed as git submodule)
 
