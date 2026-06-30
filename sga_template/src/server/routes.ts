@@ -55,6 +55,9 @@ import type { FeatureGateConfig } from '../feature-gate/index.js'
 import { TelemetryManager, initTelemetry } from '../telemetry/index.js'
 import { classifyBashCommand, classifyError } from '../permissions/index.js'
 import { buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context/system-prompt.js'
+import { ComputerUseOrchestrator } from '../computer-use/orchestrator.js'
+import { setComputerUseOrchestrator } from '../tools/built-in/computer-use.js'
+import { DEFAULT_COMPUTER_USE_CONFIG } from '../computer-use/types.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const activeAbortControllers: Map<string, AbortController> = new Map()
@@ -4338,4 +4341,69 @@ export function handleGetContextBudget(_req: Request, res: Response): void {
     config,
     allocation,
   })
+}
+
+// ── Computer Use ──
+
+let computerUseOrchestrator: ComputerUseOrchestrator | null = null
+
+export function handleComputerUseStatus(_req: Request, res: Response): void {
+  if (!computerUseOrchestrator) {
+    res.json({
+      state: 'idle',
+      browserConnected: false,
+      extensionConnected: false,
+      config: DEFAULT_COMPUTER_USE_CONFIG,
+    })
+    return
+  }
+  res.json(computerUseOrchestrator.getStatus())
+}
+
+export async function handleComputerUseStart(req: Request, res: Response): Promise<void> {
+  if (computerUseOrchestrator) {
+    const status = computerUseOrchestrator.getStatus()
+    if (status.state === 'ready' || status.state === 'starting') {
+      res.status(409).json({ error: `Computer use already active (state: ${status.state})` })
+      return
+    }
+  }
+
+  const body = req.body ?? {}
+  const config = {
+    comfyuiUrl: body.comfyuiUrl ?? DEFAULT_COMPUTER_USE_CONFIG.comfyuiUrl,
+    headless: body.headless ?? DEFAULT_COMPUTER_USE_CONFIG.headless,
+    sessionTimeoutMs: body.sessionTimeoutMs ?? DEFAULT_COMPUTER_USE_CONFIG.sessionTimeoutMs,
+  }
+
+  computerUseOrchestrator = new ComputerUseOrchestrator(config)
+  setComputerUseOrchestrator(computerUseOrchestrator)
+
+  try {
+    await computerUseOrchestrator.start()
+    res.status(201).json(computerUseOrchestrator.getStatus())
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    computerUseOrchestrator = null
+    setComputerUseOrchestrator(null)
+    res.status(500).json({ error: `Failed to start computer use: ${msg}` })
+  }
+}
+
+export async function handleComputerUseStop(_req: Request, res: Response): Promise<void> {
+  if (!computerUseOrchestrator) {
+    res.json({ state: 'idle', message: 'Computer use not active' })
+    return
+  }
+
+  try {
+    await computerUseOrchestrator.stop()
+    setComputerUseOrchestrator(null)
+    res.json({ state: 'stopped', message: 'Computer use stopped' })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    computerUseOrchestrator = null
+    setComputerUseOrchestrator(null)
+    res.status(500).json({ error: `Failed to stop computer use: ${msg}` })
+  }
 }

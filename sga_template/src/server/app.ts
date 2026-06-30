@@ -111,6 +111,9 @@ import {
   handleGetCircuitBreakerStatus,
   handleResetCircuitBreaker,
   handleGetContextBudget,
+  handleComputerUseStart,
+  handleComputerUseStatus,
+  handleComputerUseStop,
 } from './routes.js'
 import {
   handleListSkills,
@@ -272,6 +275,11 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/mcp/servers/:name/connect`, handleConnectMCPServer)
   app.post(`${base}/mcp/servers/:name/disconnect`, handleDisconnectMCPServer)
   app.get(`${base}/mcp/tools`, handleListMCPTools)
+
+  // Computer Use
+  app.get(`${base}/computer-use/status`, handleComputerUseStatus)
+  app.post(`${base}/computer-use/start`, handleComputerUseStart)
+  app.post(`${base}/computer-use/stop`, handleComputerUseStop)
 
   app.post('/api/chat/stream', handleComfyUIChatStream)
   app.get('/api/chat/history/:sessionId', handleComfyUIChatHistory)
