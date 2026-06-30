@@ -31,6 +31,7 @@ import remarkGfm from 'remark-gfm'
 
 import { ChatMessage, Language, Sender, AgentStatus, AgentActivity, WorkflowIssue, ApprovalRequest, HumanInputRequest, TokenUsage } from '../types'
 import { t } from '../utils/i18n'
+import { ComputerUseToggle } from './ComputerUseToggle'
 
 const markdownComponents = {
   code({ className, children, ...props }: { className?: string; children?: React.ReactNode } & React.HTMLAttributes<HTMLElement>) {
@@ -203,6 +204,7 @@ interface ChatPanelProps {
   onAgentSwitch?: (target: 'sga' | 'codex') => void
   codexSwitchDisabled?: boolean
   codexSwitchReason?: string
+  backendUrl?: string
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
@@ -222,7 +224,8 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
   activeAgent = 'sga',
   onAgentSwitch,
   codexSwitchDisabled = false,
-  codexSwitchReason
+  codexSwitchReason,
+  backendUrl
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
   const approvalRef = useRef<HTMLDivElement>(null)
@@ -339,6 +342,9 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
                 Codex
               </button>
             </div>
+          )}
+          {backendUrl && (
+            <ComputerUseToggle backendUrl={backendUrl} />
           )}
         </div>
       </div>
