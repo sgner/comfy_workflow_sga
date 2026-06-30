@@ -32,12 +32,29 @@ describe('ActionExecutor', () => {
     expect(result.error).toMatch(/not implemented/i)
   })
 
-  it('returns error for canvas action when bridge not connected', async () => {
+  it('returns error for canvas action when bridge not set', async () => {
     const result = await executor.executeCanvasAction(
       { type: 'addNode', nodeType: 'KSampler' },
     )
 
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/not connected|bridge/i)
+  })
+
+  it('delegates to canvas bridge when bridge is set and connected', async () => {
+    const executorWithBridge = new ActionExecutor()
+    const mockBridge = {
+      isConnected: true,
+      executeAction: vi.fn().mockResolvedValue({ nodeId: '42' }),
+    } as any
+    executorWithBridge.setCanvasBridge(mockBridge)
+
+    const result = await executorWithBridge.executeCanvasAction(
+      { type: 'addNode', nodeType: 'KSampler' },
+    )
+
+    expect(result.success).toBe(true)
+    expect(result.data).toEqual({ nodeId: '42' })
+    expect(mockBridge.executeAction).toHaveBeenCalledOnce()
   })
 })

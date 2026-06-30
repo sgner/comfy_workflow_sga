@@ -59,6 +59,7 @@ import { ComputerUseOrchestrator } from '../computer-use/orchestrator.js'
 import { setComputerUseOrchestrator } from '../tools/built-in/computer-use.js'
 import { DEFAULT_COMPUTER_USE_CONFIG } from '../computer-use/types.js'
 import { ComputerUseWSServer } from '../computer-use/ws-server.js'
+import { CanvasBridge } from '../computer-use/canvas-bridge.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const activeAbortControllers: Map<string, AbortController> = new Map()
@@ -4387,6 +4388,8 @@ export async function handleComputerUseStart(req: Request, res: Response): Promi
   setComputerUseOrchestrator(computerUseOrchestrator)
 
   if (computerUseWSServer) {
+    const bridge = new CanvasBridge(computerUseWSServer)
+    computerUseOrchestrator.setCanvasBridge(bridge)
     computerUseWSServer.onConnect(() => {
       if (computerUseOrchestrator) computerUseOrchestrator.setExtensionConnected(true)
     })

@@ -1,12 +1,12 @@
 import type { Page } from 'playwright'
 import { createLogger } from '../utils/logger.js'
 import type { ComputerUseAction, ComputerUseResult } from './types.js'
+import type { CanvasBridge } from './canvas-bridge.js'
 
 const logger = createLogger('computer-use:action-executor')
 
 export class ActionExecutor {
-  private canvasOpResponseHandler: ((response: unknown) => void) | null = null
-  private bridgeConnected = false
+  private canvasBridge: CanvasBridge | null = null
 
   /** Execute a visual/UI action via Playwright. */
   async executeVisualAction(
@@ -49,7 +49,7 @@ export class ActionExecutor {
 
   /** Execute a canvas action via the JS extension WS bridge. */
   async executeCanvasAction(action: ComputerUseAction): Promise<ComputerUseResult> {
-    if (!this.bridgeConnected) {
+    if (!this.canvasBridge || !this.canvasBridge.isConnected) {
       return {
         success: false,
         error: 'Canvas bridge not connected (JS extension WS not available)',
@@ -57,21 +57,24 @@ export class ActionExecutor {
       }
     }
 
-    // Phase 1 will implement the actual WS round-trip here.
-    // For now, this is a stub that returns not-implemented.
-    return {
-      success: false,
-      error: `Canvas action "${action.type}" not yet wired to WS bridge`,
-      action,
+    try {
+      const data = await this.canvasBridge.executeAction(action)
+      return {
+        success: true,
+        data,
+        action,
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        action,
+      }
     }
   }
 
-  setBridgeConnected(connected: boolean): void {
-    this.bridgeConnected = connected
-    logger.info(`Canvas bridge ${connected ? 'connected' : 'disconnected'}`)
-  }
-
-  setCanvasOpResponseHandler(handler: (response: unknown) => void): void {
-    this.canvasOpResponseHandler = handler
+  setCanvasBridge(bridge: CanvasBridge): void {
+    this.canvasBridge = bridge
+    logger.info('Canvas bridge set')
   }
 }

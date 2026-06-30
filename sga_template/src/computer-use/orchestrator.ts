@@ -9,6 +9,7 @@ import {
   isCanvasAction,
 } from './types.js'
 import { ActionExecutor } from './action-executor.js'
+import type { CanvasBridge } from './canvas-bridge.js'
 
 const logger = createLogger('computer-use:orchestrator')
 
@@ -161,8 +162,8 @@ export class ComputerUseOrchestrator {
     logger.info(`JS extension ${connected ? 'connected' : 'disconnected'}`)
   }
 
-  /** Called by the WS server when a canvas op response arrives. */
-  setCanvasOpResponseHandler(handler: (response: unknown) => void): void {
-    this.actionExecutor.setCanvasOpResponseHandler(handler)
+  /** Called by the route handler to inject the canvas bridge for canvas actions. */
+  setCanvasBridge(bridge: CanvasBridge): void {
+    this.actionExecutor.setCanvasBridge(bridge)
   }
 }
