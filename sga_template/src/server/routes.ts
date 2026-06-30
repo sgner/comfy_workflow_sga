@@ -58,6 +58,7 @@ import { buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context
 import { ComputerUseOrchestrator } from '../computer-use/orchestrator.js'
 import { setComputerUseOrchestrator } from '../tools/built-in/computer-use.js'
 import { DEFAULT_COMPUTER_USE_CONFIG } from '../computer-use/types.js'
+import { ComputerUseWSServer } from '../computer-use/ws-server.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const activeAbortControllers: Map<string, AbortController> = new Map()
@@ -4347,6 +4348,12 @@ export function handleGetContextBudget(_req: Request, res: Response): void {
 
 let computerUseOrchestrator: ComputerUseOrchestrator | null = null
 
+let computerUseWSServer: ComputerUseWSServer | null = null
+
+export function setComputerUseWSServer(ws: ComputerUseWSServer): void {
+  computerUseWSServer = ws
+}
+
 export function handleComputerUseStatus(_req: Request, res: Response): void {
   if (!computerUseOrchestrator) {
     res.json({
@@ -4378,6 +4385,15 @@ export async function handleComputerUseStart(req: Request, res: Response): Promi
 
   computerUseOrchestrator = new ComputerUseOrchestrator(config)
   setComputerUseOrchestrator(computerUseOrchestrator)
+
+  if (computerUseWSServer) {
+    computerUseWSServer.onConnect(() => {
+      if (computerUseOrchestrator) computerUseOrchestrator.setExtensionConnected(true)
+    })
+    computerUseWSServer.onDisconnect(() => {
+      if (computerUseOrchestrator) computerUseOrchestrator.setExtensionConnected(false)
+    })
+  }
 
   try {
     await computerUseOrchestrator.start()

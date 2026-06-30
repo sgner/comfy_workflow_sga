@@ -115,6 +115,8 @@ import {
   handleComputerUseStatus,
   handleComputerUseStop,
 } from './routes.js'
+import { ComputerUseWSServer } from '../computer-use/ws-server.js'
+import { setComputerUseWSServer } from './routes.js'
 import {
   handleListSkills,
   handleDiscoverSkills,
@@ -454,7 +456,7 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
   const host = config.host ?? '0.0.0.0'
   const app = createApp(config)
 
-  app.listen(port, host, () => {
+  const httpServer = app.listen(port, host, () => {
     console.log(`[sga-template] Server running at http://${host}:${port}`)
     console.log(`[sga-template] API base path: ${config.basePath ?? '/api/v1'}`)
     console.log(`[sga-template] Health check: http://${host}:${port}${config.basePath ?? '/api/v1'}/health`)
@@ -477,4 +479,9 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
       }
     })()
   })
+
+  // Attach computer use WebSocket server
+  const wsServer = new ComputerUseWSServer()
+  wsServer.attach(httpServer, `${config.basePath ?? '/api/v1'}/computer-use/ws`)
+  setComputerUseWSServer(wsServer)
 }
