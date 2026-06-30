@@ -9,12 +9,13 @@
 // ── Session lifecycle ──
 
 export type ComputerUseSessionState =
-  | 'idle'          // not started
-  | 'starting'      // launching browser, waiting for JS extension
-  | 'ready'         // browser open, extension connected, tool registered
-  | 'stopping'      // shutting down
-  | 'stopped'       // finished
-  | 'error'         // failed to start or fatal error
+  | 'idle'
+  | 'starting'
+  | 'ready'
+  | 'running'       // autopilot loop active
+  | 'stopping'
+  | 'stopped'
+  | 'error'
 
 export interface ComputerUseConfig {
   /** ComfyUI URL to navigate the dedicated browser to. */
@@ -118,6 +119,24 @@ export interface RunQueueAction {
   prompt?: Record<string, unknown>
 }
 
+// ── Autopilot actions ──
+
+export interface RunGoalAction {
+  type: 'run_goal'
+  goal: string
+  maxSteps?: number
+}
+
+export interface DoneAction {
+  type: 'done'
+  summary: string
+}
+
+export interface RequireApprovalAction {
+  type: 'require_approval'
+  question: string
+}
+
 /** Union of all actions the agent can request. */
 export type ComputerUseAction =
   | ScreenshotAction
@@ -134,6 +153,9 @@ export type ComputerUseAction =
   | SetWidgetAction
   | GetCanvasStateAction
   | RunQueueAction
+  | RunGoalAction
+  | DoneAction
+  | RequireApprovalAction
 
 // ── Action result ──
 
@@ -183,4 +205,38 @@ const VISUAL_ACTION_TYPES = new Set([
 
 export function isVisualAction(action: ComputerUseAction): boolean {
   return VISUAL_ACTION_TYPES.has(action.type)
+}
+
+// ── Helper: is this a terminal action (ends or pauses the autopilot loop)? ──
+
+const TERMINAL_ACTION_TYPES = new Set(['done', 'require_approval'])
+
+export function isTerminalAction(action: ComputerUseAction): boolean {
+  return TERMINAL_ACTION_TYPES.has(action.type)
+}
+
+// ── Autopilot loop types ──
+
+export interface StepEvent {
+  step: number
+  type: 'step_start' | 'screenshot_taken' | 'action_decided'
+      | 'action_executed' | 'step_done' | 'loop_done'
+      | 'error' | 'approval_required' | 'stopped'
+  action?: ComputerUseAction
+  result?: ComputerUseResult
+  screenshot?: string
+  summary?: string
+  error?: string
+  question?: string
+  timestamp: number
+}
+
+export interface ComputerUseAdapter {
+  name: string
+  sendScreenshotAndGetCurrentAction(
+    screenshotBase64: string,
+    instructions: string,
+    history?: string,
+  ): Promise<ComputerUseAction>
+  interpretActionResult(result: ComputerUseResult): string
 }
