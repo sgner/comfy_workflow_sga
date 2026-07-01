@@ -5,8 +5,11 @@ import {
   type ComputerUseSessionState,
   type ComputerUseAction,
   type ComputerUseResult,
+  type ComputerUseAdapter,
+  type StepEvent,
   DEFAULT_COMPUTER_USE_CONFIG,
   isCanvasAction,
+  isTerminalAction,
 } from './types.js'
 import { ActionExecutor } from './action-executor.js'
 import type { CanvasBridge } from './canvas-bridge.js'
@@ -30,6 +33,8 @@ export class ComputerUseOrchestrator {
   private actionExecutor: ActionExecutor
   private extensionConnected = false
   private sessionTimeoutHandle: NodeJS.Timeout | null = null
+  private activeAdapter: ComputerUseAdapter | null = null
+  private cancelRequested = false
 
   constructor(config?: Partial<ComputerUseConfig>) {
     this.config = { ...DEFAULT_COMPUTER_USE_CONFIG, ...config }
@@ -142,8 +147,8 @@ export class ComputerUseOrchestrator {
   }
 
   async executeAction(action: ComputerUseAction): Promise<ComputerUseResult> {
-    if (this.state !== 'ready') {
-      throw new Error(`Cannot execute action: session not ready (state: ${this.state})`)
+    if (this.state !== 'ready' && this.state !== 'running') {
+      throw new Error(`Cannot execute action: session not active (state: ${this.state})`)
     }
 
     // For Phase 0, only screenshot is fully implemented.
@@ -165,5 +170,112 @@ export class ComputerUseOrchestrator {
   /** Called by the route handler to inject the canvas bridge for canvas actions. */
   setCanvasBridge(bridge: CanvasBridge): void {
     this.actionExecutor.setCanvasBridge(bridge)
+  }
+
+  /** Set the provider adapter for autopilot mode. */
+  setActiveAdapter(adapter: ComputerUseAdapter): void {
+    this.activeAdapter = adapter
+    logger.info(`Active adapter set: ${adapter.name}`)
+  }
+
+  /** Request cancellation of the current autopilot run. */
+  cancelRun(): void {
+    this.cancelRequested = true
+    logger.info('Run cancellation requested')
+  }
+
+  /**
+   * Run the autopilot loop: screenshot → adapter → execute → feedback.
+   * Yields StepEvents for real-time streaming.
+   * Terminates on: done action, maxSteps, 3 consecutive failures, or cancel.
+   */
+  async *runGoal(
+    goal: string,
+    opts: { adapter: ComputerUseAdapter; maxSteps?: number },
+  ): AsyncIterable<StepEvent> {
+    if (this.state !== 'ready') {
+      throw new Error(`Cannot run goal: session not ready (state: ${this.state})`)
+    }
+
+    const adapter = opts.adapter
+    const maxSteps = Math.min(opts.maxSteps ?? 20, 50)
+    let history = ''
+    let consecutiveFailures = 0
+    let step = 0
+
+    this.state = 'running'
+    this.cancelRequested = false
+    logger.info(`Starting autopilot run: "${goal}" (max ${maxSteps} steps)`)
+
+    try {
+      while (step < maxSteps) {
+        if (this.cancelRequested) {
+          yield { step, type: 'stopped', timestamp: Date.now() }
+          break
+        }
+
+        yield { step, type: 'step_start', timestamp: Date.now() }
+
+        // 1. Take screenshot
+        const screenshot = await this.takeScreenshot('full')
+        yield { step, type: 'screenshot_taken', screenshot, timestamp: Date.now() }
+
+        // 2. Ask adapter for next action
+        const action = await adapter.sendScreenshotAndGetCurrentAction(screenshot, goal, history)
+        yield { step, type: 'action_decided', action, timestamp: Date.now() }
+
+        // 3. Check for terminal actions
+        if (action.type === 'done') {
+          yield { step, type: 'loop_done', summary: action.summary, timestamp: Date.now() }
+          break
+        }
+
+        if (action.type === 'require_approval') {
+          yield { step, type: 'approval_required', question: action.question, timestamp: Date.now() }
+          // MVP: auto-stop on approval request
+          break
+        }
+
+        if (action.type === 'run_goal') {
+          yield { step, type: 'error', error: 'Nested run_goal not allowed', timestamp: Date.now() }
+          break
+        }
+
+        // 4. Execute the action
+        const result = await this.executeAction(action)
+        yield { step, type: 'action_executed', action, result, timestamp: Date.now() }
+
+        // 5. Track failures
+        if (!result.success) {
+          consecutiveFailures++
+          if (consecutiveFailures >= 3) {
+            yield {
+              step,
+              type: 'error',
+              error: `Autopilot stopped: 3 consecutive failures`,
+              timestamp: Date.now(),
+            }
+            break
+          }
+        } else {
+          consecutiveFailures = 0
+        }
+
+        // 6. Accumulate feedback
+        const feedback = adapter.interpretActionResult(result)
+        history += `\nStep ${step + 1}: ${feedback}`
+
+        yield { step, type: 'step_done', timestamp: Date.now() }
+        step++
+      }
+
+      if (step >= maxSteps && !this.cancelRequested) {
+        yield { step, type: 'loop_done', summary: `Max steps reached (${maxSteps})`, timestamp: Date.now() }
+      }
+    } finally {
+      this.state = 'ready'
+      this.cancelRequested = false
+      logger.info(`Autopilot run ended after ${step} steps`)
+    }
   }
 }
