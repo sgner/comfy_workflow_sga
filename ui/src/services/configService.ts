@@ -720,7 +720,7 @@ export const stopComputerUse = async (backendUrl: string): Promise<{ state: stri
 }
 
 export async function approveComputerUseAction(baseUrl: string, approved: boolean): Promise<void> {
-  const res = await fetch(`${baseUrl}/computer-use/approve`, {
+  const res = await fetch(`${baseUrl}/api/v1/computer-use/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ approved }),

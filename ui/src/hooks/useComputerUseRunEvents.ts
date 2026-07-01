@@ -22,7 +22,7 @@ export function useComputerUseRunEvents(baseUrl: string) {
   const connect = useCallback(() => {
     if (eventSource) eventSource.close()
 
-    const es = new EventSource(`${baseUrl}/computer-use/run-events`)
+    const es = new EventSource(`${baseUrl}/api/v1/computer-use/run-events`)
     setEventSource(es)
     setIsActive(true)
     setSteps([])
