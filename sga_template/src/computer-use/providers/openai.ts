@@ -89,7 +89,7 @@ export function normalizeOpenAIAction(raw: OpenAIRawAction): ComputerUseAction {
   }
 }
 
-export class OpenAIComputerUseAdapter {
+export class OpenAIComputerUseAdapter implements ComputerUseAdapter {
   readonly name = 'openai'
   private config: OpenAIAdapterConfig
 

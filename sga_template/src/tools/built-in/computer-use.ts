@@ -158,7 +158,12 @@ Actions:
           if (event.type === 'stopped') {
             finalSummary = 'Autopilot stopped by user'
           }
-          stepCount++
+          if (event.type === 'approval_required') {
+            finalSummary = `Approval required: ${event.question ?? ''}`
+          }
+          if (event.type === 'step_done') {
+            stepCount = event.step + 1
+          }
         }
       } finally {
         // Keep subscribers around briefly so the SSE handler can flush the

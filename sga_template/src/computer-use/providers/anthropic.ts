@@ -114,7 +114,7 @@ export function normalizeAnthropicAction(raw: AnthropicRawAction): ComputerUseAc
   }
 }
 
-export class AnthropicComputerUseAdapter {
+export class AnthropicComputerUseAdapter implements ComputerUseAdapter {
   readonly name = 'anthropic'
   private config: AnthropicAdapterConfig
 
