@@ -178,6 +178,11 @@ export class ComputerUseOrchestrator {
     logger.info(`Active adapter set: ${adapter.name}`)
   }
 
+  /** Get the active provider adapter (or null if none set). */
+  getActiveAdapter(): ComputerUseAdapter | null {
+    return this.activeAdapter
+  }
+
   /** Request cancellation of the current autopilot run. */
   cancelRun(): void {
     this.cancelRequested = true

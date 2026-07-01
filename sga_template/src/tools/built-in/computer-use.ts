@@ -1,12 +1,24 @@
 import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult } from '../base.js'
 import { createLogger } from '../../utils/logger.js'
-import type { ComputerUseAction, ComputerUseResult } from '../../computer-use/types.js'
+import type { ComputerUseAction, ComputerUseResult, StepEvent } from '../../computer-use/types.js'
 import type { ComputerUseOrchestrator } from '../../computer-use/orchestrator.js'
 
 const logger = createLogger('tool:computer-use')
 
 // Singleton orchestrator reference — set by the route handler when user toggles on.
 let activeOrchestrator: ComputerUseOrchestrator | null = null
+
+// Module-level event stream for SSE coordination.
+// Set by the tool when runGoal starts; read by the SSE handler.
+let currentRunEventStream: AsyncIterable<StepEvent> | null = null
+
+export function getComputerUseRunEventStream(): AsyncIterable<StepEvent> | null {
+  return currentRunEventStream
+}
+
+export function setComputerUseRunEventStream(stream: AsyncIterable<StepEvent> | null): void {
+  currentRunEventStream = stream
+}
 
 export function setComputerUseOrchestrator(orch: ComputerUseOrchestrator | null): void {
   activeOrchestrator = orch
@@ -31,7 +43,8 @@ Actions:
   - disconnect: remove a link (args: linkId)
   - setWidget: set a widget value (args: nodeId, widgetName, value)
   - getCanvasState: return the current canvas graph as JSON
-  - runQueue: submit the current workflow for execution`
+  - runQueue: submit the current workflow for execution
+  - run_goal: enter autopilot loop to achieve a goal (args: goal, maxSteps?)`
   searchHint = 'computer use screenshot canvas browser automation click type'
 
   isEnabled(): boolean {
@@ -71,7 +84,7 @@ Actions:
       properties: {
         action: {
           type: 'string',
-          description: 'The action to perform: screenshot, addNode, removeNode, connect, disconnect, setWidget, getCanvasState, runQueue',
+          description: 'The action to perform: screenshot, addNode, removeNode, connect, disconnect, setWidget, getCanvasState, runQueue, run_goal',
         },
         args: {
           type: 'object',
@@ -93,7 +106,47 @@ Actions:
     // Build the normalized action from the tool input
     const action = this.buildAction(input.action, input.args)
     if (!action) {
-      return `Unknown action: ${input.action}. Valid actions: screenshot, addNode, removeNode, connect, disconnect, setWidget, getCanvasState, runQueue`
+      return `Unknown action: ${input.action}. Valid actions: screenshot, addNode, removeNode, connect, disconnect, setWidget, getCanvasState, runQueue, run_goal`
+    }
+
+    // Handle run_goal specially — enters autopilot loop
+    if (action.type === 'run_goal') {
+      const adapter = activeOrchestrator.getActiveAdapter()
+      if (!adapter) {
+        return 'Autopilot not available: no provider adapter configured. Start the session with a supported provider (anthropic or openai).'
+      }
+
+      const maxSteps = action.maxSteps ?? 20
+      const goalText = action.goal
+      logger.info(`Starting autopilot run: "${goalText}" (max ${maxSteps} steps)`)
+
+      const eventStream = activeOrchestrator.runGoal(goalText, { adapter, maxSteps })
+      setComputerUseRunEventStream(eventStream)
+
+      let stepCount = 0
+      let finalSummary = 'Autopilot run completed'
+
+      try {
+        for await (const event of eventStream) {
+          if (event.type === 'loop_done') {
+            finalSummary = event.summary ?? finalSummary
+          }
+          if (event.type === 'error') {
+            finalSummary = `Autopilot error: ${event.error}`
+          }
+          if (event.type === 'stopped') {
+            finalSummary = 'Autopilot stopped by user'
+          }
+          if (event.type === 'approval_required') {
+            finalSummary = `Approval required: ${event.question}`
+          }
+          stepCount = event.step + 1
+        }
+      } finally {
+        setComputerUseRunEventStream(null)
+      }
+
+      return `Autopilot completed after ${stepCount} steps. ${finalSummary}`
     }
 
     try {
@@ -157,6 +210,13 @@ Actions:
             ? args.prompt as Record<string, unknown>
             : undefined,
         }
+      case 'run_goal': {
+        return {
+          type: 'run_goal',
+          goal: String(args?.goal ?? ''),
+          maxSteps: typeof args?.maxSteps === 'number' ? args.maxSteps : undefined,
+        }
+      }
       default:
         return null
     }
