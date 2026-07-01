@@ -60,6 +60,10 @@ import { setComputerUseOrchestrator } from '../tools/built-in/computer-use.js'
 import { DEFAULT_COMPUTER_USE_CONFIG } from '../computer-use/types.js'
 import { ComputerUseWSServer } from '../computer-use/ws-server.js'
 import { CanvasBridge } from '../computer-use/canvas-bridge.js'
+import { getComputerUseRunEventStream } from '../tools/built-in/computer-use.js'
+import { AnthropicComputerUseAdapter } from '../computer-use/providers/anthropic.js'
+import { OpenAIComputerUseAdapter } from '../computer-use/providers/openai.js'
+import type { ComputerUseAdapter } from '../computer-use/types.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const activeAbortControllers: Map<string, AbortController> = new Map()
@@ -4398,6 +4402,24 @@ export async function handleComputerUseStart(req: Request, res: Response): Promi
     })
   }
 
+  // Select provider adapter based on request body
+  let adapter: ComputerUseAdapter | null = null
+  const provider = body.llmProvider ?? 'anthropic'
+  if (provider === 'anthropic') {
+    adapter = new AnthropicComputerUseAdapter({
+      apiKey: body.anthropicApiKey ?? '',
+      model: 'claude-3-5-sonnet-20241022',
+    })
+  } else if (provider === 'openai') {
+    adapter = new OpenAIComputerUseAdapter({
+      apiKey: body.openaiApiKey ?? '',
+      model: 'computer-use-preview',
+    })
+  }
+  if (adapter && computerUseOrchestrator) {
+    computerUseOrchestrator.setActiveAdapter(adapter)
+  }
+
   try {
     await computerUseOrchestrator.start()
     res.status(201).json(computerUseOrchestrator.getStatus())
@@ -4425,4 +4447,41 @@ export async function handleComputerUseStop(_req: Request, res: Response): Promi
     setComputerUseOrchestrator(null)
     res.status(500).json({ error: `Failed to stop computer use: ${msg}` })
   }
+}
+
+/** SSE endpoint: streams StepEvents from the active autopilot run. */
+export async function handleComputerUseRunEvents(req: Request, res: Response): Promise<void> {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')  // Disable nginx buffering
+
+  const eventStream = getComputerUseRunEventStream()
+  if (!eventStream) {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: 'No active autopilot run', step: 0, timestamp: Date.now() })}\n\n`)
+    res.end()
+    return
+  }
+
+  try {
+    for await (const event of eventStream) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`)
+      if (event.type === 'loop_done' || event.type === 'stopped' || event.type === 'error' || event.type === 'approval_required') {
+        break
+      }
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    res.write(`data: ${JSON.stringify({ type: 'error', error: msg, step: 0, timestamp: Date.now() })}\n\n`)
+  } finally {
+    res.end()
+  }
+}
+
+/** Approve or reject a pending require_approval from the autopilot. */
+export async function handleComputerUseApprove(req: Request, res: Response): Promise<void> {
+  const { approved } = req.body as { approved?: boolean }
+  // MVP: just acknowledge — the loop auto-stops on approval_required
+  // Future: resume the loop with the approval result
+  res.json({ success: true, message: approved ? 'Approved' : 'Rejected — autopilot will stop' })
 }

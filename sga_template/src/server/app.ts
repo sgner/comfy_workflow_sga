@@ -114,6 +114,8 @@ import {
   handleComputerUseStart,
   handleComputerUseStatus,
   handleComputerUseStop,
+  handleComputerUseRunEvents,
+  handleComputerUseApprove,
 } from './routes.js'
 import { ComputerUseWSServer } from '../computer-use/ws-server.js'
 import { setComputerUseWSServer } from './routes.js'
@@ -282,6 +284,8 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.get(`${base}/computer-use/status`, handleComputerUseStatus)
   app.post(`${base}/computer-use/start`, handleComputerUseStart)
   app.post(`${base}/computer-use/stop`, handleComputerUseStop)
+  app.get(`${base}/computer-use/run-events`, handleComputerUseRunEvents)
+  app.post(`${base}/computer-use/approve`, handleComputerUseApprove)
 
   app.post('/api/chat/stream', handleComfyUIChatStream)
   app.get('/api/chat/history/:sessionId', handleComfyUIChatHistory)
