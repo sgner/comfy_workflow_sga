@@ -8,16 +8,35 @@ const logger = createLogger('tool:computer-use')
 // Singleton orchestrator reference — set by the route handler when user toggles on.
 let activeOrchestrator: ComputerUseOrchestrator | null = null
 
-// Module-level event stream for SSE coordination.
-// Set by the tool when runGoal starts; read by the SSE handler.
-let currentRunEventStream: AsyncIterable<StepEvent> | null = null
+// NEW: subscriber/fan-out bus. The tool is the sole consumer of the
+// runGoal() generator; it publishes each event to all subscribers.
+type StepEventSubscriber = (event: StepEvent) => void
 
-export function getComputerUseRunEventStream(): AsyncIterable<StepEvent> | null {
-  return currentRunEventStream
+const runEventSubscribers = new Set<StepEventSubscriber>()
+
+/** Subscribe to live StepEvents. Returns an unsubscribe function. */
+export function subscribeToComputerUseRunEvents(subscriber: StepEventSubscriber): () => void {
+  runEventSubscribers.add(subscriber)
+  return () => {
+    runEventSubscribers.delete(subscriber)
+  }
 }
 
-export function setComputerUseRunEventStream(stream: AsyncIterable<StepEvent> | null): void {
-  currentRunEventStream = stream
+/** Publish a StepEvent to all current subscribers. Called by the tool as it consumes the generator. */
+function publishRunEvent(event: StepEvent): void {
+  for (const sub of runEventSubscribers) {
+    try {
+      sub(event)
+    } catch {
+      // subscriber threw — remove it to avoid poisoning the set
+      runEventSubscribers.delete(sub)
+    }
+  }
+}
+
+/** Clear all subscribers (called when a run ends or is cleared). */
+export function clearComputerUseRunEvents(): void {
+  runEventSubscribers.clear()
 }
 
 export function setComputerUseOrchestrator(orch: ComputerUseOrchestrator | null): void {
@@ -120,14 +139,16 @@ Actions:
       const goalText = action.goal
       logger.info(`Starting autopilot run: "${goalText}" (max ${maxSteps} steps)`)
 
+      // NEW: tool is sole consumer of the generator; publish each event to subscribers
+      clearComputerUseRunEvents()
       const eventStream = activeOrchestrator.runGoal(goalText, { adapter, maxSteps })
-      setComputerUseRunEventStream(eventStream)
 
       let stepCount = 0
       let finalSummary = 'Autopilot run completed'
 
       try {
         for await (const event of eventStream) {
+          publishRunEvent(event)  // fan out to SSE subscribers
           if (event.type === 'loop_done') {
             finalSummary = event.summary ?? finalSummary
           }
@@ -137,13 +158,11 @@ Actions:
           if (event.type === 'stopped') {
             finalSummary = 'Autopilot stopped by user'
           }
-          if (event.type === 'approval_required') {
-            finalSummary = `Approval required: ${event.question}`
-          }
-          stepCount = event.step + 1
+          stepCount++
         }
       } finally {
-        setComputerUseRunEventStream(null)
+        // Keep subscribers around briefly so the SSE handler can flush the
+        // terminal event; clear on next run start (clearComputerUseRunEvents above).
       }
 
       return `Autopilot completed after ${stepCount} steps. ${finalSummary}`

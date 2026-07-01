@@ -1,5 +1,5 @@
 import { createLogger } from '../../utils/logger.js'
-import type { ComputerUseAction, ComputerUseResult } from '../types.js'
+import type { ComputerUseAction, ComputerUseAdapter, ComputerUseResult } from '../types.js'
 
 const logger = createLogger('computer-use:anthropic')
 

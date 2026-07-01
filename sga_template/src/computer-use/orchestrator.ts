@@ -9,7 +9,6 @@ import {
   type StepEvent,
   DEFAULT_COMPUTER_USE_CONFIG,
   isCanvasAction,
-  isTerminalAction,
 } from './types.js'
 import { ActionExecutor } from './action-executor.js'
 import type { CanvasBridge } from './canvas-bridge.js'
@@ -96,6 +95,15 @@ export class ComputerUseOrchestrator {
   async stop(): Promise<void> {
     if (this.state === 'stopped' || this.state === 'idle') {
       return
+    }
+
+    // If a run is in progress, signal cancellation so the loop can
+    // yield a 'stopped' event and break before we tear down the browser.
+    if (this.state === 'running') {
+      this.cancelRun()
+      // Give the loop a brief window to observe the flag and exit gracefully.
+      // The loop checks cancelRequested at the top of each iteration.
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
 
     this.state = 'stopping'

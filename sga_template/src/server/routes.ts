@@ -60,7 +60,7 @@ import { setComputerUseOrchestrator } from '../tools/built-in/computer-use.js'
 import { DEFAULT_COMPUTER_USE_CONFIG } from '../computer-use/types.js'
 import { ComputerUseWSServer } from '../computer-use/ws-server.js'
 import { CanvasBridge } from '../computer-use/canvas-bridge.js'
-import { getComputerUseRunEventStream } from '../tools/built-in/computer-use.js'
+import { subscribeToComputerUseRunEvents } from '../tools/built-in/computer-use.js'
 import { AnthropicComputerUseAdapter } from '../computer-use/providers/anthropic.js'
 import { OpenAIComputerUseAdapter } from '../computer-use/providers/openai.js'
 import type { ComputerUseAdapter } from '../computer-use/types.js'
@@ -4456,26 +4456,28 @@ export async function handleComputerUseRunEvents(req: Request, res: Response): P
   res.setHeader('Connection', 'keep-alive')
   res.setHeader('X-Accel-Buffering', 'no')  // Disable nginx buffering
 
-  const eventStream = getComputerUseRunEventStream()
-  if (!eventStream) {
-    res.write(`data: ${JSON.stringify({ type: 'error', error: 'No active autopilot run', step: 0, timestamp: Date.now() })}\n\n`)
-    res.end()
-    return
+  let finished = false
+  const finish = () => {
+    if (!finished) {
+      finished = true
+      unsubscribe()
+      try { res.end() } catch { /* already closed */ }
+    }
   }
 
-  try {
-    for await (const event of eventStream) {
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
-      if (event.type === 'loop_done' || event.type === 'stopped' || event.type === 'error' || event.type === 'approval_required') {
-        break
-      }
+  const unsubscribe = subscribeToComputerUseRunEvents((event) => {
+    if (finished) return
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+    if (event.type === 'loop_done' || event.type === 'stopped' || event.type === 'error' || event.type === 'approval_required') {
+      finish()
     }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error)
-    res.write(`data: ${JSON.stringify({ type: 'error', error: msg, step: 0, timestamp: Date.now() })}\n\n`)
-  } finally {
-    res.end()
-  }
+  })
+
+  // Client disconnected — clean up subscriber
+  req.on('close', finish)
+
+  // Note: connection stays open even with no active run.
+  // Events will flow when the tool starts a run_goal and publishes.
 }
 
 /** Approve or reject a pending require_approval from the autopilot. */
