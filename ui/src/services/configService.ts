@@ -718,3 +718,14 @@ export const stopComputerUse = async (backendUrl: string): Promise<{ state: stri
   if (!res.ok) throw new Error('Failed to stop computer use')
   return res.json()
 }
+
+export async function approveComputerUseAction(baseUrl: string, approved: boolean): Promise<void> {
+  const res = await fetch(`${baseUrl}/computer-use/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved }),
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to approve: ${res.status}`)
+  }
+}
