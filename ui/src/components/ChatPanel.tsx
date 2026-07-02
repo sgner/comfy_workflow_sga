@@ -31,6 +31,10 @@ import remarkGfm from 'remark-gfm'
 
 import { ChatMessage, Language, Sender, AgentStatus, AgentActivity, WorkflowIssue, ApprovalRequest, HumanInputRequest, TokenUsage } from '../types'
 import { t } from '../utils/i18n'
+import { ComputerUseToggle } from './ComputerUseToggle'
+import { AutopilotStepFlow } from './AutopilotStepFlow'
+import { useComputerUseRunEvents } from '../hooks/useComputerUseRunEvents'
+import { stopComputerUse } from '../services/configService'
 
 const markdownComponents = {
   code({ className, children, ...props }: { className?: string; children?: React.ReactNode } & React.HTMLAttributes<HTMLElement>) {
@@ -203,6 +207,7 @@ interface ChatPanelProps {
   onAgentSwitch?: (target: 'sga' | 'codex') => void
   codexSwitchDisabled?: boolean
   codexSwitchReason?: string
+  backendUrl?: string
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
@@ -222,12 +227,21 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
   activeAgent = 'sga',
   onAgentSwitch,
   codexSwitchDisabled = false,
-  codexSwitchReason
+  codexSwitchReason,
+  backendUrl
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
   const approvalRef = useRef<HTMLDivElement>(null)
   const [input, setInput] = useState('')
   const [humanInputValue, setHumanInputValue] = useState('')
+
+  const autopilot = useComputerUseRunEvents(backendUrl ?? '')
+
+  useEffect(() => {
+    if (backendUrl) {
+      autopilot.connect()
+    }
+  }, [backendUrl])
 
   const isAutoScrollRef = useRef(true)
   const scrollRafRef = useRef<number>(0)
@@ -340,6 +354,9 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
               </button>
             </div>
           )}
+          {backendUrl && (
+            <ComputerUseToggle backendUrl={backendUrl} />
+          )}
         </div>
       </div>
 
@@ -361,6 +378,21 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
             onActionClick={onActionClick}
           />
         ))}
+
+        {(autopilot.steps.length > 0 || autopilot.isActive) && (
+          <AutopilotStepFlow
+            steps={autopilot.steps}
+            isActive={autopilot.isActive}
+            onStop={async () => {
+              try {
+                await stopComputerUse(backendUrl ?? '')
+                autopilot.disconnect()
+              } catch (e) {
+                console.error('Stop failed:', e)
+              }
+            }}
+          />
+        )}
 
         {isProcessing && memoizedActivityTimeline.length > 0 && (
           <div className="mx-3 my-3 rounded-lg bg-slate-800/60 border border-slate-700/40 overflow-hidden">

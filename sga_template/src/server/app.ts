@@ -111,7 +111,14 @@ import {
   handleGetCircuitBreakerStatus,
   handleResetCircuitBreaker,
   handleGetContextBudget,
+  handleComputerUseStart,
+  handleComputerUseStatus,
+  handleComputerUseStop,
+  handleComputerUseRunEvents,
+  handleComputerUseApprove,
 } from './routes.js'
+import { ComputerUseWSServer } from '../computer-use/ws-server.js'
+import { setComputerUseWSServer } from './routes.js'
 import {
   handleListSkills,
   handleDiscoverSkills,
@@ -272,6 +279,13 @@ export function createApp(config: ServerConfig = {}): express.Application {
   app.post(`${base}/mcp/servers/:name/connect`, handleConnectMCPServer)
   app.post(`${base}/mcp/servers/:name/disconnect`, handleDisconnectMCPServer)
   app.get(`${base}/mcp/tools`, handleListMCPTools)
+
+  // Computer Use
+  app.get(`${base}/computer-use/status`, handleComputerUseStatus)
+  app.post(`${base}/computer-use/start`, handleComputerUseStart)
+  app.post(`${base}/computer-use/stop`, handleComputerUseStop)
+  app.get(`${base}/computer-use/run-events`, handleComputerUseRunEvents)
+  app.post(`${base}/computer-use/approve`, handleComputerUseApprove)
 
   app.post('/api/chat/stream', handleComfyUIChatStream)
   app.get('/api/chat/history/:sessionId', handleComfyUIChatHistory)
@@ -446,7 +460,7 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
   const host = config.host ?? '0.0.0.0'
   const app = createApp(config)
 
-  app.listen(port, host, () => {
+  const httpServer = app.listen(port, host, () => {
     console.log(`[sga-template] Server running at http://${host}:${port}`)
     console.log(`[sga-template] API base path: ${config.basePath ?? '/api/v1'}`)
     console.log(`[sga-template] Health check: http://${host}:${port}${config.basePath ?? '/api/v1'}/health`)
@@ -469,4 +483,9 @@ export async function startServer(config: ServerConfig = {}): Promise<void> {
       }
     })()
   })
+
+  // Attach computer use WebSocket server
+  const wsServer = new ComputerUseWSServer()
+  wsServer.attach(httpServer, `${config.basePath ?? '/api/v1'}/computer-use/ws`)
+  setComputerUseWSServer(wsServer)
 }

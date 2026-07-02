@@ -681,3 +681,51 @@ export const verifyAndAddProvider = async (
     }
     return res.json();
 };
+
+// ── Computer Use ──
+
+export interface ComputerUseStatus {
+  state: 'idle' | 'starting' | 'ready' | 'stopping' | 'stopped' | 'error'
+  browserConnected: boolean
+  extensionConnected: boolean
+  startedAt?: number
+  config: { comfyuiUrl: string; headless: boolean; sessionTimeoutMs: number }
+}
+
+export const getComputerUseStatus = async (backendUrl: string): Promise<ComputerUseStatus> => {
+  const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/computer-use/status`)
+  if (!res.ok) throw new Error('Failed to get computer use status')
+  return res.json()
+}
+
+export const startComputerUse = async (backendUrl: string): Promise<ComputerUseStatus> => {
+  const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/computer-use/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Unknown error' }))
+    throw new Error(data.error || 'Failed to start computer use')
+  }
+  return res.json()
+}
+
+export const stopComputerUse = async (backendUrl: string): Promise<{ state: string; message: string }> => {
+  const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/computer-use/stop`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error('Failed to stop computer use')
+  return res.json()
+}
+
+export async function approveComputerUseAction(baseUrl: string, approved: boolean): Promise<void> {
+  const res = await fetch(`${getBaseUrl(baseUrl)}/api/v1/computer-use/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved }),
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to approve: ${res.status}`)
+  }
+}

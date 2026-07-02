@@ -55,6 +55,15 @@ import type { FeatureGateConfig } from '../feature-gate/index.js'
 import { TelemetryManager, initTelemetry } from '../telemetry/index.js'
 import { classifyBashCommand, classifyError } from '../permissions/index.js'
 import { buildFullSystemPrompt, type SystemPromptBuildOptions } from '../context/system-prompt.js'
+import { ComputerUseOrchestrator } from '../computer-use/orchestrator.js'
+import { setComputerUseOrchestrator } from '../tools/built-in/computer-use.js'
+import { DEFAULT_COMPUTER_USE_CONFIG } from '../computer-use/types.js'
+import { ComputerUseWSServer } from '../computer-use/ws-server.js'
+import { CanvasBridge } from '../computer-use/canvas-bridge.js'
+import { subscribeToComputerUseRunEvents } from '../tools/built-in/computer-use.js'
+import { AnthropicComputerUseAdapter } from '../computer-use/providers/anthropic.js'
+import { OpenAIComputerUseAdapter } from '../computer-use/providers/openai.js'
+import type { ComputerUseAdapter } from '../computer-use/types.js'
 
 const activeSSEConnections: Map<string, Response> = new Map()
 const activeAbortControllers: Map<string, AbortController> = new Map()
@@ -4338,4 +4347,143 @@ export function handleGetContextBudget(_req: Request, res: Response): void {
     config,
     allocation,
   })
+}
+
+// ── Computer Use ──
+
+let computerUseOrchestrator: ComputerUseOrchestrator | null = null
+
+let computerUseWSServer: ComputerUseWSServer | null = null
+
+export function setComputerUseWSServer(ws: ComputerUseWSServer): void {
+  computerUseWSServer = ws
+}
+
+export function handleComputerUseStatus(_req: Request, res: Response): void {
+  if (!computerUseOrchestrator) {
+    res.json({
+      state: 'idle',
+      browserConnected: false,
+      extensionConnected: false,
+      config: DEFAULT_COMPUTER_USE_CONFIG,
+    })
+    return
+  }
+  res.json(computerUseOrchestrator.getStatus())
+}
+
+export async function handleComputerUseStart(req: Request, res: Response): Promise<void> {
+  if (computerUseOrchestrator) {
+    const status = computerUseOrchestrator.getStatus()
+    if (status.state === 'ready' || status.state === 'starting') {
+      res.status(409).json({ error: `Computer use already active (state: ${status.state})` })
+      return
+    }
+  }
+
+  const body = req.body ?? {}
+  const config = {
+    comfyuiUrl: body.comfyuiUrl ?? DEFAULT_COMPUTER_USE_CONFIG.comfyuiUrl,
+    headless: body.headless ?? DEFAULT_COMPUTER_USE_CONFIG.headless,
+    sessionTimeoutMs: body.sessionTimeoutMs ?? DEFAULT_COMPUTER_USE_CONFIG.sessionTimeoutMs,
+  }
+
+  computerUseOrchestrator = new ComputerUseOrchestrator(config)
+  setComputerUseOrchestrator(computerUseOrchestrator)
+
+  if (computerUseWSServer) {
+    const bridge = new CanvasBridge(computerUseWSServer)
+    computerUseOrchestrator.setCanvasBridge(bridge)
+    computerUseWSServer.onConnect(() => {
+      if (computerUseOrchestrator) computerUseOrchestrator.setExtensionConnected(true)
+    })
+    computerUseWSServer.onDisconnect(() => {
+      if (computerUseOrchestrator) computerUseOrchestrator.setExtensionConnected(false)
+    })
+  }
+
+  // Select provider adapter based on request body
+  let adapter: ComputerUseAdapter | null = null
+  const provider = body.llmProvider ?? 'anthropic'
+  if (provider === 'anthropic') {
+    adapter = new AnthropicComputerUseAdapter({
+      apiKey: body.anthropicApiKey ?? '',
+      model: 'claude-3-5-sonnet-20241022',
+    })
+  } else if (provider === 'openai') {
+    adapter = new OpenAIComputerUseAdapter({
+      apiKey: body.openaiApiKey ?? '',
+      model: 'computer-use-preview',
+    })
+  }
+  if (adapter && computerUseOrchestrator) {
+    computerUseOrchestrator.setActiveAdapter(adapter)
+  }
+
+  try {
+    await computerUseOrchestrator.start()
+    res.status(201).json(computerUseOrchestrator.getStatus())
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    computerUseOrchestrator = null
+    setComputerUseOrchestrator(null)
+    res.status(500).json({ error: `Failed to start computer use: ${msg}` })
+  }
+}
+
+export async function handleComputerUseStop(_req: Request, res: Response): Promise<void> {
+  if (!computerUseOrchestrator) {
+    res.json({ state: 'idle', message: 'Computer use not active' })
+    return
+  }
+
+  try {
+    await computerUseOrchestrator.stop()
+    setComputerUseOrchestrator(null)
+    res.json({ state: 'stopped', message: 'Computer use stopped' })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    computerUseOrchestrator = null
+    setComputerUseOrchestrator(null)
+    res.status(500).json({ error: `Failed to stop computer use: ${msg}` })
+  }
+}
+
+/** SSE endpoint: streams StepEvents from the active autopilot run. */
+export async function handleComputerUseRunEvents(req: Request, res: Response): Promise<void> {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')  // Disable nginx buffering
+
+  let finished = false
+  const finish = () => {
+    if (!finished) {
+      finished = true
+      unsubscribe()
+      try { res.end() } catch { /* already closed */ }
+    }
+  }
+
+  const unsubscribe = subscribeToComputerUseRunEvents((event) => {
+    if (finished) return
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+    if (event.type === 'loop_done' || event.type === 'stopped' || event.type === 'error' || event.type === 'approval_required') {
+      finish()
+    }
+  })
+
+  // Client disconnected — clean up subscriber
+  req.on('close', finish)
+
+  // Note: connection stays open even with no active run.
+  // Events will flow when the tool starts a run_goal and publishes.
+}
+
+/** Approve or reject a pending require_approval from the autopilot. */
+export async function handleComputerUseApprove(req: Request, res: Response): Promise<void> {
+  const { approved } = req.body as { approved?: boolean }
+  // MVP: just acknowledge — the loop auto-stops on approval_required
+  // Future: resume the loop with the approval result
+  res.json({ success: true, message: approved ? 'Approved' : 'Rejected — autopilot will stop' })
 }

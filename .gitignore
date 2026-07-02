@@ -50,9 +50,9 @@ __pycache__/
 .venv/
 venv/
 
-# Build output
+# Build output (web/ contains Vite build artifacts; extension source lives in ui/public/)
 ui/dist/
-web/
+web/*
 
 # SGA template (managed as git submodule)
 

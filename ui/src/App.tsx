@@ -1358,6 +1358,7 @@ const App: React.FC<AppProps> = () => {
                                 onAgentSwitch={appSettings.usePythonBackend ? handleAgentSwitch : undefined}
                                 codexSwitchDisabled={codexSwitchDisabled}
                                 codexSwitchReason={codexStatus?.message}
+                                backendUrl={appSettings.pythonBackendUrl}
                             />
 
                             {activeToolCalls.length > 0 && (
