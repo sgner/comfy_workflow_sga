@@ -14,6 +14,7 @@ interface GraphNode {
   widgets_values?: unknown[]
 }
 
+/** @deprecated Use graph-walker/rules/missing-model.ts and graph-walker/rules/missing-media.ts instead. Will be removed after the next release. */
 export async function validateMissingReferences(workflow: Record<string, unknown>): Promise<WorkflowIssue[]> {
   const nodes = ((workflow.nodes as GraphNode[] | undefined) ?? [])
     .filter(n => n && typeof n.id !== 'undefined')

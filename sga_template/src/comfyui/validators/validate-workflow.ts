@@ -12,6 +12,7 @@ import { validateMissingReferences } from './missing-ref-validator.js'
 import { validateLinkStructure } from './illegal-link-validator.js'
 import { validateUnsupportedStructures } from './unsupported-structure-validator.js'
 
+/** @deprecated Use graph-walker/validate-workflow.ts instead. Will be removed after the next release. */
 export async function validateWorkflow(workflow: Record<string, unknown>): Promise<WorkflowIssue[]> {
   const results = await Promise.all([
     validatePortTypes(workflow),
