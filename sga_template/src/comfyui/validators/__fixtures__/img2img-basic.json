@@ -1,0 +1,52 @@
+{
+  "name": "img2img-basic",
+  "description": "Standard img2img workflow with LoadImage, KSampler, VAEDecode, SaveImage",
+  "objectInfo": {
+    "LoadImage": {
+      "name": "LoadImage", "category": "image",
+      "input": { "required": { "image": ["STRING"] } },
+      "output": ["IMAGE", "MASK"], "output_name": ["IMAGE", "MASK"]
+    },
+    "CheckpointLoaderSimple": {
+      "name": "CheckpointLoaderSimple", "category": "loaders",
+      "input": { "required": { "ckpt_name": [["v1-5-pruned-emaonly.safetensors"]] } },
+      "output": ["MODEL", "CLIP", "VAE"], "output_name": ["MODEL", "CLIP", "VAE"]
+    },
+    "VAEDecode": {
+      "name": "VAEDecode", "category": "latent",
+      "input": { "required": { "samples": ["LATENT"], "vae": ["VAE"] } },
+      "output": ["IMAGE"], "output_name": ["IMAGE"]
+    },
+    "SaveImage": {
+      "name": "SaveImage", "category": "image",
+      "input": { "required": { "images": ["IMAGE"] } },
+      "output": [], "output_name": []
+    }
+  },
+  "models": { "checkpoints": ["v1-5-pruned-emaonly.safetensors"] },
+  "input": ["example.png"],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "LoadImage", "widgets_values": ["example.png"],
+        "outputs": [ { "name": "IMAGE", "type": "IMAGE", "links": [1] }, { "name": "MASK", "type": "MASK", "links": null } ] },
+      { "id": 2, "type": "CheckpointLoaderSimple", "widgets_values": ["v1-5-pruned-emaonly.safetensors"],
+        "outputs": [ { "name": "MODEL", "type": "MODEL", "links": [2] }, { "name": "CLIP", "type": "CLIP", "links": null }, { "name": "VAE", "type": "VAE", "links": [3] } ] },
+      { "id": 3, "type": "KSampler", "widgets_values": [0, 8, "euler", "normal", 0.7],
+        "inputs": [ { "name": "model", "type": "MODEL", "link": 2 } ],
+        "outputs": [ { "name": "LATENT", "type": "LATENT", "links": [4] } ] },
+      { "id": 4, "type": "VAEDecode",
+        "inputs": [ { "name": "samples", "type": "LATENT", "link": 4 }, { "name": "vae", "type": "VAE", "link": 3 } ],
+        "outputs": [ { "name": "IMAGE", "type": "IMAGE", "links": [5] } ] },
+      { "id": 5, "type": "SaveImage", "widgets_values": ["output"],
+        "inputs": [ { "name": "images", "type": "IMAGE", "link": 5 } ] }
+    ],
+    "links": [
+      [1, 1, 0, 3, 0, "IMAGE"],
+      [2, 2, 0, 3, 0, "MODEL"],
+      [3, 2, 2, 4, 1, "VAE"],
+      [4, 3, 0, 4, 0, "LATENT"],
+      [5, 4, 0, 5, 0, "IMAGE"]
+    ]
+  },
+  "expectedIssueIds": []
+}

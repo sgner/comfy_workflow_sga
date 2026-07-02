@@ -19,9 +19,19 @@ import { getComfyUIApiBaseUrl, COMFYUI_DEFAULT_TIMEOUT_MS } from './api-base.js'
 
 const logger = createLogger('node-def-index')
 
-export const NODE_DEF_INDEX_TTL_MS = 120_000  // 2 minutes
+export const NODE_DEF_INDEX_TTL_MS = Number(process.env.SGA_NODE_DEF_INDEX_TTL_MS) || 120_000
 
 const CACHE_FILENAME = 'node-defs.json'
+
+export interface NodeDefWidget {
+  name: string
+  type: string            // "STRING" | "INT" | "FLOAT" | "BOOLEAN" | "combo"
+  options?: string[]      // for combo widgets — the ComfyUI dropdown source
+  defaultValue?: unknown
+  min?: number
+  max?: number
+  step?: number
+}
 
 export interface NodeDef {
   name: string
@@ -29,6 +39,7 @@ export interface NodeDef {
   description?: string
   inputs: Array<{ name: string; type: string; required: boolean }>
   outputs: Array<{ name: string; type: string }>
+  widgets: NodeDefWidget[]   // extracted from /object_info input.required/optional
   deprecated?: boolean
   experimental?: boolean
 }
@@ -71,15 +82,44 @@ function normalizeType(t: string | string[]): string {
   return Array.isArray(t) ? t.join(' | ') : t
 }
 
+function normalizeWidget(name: string, spec: [string | string[], ...unknown[]]): NodeDefWidget {
+  const rawType = spec[0]
+  const opts = spec[1]
+
+  // Combo: type is an array of strings (the dropdown options)
+  if (Array.isArray(rawType)) {
+    return {
+      name,
+      type: 'combo',
+      options: rawType,
+      defaultValue: typeof opts === 'object' && opts !== null ? (opts as Record<string, unknown>).default : undefined,
+    }
+  }
+
+  // Primitive widget: type is a string like "STRING", "INT", "FLOAT", "BOOLEAN"
+  const widget: NodeDefWidget = { name, type: rawType }
+  if (typeof opts === 'object' && opts !== null) {
+    const o = opts as Record<string, unknown>
+    if ('default' in o) widget.defaultValue = o.default
+    if ('min' in o && typeof o.min === 'number') widget.min = o.min
+    if ('max' in o && typeof o.max === 'number') widget.max = o.max
+    if ('step' in o && typeof o.step === 'number') widget.step = o.step
+  }
+  return widget
+}
+
 function normalize(raw: ObjectInfoRaw): NodeDef {
   const inputs: NodeDef['inputs'] = []
+  const widgets: NodeDefWidget[] = []
   const required = raw.input?.required ?? {}
   const optional = raw.input?.optional ?? {}
   for (const [name, spec] of Object.entries(required)) {
     inputs.push({ name, type: normalizeType(spec[0]), required: true })
+    widgets.push(normalizeWidget(name, spec))
   }
   for (const [name, spec] of Object.entries(optional)) {
     inputs.push({ name, type: normalizeType(spec[0]), required: false })
+    widgets.push(normalizeWidget(name, spec))
   }
   const outputs: NodeDef['outputs'] = []
   const outputTypes = raw.output ?? []
@@ -93,6 +133,7 @@ function normalize(raw: ObjectInfoRaw): NodeDef {
     description: raw.description,
     inputs,
     outputs,
+    widgets,
     deprecated: raw.deprecated,
     experimental: raw.experimental,
   }

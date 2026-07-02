@@ -1,0 +1,31 @@
+{
+  "name": "controlnet-basic",
+  "description": "Clean workflow with ControlNetLoader and ControlNetApply",
+  "objectInfo": {
+    "ControlNetLoader": {
+      "name": "ControlNetLoader", "category": "loaders",
+      "input": { "required": { "control_net_name": [["control_v11p_sd15_canny.pth"]] } },
+      "output": ["CONTROL_NET"], "output_name": ["CONTROL_NET"]
+    },
+    "CheckpointLoaderSimple": {
+      "name": "CheckpointLoaderSimple", "category": "loaders",
+      "input": { "required": { "ckpt_name": [["v1-5-pruned-emaonly.safetensors"]] } },
+      "output": ["MODEL", "CLIP", "VAE"], "output_name": ["MODEL", "CLIP", "VAE"]
+    }
+  },
+  "models": { "checkpoints": ["v1-5-pruned-emaonly.safetensors"], "controlnet": ["control_v11p_sd15_canny.pth"] },
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "CheckpointLoaderSimple", "widgets_values": ["v1-5-pruned-emaonly.safetensors"],
+        "outputs": [ { "name": "MODEL", "type": "MODEL", "links": [1] }, { "name": "CLIP", "type": "CLIP", "links": null }, { "name": "VAE", "type": "VAE", "links": null } ] },
+      { "id": 2, "type": "ControlNetLoader", "widgets_values": ["control_v11p_sd15_canny.pth"],
+        "outputs": [ { "name": "CONTROL_NET", "type": "CONTROL_NET", "links": [2] } ] }
+    ],
+    "links": [
+      [1, 1, 0, 2, 0, "MODEL"],
+      [2, 2, 0, 1, 0, "CONTROL_NET"]
+    ]
+  },
+  "expectedIssueIds": []
+}

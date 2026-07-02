@@ -1,0 +1,64 @@
+{
+  "name": "txt2img-basic",
+  "description": "Standard txt2img workflow with CLIPTextEncode, KSampler, VAEDecode, SaveImage",
+  "objectInfo": {
+    "CheckpointLoaderSimple": {
+      "name": "CheckpointLoaderSimple", "category": "loaders",
+      "input": { "required": { "ckpt_name": [["v1-5-pruned-emaonly.safetensors"]] } },
+      "output": ["MODEL", "CLIP", "VAE"], "output_name": ["MODEL", "CLIP", "VAE"]
+    },
+    "CLIPTextEncode": {
+      "name": "CLIPTextEncode", "category": "conditioning",
+      "input": { "required": { "text": ["STRING"], "clip": ["CLIP"] } },
+      "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]
+    },
+    "KSampler": {
+      "name": "KSampler", "category": "sampling",
+      "input": { "required": { "model": ["MODEL"], "positive": ["CONDITIONING"], "negative": ["CONDITIONING"], "latent_image": ["LATENT"], "seed": ["INT"] } },
+      "output": ["LATENT"], "output_name": ["LATENT"]
+    },
+    "VAEDecode": {
+      "name": "VAEDecode", "category": "latent",
+      "input": { "required": { "samples": ["LATENT"], "vae": ["VAE"] } },
+      "output": ["IMAGE"], "output_name": ["IMAGE"]
+    },
+    "SaveImage": {
+      "name": "SaveImage", "category": "image",
+      "input": { "required": { "images": ["IMAGE"], "filename_prefix": ["STRING"] } },
+      "output": [], "output_name": []
+    }
+  },
+  "models": { "checkpoints": ["v1-5-pruned-emaonly.safetensors"] },
+  "input": [],
+  "workflow": {
+    "nodes": [
+      { "id": 1, "type": "CheckpointLoaderSimple", "widgets_values": ["v1-5-pruned-emaonly.safetensors"],
+        "outputs": [ { "name": "MODEL", "type": "MODEL", "links": [1] }, { "name": "CLIP", "type": "CLIP", "links": [2, 3] }, { "name": "VAE", "type": "VAE", "links": [5] } ] },
+      { "id": 2, "type": "CLIPTextEncode", "widgets_values": ["positive prompt"],
+        "inputs": [ { "name": "clip", "type": "CLIP", "link": 2 } ],
+        "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": [4] } ] },
+      { "id": 3, "type": "CLIPTextEncode", "widgets_values": ["negative prompt"],
+        "inputs": [ { "name": "clip", "type": "CLIP", "link": 3 } ],
+        "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": [6] } ] },
+      { "id": 4, "type": "KSampler", "widgets_values": [0, 8, "euler", "normal", 1],
+        "inputs": [ { "name": "model", "type": "MODEL", "link": 1 }, { "name": "positive", "type": "CONDITIONING", "link": 4 }, { "name": "negative", "type": "CONDITIONING", "link": 6 }, { "name": "latent_image", "type": "LATENT", "link": null } ],
+        "outputs": [ { "name": "LATENT", "type": "LATENT", "links": [7] } ] },
+      { "id": 5, "type": "VAEDecode",
+        "inputs": [ { "name": "samples", "type": "LATENT", "link": 7 }, { "name": "vae", "type": "VAE", "link": 5 } ],
+        "outputs": [ { "name": "IMAGE", "type": "IMAGE", "links": [8] } ] },
+      { "id": 6, "type": "SaveImage", "widgets_values": ["output"],
+        "inputs": [ { "name": "images", "type": "IMAGE", "link": 8 } ] }
+    ],
+    "links": [
+      [1, 1, 0, 4, 0, "MODEL"],
+      [2, 1, 1, 2, 0, "CLIP"],
+      [3, 1, 1, 3, 0, "CLIP"],
+      [4, 2, 0, 4, 1, "CONDITIONING"],
+      [5, 1, 2, 5, 1, "VAE"],
+      [6, 3, 0, 4, 2, "CONDITIONING"],
+      [7, 4, 0, 5, 0, "LATENT"],
+      [8, 5, 0, 6, 0, "IMAGE"]
+    ]
+  },
+  "expectedIssueIds": []
+}
