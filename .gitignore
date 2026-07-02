@@ -32,11 +32,11 @@ dist-ssr
 # SGA data
 data/
 
-# Codex 已 vendor 到 sga_template/codex-rs/ (Apache-2.0)
+# Codex �?vendor �?sga_template/codex-rs/ (Apache-2.0)
 # 改为内嵌源码以便直接开发和修改
-# codex-rs/ 内部的 .gitignore 已处理 target/ 等构建产物
+# codex-rs/ 内部�?.gitignore 已处�?target/ 等构建产�?
 
-# Codex 临时数据(SGA 启动时按 hash 生成的临时目录,含 SQLite + config.toml)
+# Codex 临时数据(SGA 启动时按 hash 生成的临时目�?�?SQLite + config.toml)
 # 注意: 这是根级别双保险, sga_template/.gitignore 也已忽略 codex-tmp/
 sga_template/codex-tmp/
 
@@ -60,6 +60,7 @@ web/*
 *.tmp
 *.txt
 !requirements.txt
+!sga_template/codex-rs/core/src/agent/agent_names.txt
 
 # Migration backup
 _comfyui_custom_backup/
