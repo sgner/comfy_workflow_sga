@@ -58,6 +58,7 @@ function getModelSearchKeyword(issue: WorkflowIssue): string {
 }
 import { t } from '../utils/i18n'
 import { AutopilotStepFlow } from './AutopilotStepFlow'
+import CodexBuildProgressCard from './CodexBuildProgressCard'
 import type { StepEvent } from '../hooks/useComputerUseRunEvents'
 import { collectWorkflowContext, collectWorkflowContextAsync, formatWorkflowContextForPrompt } from '../services/workflowContextCollector'
 import { fetchMCPServers, fetchSkills, connectMCPServer, disconnectMCPServer, deleteMCPServer, deleteSkill, addMCPServer, addSkill } from '../services/configService'
@@ -78,6 +79,10 @@ interface WorkflowVisualizerProps {
   onDownloadModel?: (modelName: string, modelFolder?: string) => void
   onDownloadModelFromCivitai?: (modelName: string, modelFolder?: string) => void
   backendUrl?: string
+  /** Optional Codex build status shown as a compact badge above the tab bar. */
+  codexBackendUrl?: string
+  codexLanguage?: Language
+  codexOnSwitchToCodex?: () => void
   autopilotSteps?: StepEvent[]
   autopilotIsActive?: boolean
   autopilotOnStop?: () => void
@@ -112,7 +117,10 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   backendUrl,
   autopilotSteps = [],
   autopilotIsActive = false,
-  autopilotOnStop
+  autopilotOnStop,
+  codexBackendUrl,
+  codexLanguage,
+  codexOnSwitchToCodex
 }) => {
   const [copied, setCopied] = useState(false)
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set())
@@ -1733,6 +1741,13 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
             <button onClick={onOpenSettings} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded border border-slate-700 hover:border-indigo-500 transition-all" title={t(language, 'settingsTitle')}><Settings size={14} /></button>
           </div>
         </div>
+        {codexBackendUrl && codexLanguage && (
+          <CodexBuildProgressCard
+            backendUrl={codexBackendUrl}
+            language={codexLanguage}
+            onSwitchToCodex={codexOnSwitchToCodex}
+          />
+        )}
         <div className="flex px-4 gap-6">
           <button onClick={() => onTabChange('preview')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'preview' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabOverview')}</button>
           <button onClick={() => onTabChange('analysis')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'analysis' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabDiagnostics')}</button>
@@ -1740,7 +1755,7 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
           <button onClick={() => onTabChange('context')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'context' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabContext')}</button>
           <button onClick={() => onTabChange('mcp')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'mcp' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabMCP')}</button>
           <button onClick={() => onTabChange('skills')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'skills' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabSkills')}</button>
-          <button onClick={() => onTabChange('autopilot')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'autopilot' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabAutopilot')}</button>
+          <button onClick={() => onTabChange('runEvents')} className={`pb-3 text-[10px] font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'runEvents' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>{t(language, 'tabRunEvents')}</button>
         </div>
       </div>
       <div className="flex-1 overflow-hidden relative">
@@ -1750,8 +1765,13 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
         {activeTab === 'context' && renderContext()}
         {activeTab === 'mcp' && renderMCP()}
         {activeTab === 'skills' && renderSkills()}
-        {activeTab === 'autopilot' && (
+        {activeTab === 'runEvents' && (
           <div className="absolute inset-0 overflow-auto p-4 bg-slate-900">
+            {autopilotSteps.length === 0 && !autopilotIsActive && (
+              <div className="mb-3 px-3 py-2 rounded-md border border-slate-700/50 bg-slate-800/40 text-[11px] text-slate-400 leading-relaxed">
+                {t(language, 'runEventsEmpty')}
+              </div>
+            )}
             <AutopilotStepFlow
               steps={autopilotSteps}
               isActive={autopilotIsActive}

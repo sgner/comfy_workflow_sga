@@ -155,7 +155,7 @@ export interface WorkflowIssue {
     modelFolder?: string;
 }
 
-export type VisualizerTab = 'preview' | 'analysis' | 'json' | 'context' | 'mcp' | 'skills' | 'autopilot';
+export type VisualizerTab = 'preview' | 'analysis' | 'json' | 'context' | 'mcp' | 'skills' | 'runEvents';
 
 export type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'zhipu' | 'moonshot' | 'qwen' | 'google' | 'custom';
 

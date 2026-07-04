@@ -4,7 +4,6 @@ import { GripHorizontal, RefreshCw, X, Scaling, Undo2, SearchCheck, FileJson, Al
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ChatPanel from './components/ChatPanel'
-import CodexBuildProgressCard from './components/CodexBuildProgressCard'
 import SettingsModal from './components/SettingsModal'
 import SystemDiagnosticsPanel from './components/SystemDiagnosticsPanel'
 import WorkflowVisualizer from './components/WorkflowVisualizer'
@@ -1306,17 +1305,10 @@ const App: React.FC<AppProps> = () => {
                         {/* Left: Chat Panel (35%) */}
                         <div className="w-[35%] min-w-[300px] border-r border-slate-800 flex flex-col bg-slate-950">
                             {appSettings.usePythonBackend && appSettings.pythonBackendUrl && (
-                                <>
-                                    <SystemDiagnosticsPanel
-                                        backendUrl={appSettings.pythonBackendUrl}
-                                        handoffSummary={handoffSummary}
-                                    />
-                                    <CodexBuildProgressCard
-                                        backendUrl={appSettings.pythonBackendUrl}
-                                        language={appSettings.language}
-                                        onSwitchToCodex={() => handleAgentSwitch('codex')}
-                                    />
-                                </>
+                                <SystemDiagnosticsPanel
+                                    backendUrl={appSettings.pythonBackendUrl}
+                                    handoffSummary={handoffSummary}
+                                />
                             )}
                             {sessionNotification && (
                                 <div className="flex items-center gap-2 px-3 py-2 bg-amber-900/30 border-b border-amber-700/30 text-amber-300 text-xs">
@@ -1402,6 +1394,9 @@ const App: React.FC<AppProps> = () => {
                                 onDownloadModel={handleDownloadModel}
                                 onDownloadModelFromCivitai={handleDownloadModelFromCivitai}
                                 backendUrl={appSettings.pythonBackendUrl}
+                                codexBackendUrl={appSettings.usePythonBackend ? appSettings.pythonBackendUrl : undefined}
+                                codexLanguage={appSettings.language}
+                                codexOnSwitchToCodex={() => handleAgentSwitch('codex')}
                                 autopilotSteps={autopilot.steps}
                                 autopilotIsActive={autopilot.isActive}
                                 autopilotOnStop={async () => {
