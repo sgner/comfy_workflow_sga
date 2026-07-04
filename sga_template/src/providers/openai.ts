@@ -500,10 +500,13 @@ export class OpenAIProvider implements LLMProvider {
     if (options.tools && options.tools.length > 0) {
       body.tools = this.convertTools(options.tools)
       body.tool_choice = 'auto'
-    } else {
-      body.tools = []
-      body.tool_choice = 'none'
     }
+    // When tools is empty, omit both `tools` and `tool_choice` from the
+    // request body. The OpenAI spec requires that `tool_choice` only be
+    // set when `tools` is non-empty; some proxies/providers reject
+    // `tool_choice='none'` with HTTP 400:
+    //   "Invalid value for 'tool_choice': 'tool_choice' is only allowed
+    //    when 'tools' are specified."
 
     if (options.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort
