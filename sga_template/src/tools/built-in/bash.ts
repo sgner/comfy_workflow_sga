@@ -73,6 +73,39 @@ const WRITE_COMMAND_PREFIXES = [
   'icacls', 'takeown', 'attrib',
 ]
 
+/**
+ * Resolve the shell executable for the current platform.
+ *
+ * On Windows we cannot rely on `powershell.exe` being on PATH (ComfyUI
+ * portable builds may strip System32 from PATH). We probe, in order:
+ *   1. $SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe
+ *   2. $ProgramFiles\PowerShell\7\pwsh.exe           (PowerShell 7+)
+ *   3. $SystemRoot\System32\cmd.exe                   (last resort)
+ *
+ * On other platforms we use /bin/bash (or $SHELL if set).
+ */
+function resolveWindowsShell(): string {
+  if (process.platform !== 'win32') {
+    return process.env.SHELL ?? '/bin/bash'
+  }
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+  const ps5 = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs')
+    if (fs.existsSync(ps5)) return ps5
+  } catch { /* ignore */ }
+  const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
+  const pwsh7 = `${programFiles}\\PowerShell\\7\\pwsh.exe`
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs')
+    if (fs.existsSync(pwsh7)) return pwsh7
+  } catch { /* ignore */ }
+  // Last-resort fallback: cmd.exe (always present on Windows)
+  return `${systemRoot}\\System32\\cmd.exe`
+}
+
 export class BashTool extends BaseTool<{ command: string; timeout?: number }, string> {
   name = 'Bash'
   description = 'Execute a bash command and return its output'
@@ -200,7 +233,7 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
 
   async call(input: { command: string; timeout?: number }, _context: ToolUseContext, onProgress?: ToolProgressCallback): Promise<string> {
     const timeout = input.timeout ?? parseInt(process.env.BASH_TIMEOUT ?? '120000', 10)
-    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
+    const shell = resolveWindowsShell()
 
     if (!onProgress) {
       return this.execSync(input.command, timeout, shell)
