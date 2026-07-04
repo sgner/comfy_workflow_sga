@@ -1,5 +1,7 @@
 import { BaseTool, type ToolInputSchema, type ToolUseContext, type ValidationResult } from '../base.js'
 import { createLogger } from '../../utils/logger.js'
+import { validateWorkflow as validateWorkflowGraphWalker } from '../../comfyui/validators/graph-walker/validate-workflow.js'
+import type { WorkflowIssue } from '../../comfyui/issue-types.js'
 
 const logger = createLogger('comfyui-workflow-validate')
 
@@ -226,8 +228,8 @@ export class ComfyUIWorkflowValidateTool extends BaseTool<
   string
 > {
   name = 'ComfyUIWorkflowValidate'
-  description = 'Validate a ComfyUI workflow JSON for structural integrity. Checks node IDs, link references, required connections, and common issues. Returns a list of errors, warnings, and fix suggestions.'
-  searchHint = 'comfyui workflow validate check verify json structure'
+  description = 'Validate a ComfyUI workflow JSON for structural integrity AND deep graph analysis. Runs 11+ validation rules (dangling links, slot out-of-bounds, self-loops, bidirectional links, reroute chains, missing models/media, port type mismatches, etc.) via the graph-walker engine. Returns errors, warnings, and fix suggestions.'
+  searchHint = 'comfyui workflow validate check verify json structure graph walker deep analysis'
 
   isReadOnly(): boolean {
     return true
@@ -269,6 +271,7 @@ export class ComfyUIWorkflowValidateTool extends BaseTool<
     const workflow = input.workflow
     const allIssues: ValidationIssue[] = []
 
+    // Phase 1: Basic structural validation (fast, synchronous)
     allIssues.push(...validateWorkflowStructure(workflow))
 
     const nodes = (workflow.nodes ?? []) as WorkflowNode[]
@@ -278,6 +281,24 @@ export class ComfyUIWorkflowValidateTool extends BaseTool<
     allIssues.push(...validateLinks(links, nodes))
     allIssues.push(...validateNodeConnections(nodes, links))
 
+    // Phase 2: Deep graph-walker validation (11 rules, async)
+    let graphWalkerIssues: WorkflowIssue[] = []
+    try {
+      graphWalkerIssues = await validateWorkflowGraphWalker(workflow)
+    } catch (err) {
+      logger.warn('Graph-walker validation failed, continuing with basic validation only:', err instanceof Error ? err.message : String(err))
+    }
+
+    // Convert WorkflowIssue to ValidationIssue format and merge
+    for (const gwi of graphWalkerIssues) {
+      allIssues.push({
+        severity: gwi.severity,
+        nodeId: gwi.nodeId ?? undefined,
+        message: gwi.message,
+        fixSuggestion: gwi.fixSuggestion,
+      })
+    }
+
     const errors = allIssues.filter(i => i.severity === 'error')
     const warnings = allIssues.filter(i => i.severity === 'warning')
     const infos = allIssues.filter(i => i.severity === 'info')
@@ -286,9 +307,14 @@ export class ComfyUIWorkflowValidateTool extends BaseTool<
 
     if (allIssues.length === 0) {
       lines.push('✅ Workflow validation passed with no issues.')
-    } else {
-      lines.push(`Validation result: ${errors.length} errors, ${warnings.length} warnings, ${infos.length} info`)
+      lines.push(`\n## Summary`)
+      lines.push(`Nodes: ${nodes.length}, Links: ${links.length}`)
+      lines.push(`Verdict: PASS`)
+      return lines.join('\n')
     }
+
+    lines.push(`Validation result: ${errors.length} errors, ${warnings.length} warnings, ${infos.length} info`)
+    lines.push(`(Basic checks + ${graphWalkerIssues.length} graph-walker rule findings)`)
 
     if (errors.length > 0) {
       lines.push('\n## Errors')

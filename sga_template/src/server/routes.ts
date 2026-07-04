@@ -3657,6 +3657,49 @@ export async function handleComfyUIWorkflowParse(req: Request, res: Response): P
   }
 }
 
+/**
+ * POST /api/v1/workflow/validate
+ * Deep workflow validation via the graph-walker engine (11 rules).
+ * Returns { issues: WorkflowIssue[], summary: { errors, warnings, info, total, verdict } }
+ */
+export async function handleComfyUIWorkflowValidate(req: Request, res: Response): Promise<void> {
+  const { workflow } = req.body as Record<string, unknown>
+
+  try {
+    if (!workflow || typeof workflow !== 'object') {
+      res.status(400).json({ error: 'workflow is required and must be an object' })
+      return
+    }
+
+    // Dynamic import to avoid loading the graph-walker until first use
+    const { validateWorkflow } = await import('../comfyui/validators/graph-walker/validate-workflow.js')
+
+    const issues = await validateWorkflow(workflow as Record<string, unknown>)
+
+    const errors = issues.filter(i => i.severity === 'error').length
+    const warnings = issues.filter(i => i.severity === 'warning').length
+    const infos = issues.filter(i => i.severity === 'info').length
+
+    res.json({
+      issues,
+      summary: {
+        total: issues.length,
+        errors,
+        warnings,
+        infos: infos,
+        verdict: errors > 0 ? 'FAIL' : 'PASS',
+      },
+    })
+  } catch (error) {
+    logger.error(`Workflow validate error: ${error instanceof Error ? error.message : String(error)}`)
+    res.status(500).json({
+      error: error instanceof Error ? error.message : String(error),
+      issues: [],
+      summary: { total: 0, errors: 0, warnings: 0, infos: 0, verdict: 'ERROR' },
+    })
+  }
+}
+
 export function handleComfyUIActionExecute(req: Request, res: Response): void {
   const { action_type, action_data } = req.body as Record<string, unknown>
 

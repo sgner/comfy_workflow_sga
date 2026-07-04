@@ -326,6 +326,34 @@ export const analyzeWorkflow = async (backendUrl: string, workflow: Record<strin
     return res.json();
 };
 
+export const validateWorkflowDeep = async (backendUrl: string, workflow: Record<string, unknown>): Promise<{
+    issues: Array<{
+        id: string;
+        nodeId: number | null;
+        nodeIds?: number[];
+        severity: 'error' | 'warning' | 'info';
+        category?: string;
+        message: string;
+        fixSuggestion?: string;
+        nodeType?: string;
+    }>;
+    summary: {
+        total: number;
+        errors: number;
+        warnings: number;
+        infos: number;
+        verdict: 'PASS' | 'FAIL' | 'ERROR';
+    };
+}> => {
+    const res = await fetch(`${getBaseUrl(backendUrl)}/api/v1/workflow/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflow })
+    });
+    if (!res.ok) throw new Error('Failed to validate workflow');
+    return res.json();
+};
+
 // --- MCP Server Endpoints ---
 
 export const fetchMCPServers = async (backendUrl: string): Promise<MCPServerInfo[]> => {

@@ -17,13 +17,16 @@ import {
   ExternalLink,
   FileJson,
   History,
+  Loader2,
   Maximize,
   Move,
   RefreshCw,
   RotateCcw,
   Save,
   Settings,
+  ShieldCheck,
   Wrench,
+  Zap,
   ZoomIn,
   ZoomOut
 } from 'lucide-react'
@@ -61,7 +64,7 @@ import { AutopilotStepFlow } from './AutopilotStepFlow'
 import CodexBuildProgressCard from './CodexBuildProgressCard'
 import type { StepEvent } from '../hooks/useComputerUseRunEvents'
 import { collectWorkflowContext, collectWorkflowContextAsync, formatWorkflowContextForPrompt } from '../services/workflowContextCollector'
-import { fetchMCPServers, fetchSkills, connectMCPServer, disconnectMCPServer, deleteMCPServer, deleteSkill, addMCPServer, addSkill } from '../services/configService'
+import { fetchMCPServers, fetchSkills, connectMCPServer, disconnectMCPServer, deleteMCPServer, deleteSkill, addMCPServer, addSkill, validateWorkflowDeep } from '../services/configService'
 
 interface WorkflowVisualizerProps {
   workflow: ComfyWorkflow
@@ -156,6 +159,14 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
   const [showEditWarning, setShowEditWarning] = useState(false)
   const [jsonError, setJsonError] = useState<string | null>(null)
   const [checkpoints, setCheckpoints] = useState<WorkflowCheckpoint[]>([])
+  const [deepValidationIssues, setDeepValidationIssues] = useState<Array<{
+    id: string; nodeId: number | null; severity: string; category?: string;
+    message: string; fixSuggestion?: string; nodeType?: string
+  }>>([])
+  const [deepValidationLoading, setDeepValidationLoading] = useState(false)
+  const [deepValidationSummary, setDeepValidationSummary] = useState<{
+    total: number; errors: number; warnings: number; infos: number; verdict: string
+  } | null>(null)
 
   const handleCopyJson = () => {
     void navigator.clipboard.writeText(JSON.stringify(workflow, null, 2))
@@ -756,6 +767,22 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
     setSelectedIssueIds(new Set())
   }
 
+  const handleDeepValidation = async () => {
+    if (!backendUrl) return
+    setDeepValidationLoading(true)
+    try {
+      const result = await validateWorkflowDeep(backendUrl, workflow as unknown as Record<string, unknown>)
+      setDeepValidationIssues(result.issues)
+      setDeepValidationSummary(result.summary)
+    } catch (err) {
+      console.error('Deep validation failed:', err)
+      setDeepValidationIssues([])
+      setDeepValidationSummary({ total: 0, errors: 0, warnings: 0, infos: 0, verdict: 'ERROR' })
+    } finally {
+      setDeepValidationLoading(false)
+    }
+  }
+
   const renderAnalysis = () => {
     const runtimeErrors = analysis.issues.filter(i => i.isRuntimeError)
     const hasSelected = selectedIssueIds.size > 0
@@ -777,6 +804,54 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = React.memo(({
           </div>
           <div className="text-[10px] text-slate-500 uppercase">{t(language, 'statIssues')}</div>
         </div>
+      </div>
+
+      {/* 深度验证按钮 + 结果 */}
+      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <ShieldCheck size={14} className="text-indigo-400" />
+            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Deep Validation (11 rules)</span>
+          </div>
+          <button
+            onClick={() => void handleDeepValidation()}
+            disabled={deepValidationLoading || !backendUrl}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-semibold rounded-md flex items-center gap-1.5"
+          >
+            {deepValidationLoading ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+            {deepValidationLoading ? 'Validating...' : 'Run Deep Validation'}
+          </button>
+        </div>
+        {deepValidationSummary && (
+          <div className="flex items-center gap-3 text-[10px] mb-2">
+            <span className={`px-2 py-0.5 rounded font-mono ${deepValidationSummary.verdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-300' : deepValidationSummary.verdict === 'FAIL' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}>
+              {deepValidationSummary.verdict}
+            </span>
+            <span className="text-red-300">{deepValidationSummary.errors} errors</span>
+            <span className="text-amber-300">{deepValidationSummary.warnings} warnings</span>
+            <span className="text-slate-400">{deepValidationSummary.infos} info</span>
+          </div>
+        )}
+        {deepValidationIssues.length > 0 && (
+          <div className="space-y-1 max-h-48 overflow-y-auto">
+            {deepValidationIssues.map((issue) => (
+              <div key={issue.id} className="flex items-start gap-2 py-1 text-[11px]">
+                <span className={`flex-shrink-0 ${issue.severity === 'error' ? 'text-red-400' : issue.severity === 'warning' ? 'text-amber-400' : 'text-slate-400'}`}>
+                  {issue.severity === 'error' ? '❌' : issue.severity === 'warning' ? '⚠️' : 'ℹ️'}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-slate-300">
+                    {issue.nodeId !== null && `[N${issue.nodeId}] `}
+                    {issue.message}
+                  </span>
+                  {issue.fixSuggestion && (
+                    <div className="text-[10px] text-slate-500 mt-0.5">Fix: {issue.fixSuggestion}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {runtimeErrors.length > 0 && (

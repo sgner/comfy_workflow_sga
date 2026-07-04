@@ -70,6 +70,7 @@ import {
   handleComfyUIChatAbort,
   handleComfyUIWorkflowParse,
   handleComfyUIWorkflowAnalyze,
+  handleComfyUIWorkflowValidate,
   handleComfyUIActionExecute,
   handleComfyUIActionUndo,
   handleComfyUIUserInput,
@@ -293,6 +294,7 @@ export function createApp(config: ServerConfig = {}): express.Application {
 
   app.post('/api/workflow/parse', handleComfyUIWorkflowParse)
   app.post('/api/workflow/analyze', handleComfyUIWorkflowAnalyze)
+  app.post('/api/v1/workflow/validate', handleComfyUIWorkflowValidate)
 
   app.post('/api/actions/execute', handleComfyUIActionExecute)
   app.post('/api/actions/undo', handleComfyUIActionUndo)
