@@ -11,6 +11,8 @@ import WorkflowVisualizer from './components/WorkflowVisualizer'
 import { DEFAULT_WORKFLOW } from './constants'
 import { sendMessageToComfyAgent, fetchChatHistory, abortBackendAgent } from './services/aiService'
 import { submitUserInput, checkBackendHealth, undoAction, analyzeWorkflow, fetchBackendConfigs, switchAgent, getActiveAgent, fetchHandoffStatus, fetchCodexStatus, CodexCapabilityStatus } from './services/configService'
+import { stopComputerUse } from './services/configService'
+import { useComputerUseRunEvents } from './hooks/useComputerUseRunEvents'
 import { AppSettings, ChatMessage, ComfyNode, ComfyWorkflow, Sender, WorkflowIssue, VisualizerTab, AgentStatus, AgentActivity, ApprovalRequest, HumanInputRequest, ToolCallInfo, TokenUsage } from './types'
 import { t } from './utils/i18n'
 import { preserveWorkflowSessionId } from './utils/workflowId'
@@ -161,6 +163,14 @@ const App: React.FC<AppProps> = () => {
   const [activeAgent, setActiveAgent] = useState<'sga' | 'codex'>('sga')
   const [handoffSummary, setHandoffSummary] = useState<string | null>(null)
   const [codexStatus, setCodexStatus] = useState<CodexCapabilityStatus | null>(null)
+
+  const autopilot = useComputerUseRunEvents(appSettings.pythonBackendUrl ?? '')
+
+  useEffect(() => {
+    if (appSettings.pythonBackendUrl) {
+      autopilot.connect()
+    }
+  }, [appSettings.pythonBackendUrl])
 
   // --- ComfyUI Integration Hooks ---
   const app = (window as any).app;
@@ -1392,6 +1402,16 @@ const App: React.FC<AppProps> = () => {
                                 onDownloadModel={handleDownloadModel}
                                 onDownloadModelFromCivitai={handleDownloadModelFromCivitai}
                                 backendUrl={appSettings.pythonBackendUrl}
+                                autopilotSteps={autopilot.steps}
+                                autopilotIsActive={autopilot.isActive}
+                                autopilotOnStop={async () => {
+                                  try {
+                                    await stopComputerUse(appSettings.pythonBackendUrl ?? '')
+                                    autopilot.disconnect()
+                                  } catch (e) {
+                                    console.error('Stop failed:', e)
+                                  }
+                                }}
                             />
                         </div>
                     </div>
