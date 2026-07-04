@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import os
 import subprocess
 import shutil
@@ -532,6 +532,69 @@ def _ensure_dependencies(sga_dir):
     except Exception as e:
         print(f"鉂?Failed to install dependencies: {e}")
         raise
+
+
+def _get_playwright_browsers_dir():
+    """Return the Playwright browsers directory (env override or platform default)."""
+    env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env_path:
+        return env_path
+    home = os.path.expanduser("~")
+    if _is_windows():
+        return os.path.join(os.environ.get("LOCALAPPDATA", os.path.join(home, "AppData", "Local")), "ms-playwright")
+    if platform.system() == "Darwin":
+        return os.path.join(home, "Library", "Caches", "ms-playwright")
+    return os.path.join(home, ".cache", "ms-playwright")
+
+
+def _is_playwright_chromium_installed():
+    """Return True when a chromium-* browser bundle exists in the browsers dir."""
+    browsers_dir = _get_playwright_browsers_dir()
+    if not os.path.isdir(browsers_dir):
+        return False
+    try:
+        for entry in os.listdir(browsers_dir):
+            if entry.startswith("chromium-"):
+                # Sanity check: chrome binary should exist inside.
+                if _is_windows():
+                    chrome = os.path.join(browsers_dir, entry, "chrome-win64", "chrome.exe")
+                elif platform.system() == "Darwin":
+                    chrome = os.path.join(browsers_dir, entry, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
+                else:
+                    chrome = os.path.join(browsers_dir, entry, "chrome-linux", "chrome")
+                if os.path.isfile(chrome):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _ensure_playwright_browsers(sga_dir):
+    """Auto-install Playwright Chromium browser if missing.
+
+    Called after npm install so that the playwright package is available.
+    Failures are non-fatal: Computer Use simply won't work until the user
+    runs `npx playwright install chromium` manually.
+    """
+    if _is_playwright_chromium_installed():
+        return
+    print("[INFO] Playwright Chromium browser not found; installing automatically...")
+    print("       (one-time download, ~180 MB; used by Computer Use feature)")
+    try:
+        result = _run_npm(["exec", "--no", "playwright", "install", "chromium"], cwd=sga_dir)
+        if result.returncode != 0:
+            print(f"[WARN] playwright install exited with code {result.returncode}")
+            print("       Computer Use will fail until you run: npx playwright install chromium")
+            return
+        if _is_playwright_chromium_installed():
+            print("[OK] Playwright Chromium installed successfully")
+        else:
+            print("[WARN] playwright install completed but chromium binary still missing")
+    except FileNotFoundError:
+        print("[WARN] npm not found; cannot install Playwright Chromium")
+    except Exception as e:
+        print(f"[WARN] Failed to install Playwright Chromium: {e}")
+        print("       Computer Use will fail until you run: npx playwright install chromium")
 
 
 def _build_if_needed(sga_dir):
@@ -1409,6 +1472,7 @@ def start_backend_server(host: str = "127.0.0.1", port: int = 8000):
             with _acquire_install_lock():
                 try:
                     _ensure_dependencies(sga_dir)
+                    _ensure_playwright_browsers(sga_dir)
                     _build_if_needed(sga_dir)
                 except Exception as e:
                     print(f"[ERROR] Failed to prepare sga_template: {e}")
