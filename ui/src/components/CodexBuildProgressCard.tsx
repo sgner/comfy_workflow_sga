@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -64,15 +65,11 @@ const CodexBuildProgressCard: React.FC<CodexBuildProgressCardProps> = ({
       if (!s) return
       setStatus(s)
 
-      // build 成功后, 3 秒后自动收起 (让用户看到 "已就绪" 状态)
+      // build 成功后不自动收起, 需要用户手动重启 ComfyUI 才能使用 Codex
       if (s.status === 'success' && !autoSwitchedRef.current) {
-        // 通知父组件, 准备自动切换 (但只触发一次)
         if (onSwitchToCodex) {
           setAutoSwitched(true)
         }
-        setTimeout(() => {
-          setDismissed(true)
-        }, 5000)
       }
     } catch {
       // 静默, 下轮重试
@@ -223,20 +220,29 @@ const CodexBuildProgressCard: React.FC<CodexBuildProgressCardProps> = ({
         </div>
       )}
 
-      {/* 成功时的 "切换到 Codex" 按钮 */}
-      {isSuccess && onSwitchToCodex && (
+      {/* 成功时: 提示用户重启 ComfyUI, 并提供 "切换到 Codex" 按钮 */}
+      {isSuccess && (
         <div className="px-3 py-2 border-t border-emerald-700/30 bg-emerald-900/20">
-          <button
-            onClick={() => {
-              setAutoSwitched(true)
-              onSwitchToCodex()
-            }}
-            disabled={autoSwitched}
-            className="w-full px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-md transition-colors flex items-center justify-center gap-1.5"
-          >
-            {autoSwitched ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Hammer className="w-3.5 h-3.5" />}
-            {t(language, 'codexBuildSwitchNow')}
-          </button>
+          {/* 醒目的重启提示 */}
+          <div className="mb-2 px-2 py-1.5 rounded-md border border-amber-500/40 bg-amber-950/40 flex items-start gap-1.5">
+            <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0 mt-0.5" />
+            <span className="text-[10px] text-amber-200 leading-relaxed">
+              {t(language, 'codexBuildRestartHint')}
+            </span>
+          </div>
+          {onSwitchToCodex && (
+            <button
+              onClick={() => {
+                setAutoSwitched(true)
+                onSwitchToCodex()
+              }}
+              disabled={autoSwitched}
+              className="w-full px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-md transition-colors flex items-center justify-center gap-1.5"
+            >
+              {autoSwitched ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Hammer className="w-3.5 h-3.5" />}
+              {t(language, 'codexBuildSwitchNow')}
+            </button>
+          )}
         </div>
       )}
     </div>

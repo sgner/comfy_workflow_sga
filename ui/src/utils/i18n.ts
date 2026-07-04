@@ -303,6 +303,8 @@ export const translations: Translations = {
         codexBuildShowLog: "Show log",
         codexBuildHideLog: "Hide log",
         codexBuildErrorHint: "Please ensure Rust toolchain is installed and try restarting ComfyUI.",
+        codexBuildRestartHint: "Codex build finished. Restart ComfyUI to load the new Codex backend, then switch to Codex.",
+        codexBuildRestartButton: "Restart needed",
 
         // WorkflowVisualizer
         fixOverlaps: "Fix Overlaps & Expand",
@@ -640,6 +642,8 @@ export const translations: Translations = {
         codexBuildShowLog: "查看日志",
         codexBuildHideLog: "隐藏日志",
         codexBuildErrorHint: "请确认 Rust 工具链已安装，然后重启 ComfyUI。",
+        codexBuildRestartHint: "Codex 编译已完成。请重启 ComfyUI 以加载新的 Codex 后端，重启后再切换到 Codex。",
+        codexBuildRestartButton: "需要重启",
 
         // WorkflowVisualizer
         fixOverlaps: "修复重叠并展开",
@@ -975,6 +979,8 @@ export const translations: Translations = {
         codexBuildShowLog: "ログを表示",
         codexBuildHideLog: "ログを隠す",
         codexBuildErrorHint: "Rust ツールチェーンがインストールされているか確認し、ComfyUI を再起動してください。",
+        codexBuildRestartHint: "Codex のビルドが完了しました。ComfyUI を再起動して新しい Codex バックエンドを読み込み、再起動後に Codex に切り替えてください。",
+        codexBuildRestartButton: "再起動が必要",
 
         // WorkflowVisualizer
         fixOverlaps: "重なりを修正して展開",
