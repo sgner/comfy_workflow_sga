@@ -45,7 +45,7 @@ export class FileReadTool extends BaseTool<{ path: string; offset?: number; limi
   }
 
   async call(input: { path: string; offset?: number; limit?: number }, _context: ToolUseContext): Promise<string> {
-    const absolutePath = isAbsolute(input.path) ? input.path : resolve(process.cwd(), input.path)
+    const absolutePath = isAbsolute(input.path) ? input.path : resolve(process.env.COMFYUI_BASE_DIR ?? process.cwd(), input.path)
 
     let fileStat
     try {

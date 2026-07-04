@@ -113,7 +113,7 @@ export class GlobTool extends BaseTool<{ pattern: string; path?: string }, strin
   }
 
   async call(input: { pattern: string; path?: string }, _context: ToolUseContext): Promise<string> {
-    const searchPath = input.path ? resolve(input.path) : process.cwd()
+    const searchPath = input.path ? resolve(input.path) : (process.env.COMFYUI_BASE_DIR ?? process.cwd())
     const maxResults = 1000
 
     let dirToSearch: string

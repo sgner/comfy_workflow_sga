@@ -13,7 +13,7 @@ const actionHistory: ActionRecord[] = []
 
 export class WorkflowActionTool extends BaseTool {
   name = 'workflow_action'
-  description = 'Execute workflow modification actions such as adding nodes, connecting nodes, or modifying properties'
+  description = 'Execute workflow modification actions. Use action_type="replace_workflow" to apply a completely new workflow JSON to the canvas — this is the PREFERRED way to modify a workflow (not outputting JSON in a code block). The tool will automatically push the updated workflow to the UI canvas and notify the user.'
 
   protected getInputSchema(): ToolInputSchema {
     return {
@@ -21,16 +21,16 @@ export class WorkflowActionTool extends BaseTool {
       properties: {
         action_type: {
           type: 'string',
-          enum: ['add_node', 'remove_node', 'connect_nodes', 'disconnect_nodes', 'modify_node', 'fix_workflow'],
-          description: 'Type of action to perform',
+          enum: ['add_node', 'remove_node', 'connect_nodes', 'disconnect_nodes', 'modify_node', 'fix_workflow', 'replace_workflow'],
+          description: 'Type of action to perform. Use "replace_workflow" to apply a full new workflow JSON to the canvas.',
         },
         workflow_json: {
           type: 'string',
-          description: 'Current workflow JSON',
+          description: 'For replace_workflow: the NEW workflow JSON to apply. For other actions: the current workflow JSON to modify.',
         },
         params: {
           type: 'object',
-          description: 'Parameters for the action',
+          description: 'Parameters for the action (not needed for replace_workflow).',
         },
       },
       required: ['action_type', 'workflow_json'],
@@ -81,6 +81,9 @@ export class WorkflowActionTool extends BaseTool {
           break
         case 'fix_workflow':
           result = this.fixWorkflow(workflow)
+          break
+        case 'replace_workflow':
+          result = this.replaceWorkflow(workflow)
           break
         default:
           return JSON.stringify({ success: false, error: `Unknown action type: ${actionType}` })
@@ -278,6 +281,26 @@ export class WorkflowActionTool extends BaseTool {
     return {
       description: `Workflow analysis found ${fixes.length} potential issues to fix`,
       changes: { issues_found: fixes.length, details: fixes },
+    }
+  }
+
+  /**
+   * Replace the entire workflow with the provided JSON.
+   * The runner (runner.ts) intercepts workflow_action calls and emits a
+   * 'workflow_updated' SSE event so the frontend applies the new workflow
+   * to the ComfyUI canvas immediately.
+   */
+  private replaceWorkflow(workflow: Record<string, unknown>): Record<string, unknown> {
+    // Basic structural validation
+    if (!workflow.nodes || !Array.isArray(workflow.nodes)) {
+      throw new Error('Invalid workflow: missing "nodes" array')
+    }
+    const nodeCount = (workflow.nodes as unknown[]).length
+    const linkCount = Array.isArray(workflow.links) ? (workflow.links as unknown[]).length : 0
+
+    return {
+      description: `Replaced entire workflow with ${nodeCount} nodes and ${linkCount} links. The workflow has been applied to the canvas.`,
+      changes: { node_count: nodeCount, link_count: linkCount },
     }
   }
 }

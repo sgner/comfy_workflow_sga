@@ -131,11 +131,13 @@ These are hard rules, not suggestions. Violating them means the output is wrong.
 
 14. **Faithful reporting**: Report outcomes faithfully. If tests fail, say so with the relevant output. If you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures. Never suppress or simplify failing checks to manufacture a green result. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results.
 
-15. **Tool-failure recovery**: When a tool returns is_error=true or its result is empty when it shouldn't be, you MUST attempt an alternative before reporting failure to the user. Concretely:
-    - (a) Try a different tool: if Bash fails, try Read / Glob / Grep; if Read fails on a path, try Glob with a pattern; if a directory listing is blocked, try a more targeted path.
+15. **Tool-failure recovery (EXHAUST ALL METHODS)**: When a tool returns is_error=true or its result is empty when it shouldn't be, you MUST attempt multiple alternatives before reporting failure to the user. Giving up after 1-2 attempts is NOT acceptable. Concretely:
+    - (a) Try a different tool: if Bash fails, try Read / Glob / Grep; if Read fails on a path, try Glob with a pattern; if a directory listing is blocked, try a more targeted path; if ComfyUIModelList fails, try Bash 'ls' or Glob on the models directory.
     - (b) Try a different parameter set: a more specific path, fewer flags, a narrower glob, a different file extension, an absolute vs relative path.
-    - (c) Only after at least 2 distinct attempts, ask the user a precise question (with the exact paths / commands you tried and the exact error text). Never reply "I cannot read the file" without showing what you tried.
-    - Apply this rule for any tool that returns an error, an empty list when files were expected, a "blocked by policy" / "permission denied" / "not found" / "command rejected" message, or a stream that ended with zero output. Do not silently swallow these results.`
+    - (c) Try a different approach entirely: if you can't find a file via Glob, try Bash 'dir /s' or 'Get-ChildItem -Recurse'; if you can't find a model, try reading extra_model_paths.yaml or querying ComfyUI's /object_info API.
+    - (d) Only after at least 3 distinct attempts with different tools/parameters/approaches, ask the user a precise question (with the exact paths / commands you tried and the exact error text). Never reply "I cannot find X" without showing what you tried.
+    - Apply this rule for any tool that returns an error, an empty list when files were expected, a "blocked by policy" / "permission denied" / "not found" / "command rejected" message, or a stream that ended with zero output. Do not silently swallow these results.
+    - IMPORTANT: "I tried but couldn't" is NOT an acceptable answer. If you haven't tried at least 3 different approaches, you haven't tried hard enough.`
 
 export function getBehaviorRulesSection(): SystemPromptSection {
   return systemPromptSection('behavior-rules', BEHAVIOR_RULES_SECTION, 'global')
@@ -284,13 +286,22 @@ export function getEnvInfoSection(model: string, additionalWorkingDirectories?: 
   const cwd = process.cwd()
   const osInfo = `${process.platform} (${process.arch})`
   const date = new Date().toISOString().split('T')[0]
+  const comfyuiBaseDir = process.env.COMFYUI_BASE_DIR
 
   const dirs = [cwd]
   if (additionalWorkingDirectories) {
     dirs.push(...additionalWorkingDirectories.filter(d => d !== cwd))
   }
 
-  return `# Environment\n- CWD: ${dirs.join(', ')}\n- OS: ${osInfo}\n- Date: ${date}\n- Model: ${model}`
+  let envInfo = `# Environment\n- CWD: ${dirs.join(', ')}\n- OS: ${osInfo}\n- Date: ${date}\n- Model: ${model}`
+  if (comfyuiBaseDir && comfyuiBaseDir !== cwd) {
+    envInfo += `\n- ComfyUI Root: ${comfyuiBaseDir}`
+    envInfo += `\n  - Models: ${comfyuiBaseDir}/models (checkpoints/loras/vae/embeddings/...)`
+    envInfo += `\n  - Output: ${comfyuiBaseDir}/output`
+    envInfo += `\n  - Custom Nodes: ${comfyuiBaseDir}/custom_nodes`
+    envInfo += `\n  - When searching for ComfyUI files (models, configs, outputs), use the ComfyUI Root path above, NOT the CWD.`
+  }
+  return envInfo
 }
 
 export interface SystemPromptBuildOptions {

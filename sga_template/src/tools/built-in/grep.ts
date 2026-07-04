@@ -78,7 +78,7 @@ export class GrepTool extends BaseTool<{ pattern: string; path?: string; glob?: 
   }
 
   async call(input: { pattern: string; path?: string; glob?: string; output_mode?: string }, _context: ToolUseContext): Promise<string> {
-    const searchPath = input.path ? resolve(input.path) : process.cwd()
+    const searchPath = input.path ? resolve(input.path) : (process.env.COMFYUI_BASE_DIR ?? process.cwd())
     const outputMode = input.output_mode ?? 'content'
     const regex = new RegExp(input.pattern)
 

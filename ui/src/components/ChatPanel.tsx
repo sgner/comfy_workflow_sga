@@ -370,9 +370,28 @@ const ChatPanel: React.FC<ChatPanelProps> = React.memo(({
 
         {isProcessing && memoizedActivityTimeline.length > 0 && (
           <div className="mx-3 my-3 rounded-lg bg-slate-800/60 border border-slate-700/40 overflow-hidden">
-            <div className="px-3 py-1.5 border-b border-slate-700/30 flex items-center gap-2">
-              <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
+            <div className="px-3 py-1.5 border-b border-slate-700/30 flex items-center gap-2 flex-wrap">
+              <Loader2 className="w-3 h-3 animate-spin text-indigo-400 flex-shrink-0" />
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{t(language, 'agentActivity')}</span>
+              {/* 状态统计 */}
+              {(() => {
+                const turnCount = activityTimeline.filter(a => a.type === 'turn_end').length + 1
+                const completedTools = activityTimeline.filter(a => a.type === 'tool_result').length
+                const activeToolActivity = [...activityTimeline].reverse().find(a => a.type === 'tool_start' && a.status === 'processing')
+                const activeTool = activeToolActivity?.toolName ?? activeToolActivity?.label
+                return (
+                  <div className="flex items-center gap-1.5 ml-auto text-[10px] text-slate-400">
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono">T{turnCount}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-300 font-mono">{completedTools} tools</span>
+                    {activeTool && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono truncate max-w-[140px] flex items-center gap-1">
+                        <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" />
+                        {activeTool}
+                      </span>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
             <div className="px-3 py-2 space-y-0 max-h-48 overflow-y-auto">
               {memoizedActivityTimeline.map((activity, idx) => {

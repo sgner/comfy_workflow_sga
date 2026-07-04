@@ -78,7 +78,7 @@ export class FileWriteTool extends BaseTool<{ path: string; content: string }, s
   async call(input: { path: string; content: string }, _context: ToolUseContext): Promise<string> {
     const fs = await import('fs/promises')
     const path = await import('path')
-    const absolutePath = path.isAbsolute(input.path) ? input.path : path.resolve(process.cwd(), input.path)
+    const absolutePath = path.isAbsolute(input.path) ? input.path : path.resolve(process.env.COMFYUI_BASE_DIR ?? process.cwd(), input.path)
     await fs.mkdir(path.dirname(absolutePath), { recursive: true })
     await fs.writeFile(absolutePath, input.content, 'utf-8')
     return `Successfully wrote to ${input.path}`

@@ -250,6 +250,7 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
         maxBuffer: parseInt(process.env.BASH_MAX_BUFFER ?? String(10 * 1024 * 1024), 10),
         encoding: 'utf-8',
         shell,
+        cwd: process.env.COMFYUI_BASE_DIR ?? process.cwd(),
       })
       return result
     } catch (error: unknown) {
@@ -267,6 +268,7 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
         shell,
         timeout,
         env: { ...process.env },
+        cwd: process.env.COMFYUI_BASE_DIR ?? process.cwd(),
         windowsHide: true,
       }) as import('child_process').ChildProcess
 

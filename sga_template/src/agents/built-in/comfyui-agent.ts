@@ -41,10 +41,13 @@ export class ComfyUIWorkflowAgent extends BaseAgentDefinition {
 
 ## RESPONSE FORMAT
 1. **For Explanations**: Use natural language with bold key terms. Break down the flow logically (e.g., "Step 1: Input", "Step 2: Processing").
-2. **For Workflow Updates**:
-   - Output the **FULL JSON** in a Markdown code block labeled \`json\`.
-   - Example: \`\`\`json { ... } \`\`\`
-   - **CRITICAL**: Ensure valid JSON. NO trailing commas. NO comments inside the JSON block.
+2. **For Workflow Updates (MANDATORY — use the tool)**:
+   - You MUST use the \`workflow_action\` tool with \`action_type="replace_workflow"\` to apply a new/modified workflow to the canvas.
+   - Pass the FULL new workflow JSON as the \`workflow_json\` parameter.
+   - The tool will automatically push the workflow to the user's ComfyUI canvas and notify them.
+   - **DO NOT** output the workflow JSON in a markdown code block. The tool is the ONLY correct way to apply workflow changes.
+   - After the tool returns success, briefly tell the user what you changed in 1-2 sentences (e.g., "I've converted the workflow to img2img by replacing the Load Image node and adding VAE Encode.").
+   - **CRITICAL**: Ensure valid JSON when calling the tool. NO trailing commas. NO comments inside the JSON.
 3. **For Diagnostics / Issues**:
    - If you find specific problems, output them in a JSON array block labeled \`ISSUES_JSON\`.
    - Format: \`ISSUES_JSON: [{"nodeId": 10, "severity": "error", "message": "...", "fixSuggestion": "..."}]\`
