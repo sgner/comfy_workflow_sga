@@ -171,6 +171,33 @@ const App: React.FC<AppProps> = () => {
     }
   }, [appSettings.pythonBackendUrl])
 
+  // Sync headless browser canvas state to user's browser when autopilot emits workflowJson
+  useEffect(() => {
+    if (autopilot.latestWorkflowJson) {
+      try {
+        const parsed = JSON.parse(autopilot.latestWorkflowJson)
+        const bound = preserveWorkflowSessionId(parsed, activeSessionId)
+        setWorkflow(bound)
+        // Apply to ComfyUI canvas directly
+        const comfyApp = (window as any).app
+        if (comfyApp) {
+          try {
+            if (comfyApp.graph && typeof comfyApp.graph.configure === 'function') {
+              comfyApp.graph.configure(bound)
+              if (comfyApp.canvas) comfyApp.canvas.setDirty(true, true)
+            } else {
+              comfyApp.loadGraphData(bound)
+            }
+          } catch {
+            try { comfyApp.loadGraphData(bound) } catch { /* Ignore */ }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to sync autopilot workflow:', err)
+      }
+    }
+  }, [autopilot.latestWorkflowJson])
+
   // --- ComfyUI Integration Hooks ---
   const app = (window as any).app;
 

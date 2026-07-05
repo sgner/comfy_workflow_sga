@@ -11,6 +11,8 @@ export interface StepEvent {
   summary?: string
   error?: string
   question?: string
+  /** Full workflow JSON after canvas ops, used to sync headless browser state to user's browser. */
+  workflowJson?: string
   timestamp: number
 }
 
@@ -18,6 +20,7 @@ export function useComputerUseRunEvents(baseUrl: string) {
   const [steps, setSteps] = useState<StepEvent[]>([])
   const [isActive, setIsActive] = useState(false)
   const [eventSource, setEventSource] = useState<EventSource | null>(null)
+  const [latestWorkflowJson, setLatestWorkflowJson] = useState<string | null>(null)
 
   const connect = useCallback(() => {
     if (eventSource) eventSource.close()
@@ -30,6 +33,10 @@ export function useComputerUseRunEvents(baseUrl: string) {
     es.onmessage = (e) => {
       const event: StepEvent = JSON.parse(e.data)
       setSteps(prev => [...prev, event])
+      // Capture workflow JSON for sync to user's browser canvas
+      if (event.workflowJson) {
+        setLatestWorkflowJson(event.workflowJson)
+      }
       if (event.type === 'loop_done' || event.type === 'stopped' || event.type === 'error' || event.type === 'approval_required') {
         es.close()
         setIsActive(false)
@@ -56,5 +63,5 @@ export function useComputerUseRunEvents(baseUrl: string) {
     }
   }, [eventSource])
 
-  return { steps, isActive, connect, disconnect }
+  return { steps, isActive, connect, disconnect, latestWorkflowJson }
 }

@@ -20,7 +20,7 @@ export type ComputerUseSessionState =
 export interface ComputerUseConfig {
   /** ComfyUI URL to navigate the dedicated browser to. */
   comfyuiUrl: string
-  /** Whether to launch browser in visible mode (default: true). */
+  /** Whether to launch browser in headless mode (default: true). When headless, the agent runs invisibly in the background and syncs changes to the user's browser via SSE. */
   headless: boolean
   /** Session timeout in ms (default: 30 minutes). */
   sessionTimeoutMs: number
@@ -28,7 +28,7 @@ export interface ComputerUseConfig {
 
 export const DEFAULT_COMPUTER_USE_CONFIG: ComputerUseConfig = {
   comfyuiUrl: 'http://127.0.0.1:8188',
-  headless: false,
+  headless: true,
   sessionTimeoutMs: 30 * 60 * 1000,
 }
 
@@ -228,6 +228,8 @@ export interface StepEvent {
   summary?: string
   error?: string
   question?: string
+  /** Full workflow JSON after canvas ops, used to sync headless browser state to user's browser. */
+  workflowJson?: string
   timestamp: number
 }
 

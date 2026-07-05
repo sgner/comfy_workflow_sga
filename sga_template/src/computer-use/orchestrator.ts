@@ -258,6 +258,23 @@ export class ComputerUseOrchestrator {
         const result = await this.executeAction(action)
         yield { step, type: 'action_executed', action, result, timestamp: Date.now() }
 
+        // 4.5 Sync workflow to user's browser if this was a canvas action
+        if (result.success && isCanvasAction(action)) {
+          try {
+            const canvasState = await this.executeAction({ type: 'getCanvasState' } as ComputerUseAction)
+            if (canvasState.success && canvasState.data) {
+              yield { step, type: 'step_done', workflowJson: JSON.stringify(canvasState.data), timestamp: Date.now() }
+            } else {
+              yield { step, type: 'step_done', timestamp: Date.now() }
+            }
+          } catch (err) {
+            logger.warn('Failed to sync canvas state after canvas action:', err instanceof Error ? err.message : String(err))
+            yield { step, type: 'step_done', timestamp: Date.now() }
+          }
+        } else {
+          yield { step, type: 'step_done', timestamp: Date.now() }
+        }
+
         // 5. Track failures
         if (!result.success) {
           consecutiveFailures++
@@ -278,7 +295,6 @@ export class ComputerUseOrchestrator {
         const feedback = adapter.interpretActionResult(result)
         history += `\nStep ${step + 1}: ${feedback}`
 
-        yield { step, type: 'step_done', timestamp: Date.now() }
         step++
       }
 
