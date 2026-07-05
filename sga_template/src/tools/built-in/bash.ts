@@ -106,6 +106,24 @@ function resolveWindowsShell(): string {
   return `${systemRoot}\\System32\\cmd.exe`
 }
 
+/**
+ * Wrap a command with UTF-8 encoding setup for Windows PowerShell.
+ * PowerShell 5.1 defaults to UTF-16 LE output, which causes mojibake when
+ * Node.js decodes the buffer as UTF-8. We inject `[Console]::OutputEncoding
+ * = [System.Text.Encoding]::UTF8` before the user's command to force UTF-8.
+ * For cmd.exe we set `chcp 65001 >nul &&` to switch the codepage to UTF-8.
+ */
+function wrapWithUtf8Encoding(command: string, shell: string): string {
+  if (process.platform !== 'win32') return command
+  if (shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe')) {
+    return `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`
+  }
+  if (shell.endsWith('cmd.exe')) {
+    return `chcp 65001 >nul 2>&1 && ${command}`
+  }
+  return command
+}
+
 export class BashTool extends BaseTool<{ command: string; timeout?: number }, string> {
   name = 'Bash'
   description = 'Execute a bash command and return its output'
@@ -244,8 +262,9 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
 
   private execSync(command: string, timeout: number, shell: string): string {
     const { execSync } = require('child_process') as typeof import('child_process')
+    const wrappedCommand = wrapWithUtf8Encoding(command, shell)
     try {
-      const result = execSync(command, {
+      const result = execSync(wrappedCommand, {
         timeout,
         maxBuffer: parseInt(process.env.BASH_MAX_BUFFER ?? String(10 * 1024 * 1024), 10),
         encoding: 'utf-8',
@@ -264,7 +283,8 @@ export class BashTool extends BaseTool<{ command: string; timeout?: number }, st
   private execStreaming(command: string, timeout: number, shell: string, onProgress: (data: BashProgressData) => void): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const startTime = Date.now()
-      const child = spawn(command, [], {
+      const wrappedCommand = wrapWithUtf8Encoding(command, shell)
+      const child = spawn(wrappedCommand, [], {
         shell,
         timeout,
         env: { ...process.env },

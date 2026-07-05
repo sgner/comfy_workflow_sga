@@ -100,6 +100,10 @@ export class GrepTool extends BaseTool<{ pattern: string; path?: string; glob?: 
       let content: string
       try {
         content = await readFile(file, 'utf-8')
+        // Strip UTF-8 BOM (U+FEFF) if present
+        if (content.charCodeAt(0) === 0xFEFF) {
+          content = content.slice(1)
+        }
       } catch {
         continue
       }

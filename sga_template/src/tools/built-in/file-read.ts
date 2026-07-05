@@ -93,10 +93,15 @@ export class FileReadTool extends BaseTool<{ path: string; offset?: number; limi
 
 async function readFileWithFallback(filePath: string): Promise<string> {
   try {
-    return await readFile(filePath, 'utf-8')
+    const content = await readFile(filePath, 'utf-8')
+    // Strip UTF-8 BOM (U+FEFF) if present — Node.js readFile('utf-8') does not remove it
+    if (content.charCodeAt(0) === 0xFEFF) {
+      return content.slice(1)
+    }
+    return content
   } catch (error: unknown) {
     const e = error as { code?: string }
-    if (e.code === 'ERR_BUFFER_OUT_OF_BOUNDS' || String(error).includes('encoding')) {
+    if (e.code === 'ERR_BUFFER_OUTOF_BOUNDS' || String(error).includes('encoding')) {
       const { execSync } = await import('child_process')
       const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
       let cmd: string
