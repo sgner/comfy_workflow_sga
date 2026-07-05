@@ -20,6 +20,7 @@ export { GitHubSearchTool } from './github-search.js'
 export { CivitAITool } from './civitai.js'
 export { ComfyUIModelListTool } from './comfyui-model-list.js'
 export { ComfyUINodeSearchTool } from './comfyui-node-search.js'
+export { ComfyUINodeInspectTool } from './comfyui-node-inspect.js'
 export { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
 export { ComfyUIAPITool } from './comfyui-api.js'
 export { ComputerUseTool, setComputerUseOrchestrator, getComputerUseOrchestrator } from './computer-use.js'
@@ -46,6 +47,7 @@ import { GitHubSearchTool } from './github-search.js'
 import { CivitAITool } from './civitai.js'
 import { ComfyUIModelListTool } from './comfyui-model-list.js'
 import { ComfyUINodeSearchTool } from './comfyui-node-search.js'
+import { ComfyUINodeInspectTool } from './comfyui-node-inspect.js'
 import { ComfyUIWorkflowValidateTool } from './comfyui-workflow-validate.js'
 import { ComfyUIAPITool } from './comfyui-api.js'
 import { ComputerUseTool } from './computer-use.js'
@@ -76,6 +78,7 @@ export function createBuiltinTools(agentDefinitions?: AgentDefinition[]): Tool[]
     new CivitAITool(),
     new ComfyUIModelListTool(),
     new ComfyUINodeSearchTool(),
+    new ComfyUINodeInspectTool(),
     new ComfyUIWorkflowValidateTool(),
     new ComfyUIAPITool(),
     new ComputerUseTool(),
